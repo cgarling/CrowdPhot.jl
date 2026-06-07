@@ -1,0 +1,265 @@
+"""
+    free_params(model::AbstractPSFModel, fixed::NamedTuple=NamedTuple()) -> (free_names, free_idx, x0)
+
+Return the names of the free (non-fixed) parameters, their indices, and their initial values as
+a `Vector`. `fixed` is a `NamedTuple` whose keys name the fields to freeze.
+"""
+function free_params(model::AbstractPSFModel{T}, fixed::NamedTuple = NamedTuple()) where {T}
+    all_props = ConstructionBase.getproperties(model)
+    free_names = Tuple(k for k in keys(all_props) if !haskey(fixed, k))
+    free_idx = Tuple(i for (i, k) in enumerate(keys(all_props)) if !haskey(fixed, k))
+    x0 = T[all_props[k] for k in free_names]
+    return free_names, free_idx, x0
+end
+
+"""
+    model_from_vector(model, ::Val{names}, x, fixed::NamedTuple) -> updated model
+
+Reconstruct the model from an optimizer vector `x`, merging in the fixed
+parameters. `names` is a `Val`-wrapped tuple of the free parameter names
+for type-stability, and `fixed` is a `NamedTuple` of the fixed parameters.
+"""
+function model_from_vector(model, ::Val{names}, x::AbstractVector, fixed::NamedTuple) where {names}
+    updates = NamedTuple{names}(ntuple(i -> x[i], Val(length(names))))
+    return ConstructionBase.setproperties(model, merge(updates, fixed))
+end
+
+function _has_hessian(model::AbstractPSFModel)
+    return hasmethod(evaluate_fgh, Tuple{typeof(model), Real, Real})
+end
+
+function _has_deriv(model::AbstractPSFModel)
+    return hasmethod(evaluate_fg, Tuple{typeof(model), Real, Real})
+end
+
+"""
+    fit(model::AbstractPSFModel, image, inds=axes(image);
+        fixed=(;), inv_var=nothing,
+        damping::AbstractLMDamping=MarquardtDamping(),
+        max_iter=200, x_tol=1e-8, f_tol=1e-8, g_tol=1e-8,
+        show_trace=false, 
+        reweight=nothing,
+        scale_estimator=nothing,
+        weight_reset_tol=0.1,
+        covariance_estimator=nothing)
+
+Fit the free parameters of `model` to `image[inds]` under weighted L2 loss
+using the Levenberg-Marquardt algorithm.  The model must implement
+`evaluate_fg`.
+
+`fixed` is a `NamedTuple` of field-name → value pairs whose parameters are
+frozen during the fit.  All other fields of `model` are free.
+
+Inverse variance weights can be passed via `inv_var`; it must be the same size
+as `image`.
+
+Returns `(best_model, result::LMResult)`.
+
+# Algorithm
+
+Minimises ``C(\\mathbf{x}) = \\sum_i w_i [f_i(\\mathbf{x}) - d_i]^2`` using
+the Gauss-Newton approximation to the Hessian augmented by a diagonal damping
+term:
+
+```math
+(J^\\top W J + \\lambda D)\\,\\delta = -J^\\top W r
+```
+
+where ``J`` is the Jacobian assembled from `evaluate_fg` gradients (restricted
+to the free parameters), ``W = \\mathrm{diag}(w_i)``, and
+``r_i = f_i(\\mathbf{x}) - d_i``.  If the candidate step reduces the cost it
+is accepted and ``\\lambda`` is decreased; otherwise it is rejected and
+``\\lambda`` is increased.
+
+# Iteratively Reweighted Least Squares
+
+Pass `reweight` as a `LossFunctions.SupervisedLoss` (e.g. `LossFunctions.HuberLoss()`,
+`CrowdPhot.TukeyLoss()`) to enable iteratively reweighted least squares (IRLS). After
+each accepted LM step, the residuals are used to recompute pixel weights via
+``w_i^{\\text{final}} = w_i^{\\text{base}} \\cdot w(r_i/\\sigma)`` where
+``w(r) = \\psi(r)/r`` is derived from the loss function's influence function
+and ``\\sigma`` is a robust scale estimate. This provides automatic outlier
+rejection — useful for cosmic rays, bad pixels, and satellite trails in
+astronomical images.
+
+The scale ``\\sigma`` is estimated by `scale_estimator`. If not provided,
+it defaults to `FixedScale` inferred from `inv_var` if supplied,
+otherwise `MADScale()` is used. Available scale estimators:
+- `MADScale()` — median absolute deviation (robust, default without `inv_var`)
+- `FixedScale(σ)` — fixed user-provided scale
+- `MScale(; δ=0.5)` — iterative M-scale (most robust, highest cost)
+
+Recommended loss functions for IRLS:
+- `LossFunctions.HuberLoss(c)` — soft downweighting of outliers, suitable for mildly
+  contaminated data or crowded-field photometry
+- `CrowdPhot.TukeyLoss(; c=4.685)` — complete rejection of extreme outliers, ideal
+  for cosmic rays and bad pixels in space-based imaging
+
+# Covariance Estimation
+The covariance of the fitted parameters is estimated from the Gauss-Newton Hessian
+approximation to the Hessian at the solution. For known good input weights `inv_var`,
+the covariance is simply the inverse of this Hessian approximation. Use 
+`covariance_estimator = KnownWeightsCovarianceEstimator()` for this behavior.
+However, when IRLS reweighting is used and the weights are estimated from the data,
+the covariance is inflated by the reduced cost per degree of freedom to account for
+uncertainty in the weights. In this case, use `ReweightedCovarianceEstimator`.
+
+# Damping Strategies
+- `Marquardt`: diagonal entries are scaled by `max(A[i, i], min_diagonal)` to
+  prevent small curvature directions from being under-damped
+- `Levenberg`: uniform damping with no scaling
+- `NoDamping`: no damping; equivalent to Gauss-Newton (not recommended)
+
+# Keyword arguments
+
+- `fixed`: `NamedTuple` of frozen parameter name → value pairs
+- `inv_var`: inverse-variance weights, same shape as `image`
+- `reweight`: a `LossFunctions.SupervisedLoss` for IRLS reweighting,
+  or `nothing` (default) for standard L2 fitting
+- `scale_estimator::AbstractScaleEstimator`: scale estimator for IRLS;
+  defaults to `FixedScale` (from `inv_var`) or `MADScale()` (see above)
+- `weight_reset_tol`: reset `λ` to `λ_init` after an IRLS weight update only
+  when the symmetric relative L2 norm of the weight change is at least this
+  threshold (default `0.1`)
+- `covariance_estimator::AbstractCovarianceEstimator`: method for estimating the covariance matrix of the fitted parameters; defaults to `ReweightedCovarianceEstimator` when IRLS is used and `KnownWeightsCovarianceEstimator` otherwise
+- `λ_init`: initial damping parameter (default `1e-4`)
+- `λ_up`: factor by which `λ` is multiplied on rejection (default `10`)
+- `λ_down`: factor by which `λ` is divided on acceptance (default `10`)
+- `λ_min`, `λ_max`: lower/upper bounds on the damping parameter
+- `damping::AbstractLMDamping`: specifies the damping strategy
+  (`MarquardtDamping`, `LevenbergDamping`, or `NoDamping`)
+- `max_iter`: maximum number of LM iterations (default `200`)
+- `x_tol`: step-norm convergence criterion:
+  ``\\|\\delta\\| \\le x\\_tol\\cdot(\\|x\\|+x\\_tol)`` (default `1e-8`)
+- `f_tol`: cost-decrease convergence criterion:
+  ``\\Delta C \\le f\\_tol\\cdot(|C|+f\\_tol)`` (default `1e-8`)
+- `g_tol`: gradient-norm convergence criterion ``\\|J^\\top W r\\|``
+  (default `1e-8`)
+- `show_trace`: print per-iteration statistics to stdout (default `false`)
+"""
+function fit(
+        model::AbstractPSFModel{T},
+        image::AbstractMatrix,
+        inds = axes(image);
+        fixed::NamedTuple = (;),
+        inv_var = nothing,
+        λ_init::Real = 1.0e-4,
+        λ_up::Real = 10.0,
+        λ_down::Real = 10.0,
+        λ_min::Real = 1.0e-12,
+        λ_max::Real = 1.0e12,
+        damping::AbstractLMDamping = MarquardtDamping(),
+        max_iter::Integer = 200,
+        x_tol::Real = 1.0e-8,
+        f_tol::Real = 1.0e-8,
+        g_tol::Real = 1.0e-8,
+        show_trace::Bool = false,
+        reweight::Union{Nothing, LossFunctions.SupervisedLoss} = nothing,
+        scale_estimator::Union{Nothing, AbstractScaleEstimator} = nothing,
+        weight_reset_tol::Real = 0.1,
+        covariance_estimator::Union{Nothing, AbstractCovarianceEstimator} = nothing
+    ) where {T}
+
+    # Validate inputs
+    if !isnothing(inv_var)
+        if size(inv_var) != size(image)
+            throw(ArgumentError("`inv_var` must be the same size as `image`"))
+        end
+        if !all(x -> isfinite(x) && x > 0, inv_var)
+            throw(ArgumentError("`inv_var` must be finite and > 0 everywhere"))
+        end
+    end
+    if !(_has_deriv(model))
+        throw(
+            ArgumentError(
+                "model does not implement `evaluate_fg`; " *
+                    "Levenberg-Marquardt requires gradient"
+            )
+        )
+    end
+
+    # Converting here simplifies downstream indexing
+    inds = CartesianIndices(inds)
+
+    # Parameter bookkeeping
+    free_names, free_idx, x0 = free_params(model, fixed)
+    n = length(x0)
+    n > 0 || throw(ArgumentError("all model parameters are fixed; nothing to fit"))
+    dof = length(inds) - n
+    if dof < 0
+        throw(
+            ArgumentError(
+                "degrees of freedom must be positive; " *
+                    "too many free parameters ($n) for the number of pixels ($(length(inds)))"
+            )
+        )
+    end
+    free_names_val = Val(free_names)
+
+    # Set up base weights from `inv_var` if provided, converting to FT and restricting to `inds`
+    FT = float(T)
+    base_weights = if isnothing(inv_var)
+        nothing
+    else
+        weights = Vector{FT}(undef, length(inds))
+        base_k = 0
+        @inbounds for idx in inds
+            base_k += 1
+            weights[base_k] = FT(inv_var[idx])
+        end
+        weights
+    end
+
+    # Custom accumulator for LM that streams over pixels, evaluates the model and Jacobian via `evaluate_fg`,
+    # and fills the normal equations without materializing the full Jacobian. This is the core of the algorithm; all model-specific work lives here.
+    function accum!(A::AbstractMatrix{FT}, b::AbstractVector{FT}, residuals::AbstractVector{FT}, x::AbstractVector{FT}, weights) where {FT}
+        nparams = length(free_idx)
+        @assert size(A, 1) == size(A, 2) == length(b) == nparams
+        @assert length(residuals) == length(inds)
+        fill!(A, zero(FT))
+        fill!(b, zero(FT))
+        cost = zero(FT)
+        m = model_from_vector(model, free_names_val, x, fixed)
+        use_weights = !isnothing(weights)
+        obs_k = 0
+        @inbounds for idx in inds
+            obs_k += 1
+            w = use_weights ? FT(weights[obs_k]) : one(FT)
+            f_val, g_full = evaluate_fg(m, idx)
+            r = FT(f_val) - FT(image[idx])
+            residuals[obs_k] = r
+            wr = w * r
+            cost = muladd(wr, r, cost)
+            @inbounds for j in 1:nparams
+                gj = FT(g_full[free_idx[j]])
+                b[j] = muladd(wr, gj, b[j])
+                for i in 1:nparams
+                    A[i, j] = muladd(w * FT(g_full[free_idx[i]]), gj, A[i, j])
+                end
+            end
+        end
+        return cost
+    end
+
+    problem = LMProblem(Vector{FT}(x0), length(inds), accum!, base_weights)
+    result = lm_irls(
+        problem;
+        λ_init,
+        λ_up,
+        λ_down,
+        λ_min,
+        λ_max,
+        damping,
+        max_iter,
+        x_tol,
+        f_tol,
+        g_tol,
+        show_trace,
+        reweight,
+        scale_estimator,
+        weight_reset_tol,
+        covariance_estimator
+    )
+    best_model = model_from_vector(model, free_names_val, result.minimizer, fixed)
+    return best_model, result
+end
