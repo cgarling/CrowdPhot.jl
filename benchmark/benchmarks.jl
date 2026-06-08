@@ -115,9 +115,23 @@ for n in (50, 100)
 end
 
 SUITE["background"] = BenchmarkGroup()
+# Direct test of estimators
+SUITE["background"]["estimators"] = BenchmarkGroup()
+for t in (
+    (MMMBackground(), BM.MMMBackground()), 
+    (BiweightLocationBackground(), BM.BiweightLocationBackground()),
+    (StdRMS(), BM.StdRMS()),
+    (BiweightScaleRMS(), BM.BiweightScaleRMS()),
+)
+    img = make_gaussians_image(100, (100, 100); rng = StableRNG(7), background = 200.0, read_noise = 5.0, gain = 1.5)
+    SUITE["background"]["estimators"]["$(typeof(t[1]))"] = @benchmarkable $t[1]($img)
+    SUITE["background"]["estimators"]["$(typeof(t[1])) BackgroundMeshes.jl"] = @benchmarkable $t[2]($img)
+end
+# Test estimate_background on a range of image sizes, comparing against BackgroundMeshes.jl
 for s in (30, 500, 2000)
     img = make_gaussians_image(s, (s, s); rng = StableRNG(7), background = 200.0, read_noise = 5.0, gain = 1.5)
     SUITE["background"]["MMMBackground, size=($s, $s)"] = @benchmarkable estimate_background($img; estimator = $MMMBackground(), rms_estimator = $StdRMS(), maxiters=$0)
+    SUITE["background"]["MMMBackground, size=($s, $s), nclip=5"] = @benchmarkable estimate_background($img; estimator = $MMMBackground(), rms_estimator = $StdRMS(), maxiters=$5) # Test sigma clipping overhead
     SUITE["background"]["MMMBackground, BackgroundMeshes.jl, size=($s, $s)"] = @benchmarkable BM.estimate_background($img; location = $BM.MMMBackground(), rms = $BM.StdRMS())
 end
 
