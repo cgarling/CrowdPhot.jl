@@ -1,14 +1,43 @@
-"""Gaussian exponent coefficient when parameterized by FWHM:
-exp(-4*log(2) * r² / fwhm²)  = exp(GAUSS_PRE * r² / fwhm²) for effective radius r"""
+@doc raw"""
+    GAUSS_PRE
+
+Gaussian exponent coefficient for profiles parameterized by FWHM.
+
+```math
+\mathrm{GAUSS\_PRE} = -4\ln 2
+```
+
+For effective radius ``r``, the Gaussian exponent is written as
+
+```math
+\exp\!\left(-4\ln 2\,\frac{r^2}{\mathrm{FWHM}^2}\right)
+=
+\exp\!\left(\mathrm{GAUSS\_PRE}\,\frac{r^2}{\mathrm{FWHM}^2}\right).
+```
+"""
 const GAUSS_PRE = -4 * log(2)
 
-"""Solution to ``J_1(π R_z) = 0`` where ``J_1`` is the first-order Bessel function of the first kind. This is used to compute the effective radius of an Airy disk in terms of its FWHM."""
+@doc raw"""
+    AIRY_RZ
+
+Dimensionless radius of the first dark ring in the Airy pattern.
+
+```math
+J_1(\pi R_z) = 0,
+\qquad
+R_z = \frac{j_{1,1}}{\pi} \approx 1.2197
+```
+
+Here ``J_1`` is the first-order Bessel function of the first kind, and
+``j_{1,1}`` is its first positive zero. `AIRY_RZ` converts the Airy first-dark-ring
+`radius` to the effective scale ``a = \mathrm{radius}/R_z`` used by [`AiryPSF`](@ref).
+"""
 const AIRY_RZ = 1.2196698912665045
 
 @doc raw"""
     CircularGaussianPSF(x, y, fwhm, flux, bkg) → CircularGaussianPSF{T}
 
-Circular, symmetric Gaussian PSF with centroid `(x, y)` and FWHM given by `fwhm`. 
+Circular, symmetric Gaussian PSF with centroid ``(x_0, y_0)`` and FWHM given by `fwhm`.
 The `flux` is the integral of the PSF over all space, and `bkg` is a scalar
 background level added to the PSF. The model is evaluated by sampling the 2D
 circularly-symmetric Gaussian function at the given position and adding the background:
@@ -20,7 +49,7 @@ I(x, y) = \frac{F}{\pi\,\mathrm{FWHM}^2/(4\ln 2)}
 + B
 ```
 
-where ``(x_0, y_0)`` is the centroid, ``F`` is the total flux, and ``B`` is the background level.
+Here ``(x_0, y_0)`` is the centroid, ``F`` is the total flux, and ``B`` is the background level.
 
 # Examples
 ```jldoctest
@@ -149,10 +178,11 @@ end
 @doc raw"""
     GaussianPSF(x, y, x_fwhm, y_fwhm, theta, flux, bkg) -> GaussianPSF{T}
 
-General asymmetric Gaussian PSF with centroid `(x, y)`, FWHM along the x and y axes
-given by `x_fwhm` and `y_fwhm`, and rotated by `theta` degrees counter-clockwise
-from the x-axis. The `flux` is the integral of the PSF over all space, and `bkg`
-is a scalar background level added to the PSF.
+General asymmetric Gaussian PSF with centroid ``(x_0, y_0)``, FWHM values
+``\mathrm{FWHM}_x`` and ``\mathrm{FWHM}_y`` given by `x_fwhm` and `y_fwhm`,
+and rotated by `theta` degrees counter-clockwise from the x-axis. The `flux`
+is the integral of the PSF over all space, and `bkg` is a scalar background
+level added to the PSF.
 
 The model is evaluated by sampling the general 2D
 Gaussian function at the given position and adding the background:
@@ -176,7 +206,7 @@ u = \cos\theta\,(x-x_0) + \sin\theta\,(y-y_0),
 v = -\sin\theta\,(x-x_0) + \cos\theta\,(y-y_0),
 ```
 
-where ``F`` is the total flux and ``B`` is the background level.
+Here ``(x_0, y_0)`` is the centroid, ``F`` is the total flux, and ``B`` is the background level.
 
 # Examples
 ```jldoctest
@@ -381,19 +411,29 @@ end
 @doc raw"""
     CircularGaussianPRF(x, y, fwhm, flux, bkg) -> CircularGaussianPRF{T}
 
-Circular, symmetric Gaussian pixel response function (PRF) with centroid `(x, y)` and FWHM
-given by `fwhm`. The PRF is the underlying Gaussian PSF integrated analytically over each
-pixel. The `flux` is the total flux (sum of PRF values over all pixels equals `flux`), and
-`bkg` is a scalar background level added to the PRF.
+Circular, symmetric Gaussian pixel response function (PRF) with centroid
+``(x_0, y_0)`` and FWHM given by `fwhm`. The PRF is the underlying Gaussian
+PSF integrated analytically over each pixel. The `flux` is the total flux
+(sum of PRF values over all pixels equals `flux`), and `bkg` is a scalar
+background level added to the PRF.
 
-The PRF value at pixel center `(x, y)` is the integral of the Gaussian PSF over the pixel
-area `[x-0.5, x+0.5] × [y-0.5, y+0.5]`. The model is evaluated as
+The PRF value at pixel center ``(x, y)`` is the integral of the Gaussian PSF
+over the pixel area ``[x-0.5, x+0.5] \times [y-0.5, y+0.5]``. The model is
+evaluated as
 
 ```math
-\begin{aligned} I(x, y) ={}& \frac{F}{4} \left[\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(x + 0.5 - x_0)}{\mathrm{fwhm}}\right) -\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(x - 0.5 - x_0)}{\mathrm{fwhm}}\right)\right] \\ &\times \left[\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(y + 0.5 - y_0)}{\mathrm{fwhm}}\right) -\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(y - 0.5 - y_0)}{\mathrm{fwhm}}\right)\right] + B \end{aligned}
+\begin{aligned}
+I(x, y) ={}& \frac{F}{4}
+\left[\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(x + 0.5 - x_0)}{\mathrm{FWHM}}\right)
+      -\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(x - 0.5 - x_0)}{\mathrm{FWHM}}\right)\right] \\
+&\times
+\left[\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(y + 0.5 - y_0)}{\mathrm{FWHM}}\right)
+      -\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(y - 0.5 - y_0)}{\mathrm{FWHM}}\right)\right]
++ B
+\end{aligned}
 ```
 
-where ``F`` is the total flux, ``B`` is the background level, and ``\mathrm{erf}`` is the error function.
+where ``(x_0, y_0)`` is the centroid, ``F`` is the total flux, ``B`` is the background level, and ``\mathrm{erf}`` is the error function.
 
 # Examples
 ```jldoctest
@@ -469,24 +509,26 @@ end
 @doc raw"""
     GaussianPRF(x, y, x_fwhm, y_fwhm, theta, flux, bkg) -> GaussianPRF{T}
 
-Asymmetric Gaussian pixel response function (PRF) with centroid `(x, y)`, FWHM along the
-x and y axes given by `x_fwhm` and `y_fwhm`, and rotated by `theta` degrees
-counter-clockwise from the x-axis. The PRF is the underlying Gaussian PSF
-integrated analytically over each pixel. The `flux` is the total flux (sum of PRF values
-over all pixels equals `flux`), and `bkg` is a scalar background level added to the PRF.
+Asymmetric Gaussian pixel response function (PRF) with centroid
+``(x_0, y_0)``, FWHM values ``\mathrm{FWHM}_x`` and ``\mathrm{FWHM}_y`` given
+by `x_fwhm` and `y_fwhm`, and rotated by `theta` degrees counter-clockwise
+from the x-axis. The PRF is the underlying Gaussian PSF integrated analytically
+over each pixel. The `flux` is the total flux (sum of PRF values over all
+pixels equals `flux`), and `bkg` is a scalar background level added to the PRF.
 
-The PRF value at pixel center `(x, y)` is the integral of the Gaussian PSF over the pixel
-area `[x-0.5, x+0.5] × [y-0.5, y+0.5]`, evaluated after rotating the coordinates
-by `-theta` to align with the principal axes. The model is evaluated as
+The PRF value at pixel center ``(x, y)`` is the integral of the Gaussian PSF
+over the pixel area ``[x-0.5, x+0.5] \times [y-0.5, y+0.5]``, evaluated after
+rotating the coordinates by `-theta` to align with the principal axes. The
+model is evaluated as
 
 ```math
 \begin{aligned}
 I(x, y) ={}& \frac{F}{4}
-    \left[\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(u + 0.5)}{x_{\mathrm{fwhm}}}\right)
-         -\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(u - 0.5)}{x_{\mathrm{fwhm}}}\right)\right] \\
+    \left[\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(u + 0.5)}{\mathrm{FWHM}_x}\right)
+         -\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(u - 0.5)}{\mathrm{FWHM}_x}\right)\right] \\
 &\times
-    \left[\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(v + 0.5)}{y_{\mathrm{fwhm}}}\right)
-         -\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(v - 0.5)}{y_{\mathrm{fwhm}}}\right)\right]
+    \left[\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(v + 0.5)}{\mathrm{FWHM}_y}\right)
+         -\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(v - 0.5)}{\mathrm{FWHM}_y}\right)\right]
     + B
 \end{aligned}
 ```
@@ -500,7 +542,7 @@ v &= -\sin\theta\,(x - x_0) + \cos\theta\,(y - y_0)
 \end{aligned}
 ```
 
-where ``F`` is the total flux and ``B`` is the background level.
+Here ``(x_0, y_0)`` is the centroid, ``F`` is the total flux, and ``B`` is the background level.
 
 ```jldoctest
 julia> using CrowdPhot.PSF: GaussianPRF
@@ -602,22 +644,225 @@ function evaluate_fg(model::GaussianPRF{T}, px, py) where {T}
 end
 
 @doc raw"""
+    CircularMoffatPSF(x, y, α, β, flux, bkg) -> CircularMoffatPSF{T}
+
+Circular Moffat PSF with centroid ``(x_0, y_0)``, scale length `α`, wing parameter
+`β`, total `flux`, and background `bkg`.
+
+The model is evaluated by sampling the Moffat PSF at the given position and
+adding the background:
+
+```math
+I(x, y) =
+F\,\frac{\beta - 1}{\pi\,\alpha^2}
+\left(
+1 + \frac{(x-x_0)^2 + (y-y_0)^2}{\alpha^2}
+\right)^{-\beta}
++ B.
+```
+
+Here ``(x_0, y_0)`` is the centroid, ``F`` is the total flux, and ``B`` is the background level.
+
+# Examples
+```jldoctest
+julia> using CrowdPhot.PSF: CircularMoffatPSF
+
+julia> CircularMoffatPSF(x=1.0, y=2.0, α=3.0, β=2.5,
+           flux=4.0, bkg=5.0) isa CircularMoffatPSF{Float64}
+true
+```
+"""
+Base.@kwdef struct CircularMoffatPSF{T} <: AbstractPSFModel{T}
+    x::T
+    y::T
+    α::T
+    β::T
+    flux::T
+    bkg::T
+
+    function CircularMoffatPSF(x, y, α, β, flux, bkg)
+        T = promote_type(typeof(x), typeof(y), typeof(α), typeof(β), typeof(flux), typeof(bkg))
+        T = T <: Integer ? Float64 : T
+        return new{T}(T(x), T(y), T(α), T(β), T(flux), T(bkg))
+    end
+end
+amplitude(model::CircularMoffatPSF{T}) where {T} = model.flux * (model.β - 1) / (π * model.α^2)
+peak(model::CircularMoffatPSF) = amplitude(model) + model.bkg
+effective_area(model::CircularMoffatPSF{T}) where {T} = T(π) * model.α^2 * (2 * model.β - 1) / (model.β - 1)^2
+function fwhm(model::CircularMoffatPSF{T}) where {T}
+    _f = 2 * model.α * sqrt(exp2(1 / model.β) - 1)
+    return (_f, _f)
+end
+function evaluate(model::CircularMoffatPSF{T}, px, py) where {T}
+    r2 = (px - model.x)^2 + (py - model.y)^2
+    amp = model.flux * (model.β - 1) / (π * model.α^2)
+    return muladd(amp, (1 + r2 / model.α^2)^(-model.β), model.bkg)
+end
+# using ForwardDiff: gradient
+# using CrowdPhot.PSF: CircularMoffatPSF, evaluate_fg, evaluate
+# using ConstructionBase: getproperties
+# t = CircularMoffatPSF(x=0.0, y=0.0, α=5.0, β=3.0, flux=50.0, bkg=10.0)
+# _, g = evaluate_fg(t, 1, 2)
+# gradient(x->evaluate(CircularMoffatPSF(x...), 1, 2), collect(getproperties(t))) ≈ collect(g)
+function evaluate_fg(model::CircularMoffatPSF{T}, px, py) where {T}
+    α, β = model.α, model.β
+    α² = α^2
+    dx = px - model.x
+    dy = py - model.y
+    r2 = dx^2 + dy^2
+    u = 1 + r2 / α²
+    profile = u^(-β)
+    norm = T(π) * α² / (β - 1)
+    amp = model.flux / norm
+    Ag = amp * profile
+    f = muladd(amp, profile, model.bkg)
+
+    df_dx = 2 * Ag * β * dx / (α² * u)
+    df_dy = 2 * Ag * β * dy / (α² * u)
+    df_dα = Ag * (-2 / α + 2 * β * r2 / (α^3 * u))
+    df_dβ = Ag * (1 / (β - 1) - log(u))
+    df_dflux = profile / norm
+    df_dbkg = one(T)
+    return f, SA[df_dx, df_dy, df_dα, df_dβ, df_dflux, df_dbkg]
+end
+
+@doc raw"""
+    MoffatPSF(x, y, x_α, y_α, theta, β, flux, bkg) -> MoffatPSF{T}
+
+General asymmetric Moffat PSF with centroid ``(x_0, y_0)``, scale lengths
+``\alpha_x`` and ``\alpha_y`` given by `x_α` and `y_α`, rotation angle `theta`
+in degrees counter-clockwise from the x-axis, wing parameter `β`, total `flux`,
+and background `bkg`.
+
+The model is evaluated by sampling the Moffat PSF
+at the given position and adding the background:
+
+```math
+I(x, y) =
+F\,\frac{\beta - 1}{\pi\,\alpha_x\,\alpha_y}
+\left(
+1 + \frac{u^2}{\alpha_x^2} + \frac{v^2}{\alpha_y^2}
+\right)^{-\beta}
++ B,
+```
+
+where
+
+```math
+u = \cos\theta\,(x-x_0) + \sin\theta\,(y-y_0),
+\qquad
+v = -\sin\theta\,(x-x_0) + \cos\theta\,(y-y_0).
+```
+
+Here ``(x_0, y_0)`` is the centroid, ``F`` is the total flux, and ``B`` is the background level.
+
+# Examples
+```jldoctest
+julia> using CrowdPhot.PSF: MoffatPSF
+
+julia> MoffatPSF(x=1.0, y=2.0, x_α=3.0, y_α=4.0, theta=35.0,
+           β=2.5, flux=4.0, bkg=5.0) isa MoffatPSF{Float64}
+true
+```
+"""
+Base.@kwdef struct MoffatPSF{T} <: AbstractPSFModel{T}
+    x::T
+    y::T
+    x_α::T
+    y_α::T
+    theta::T
+    β::T
+    flux::T
+    bkg::T
+
+    function MoffatPSF(x, y, x_α, y_α, theta, β, flux, bkg)
+        T = promote_type(typeof(x), typeof(y), typeof(x_α), typeof(y_α), typeof(theta), typeof(β), typeof(flux), typeof(bkg))
+        T = T <: Integer ? Float64 : T
+        return new{T}(T(x), T(y), T(x_α), T(y_α), T(theta), T(β), T(flux), T(bkg))
+    end
+end
+amplitude(model::MoffatPSF) = model.flux * (model.β - 1) / (π * model.x_α * model.y_α)
+peak(model::MoffatPSF) = amplitude(model) + model.bkg
+effective_area(model::MoffatPSF) = π * model.x_α * model.y_α * (2 * model.β - 1) / (model.β - 1)^2
+function fwhm(model::MoffatPSF)
+    f = 2 * sqrt(exp2(1 / model.β) - 1)
+    return (model.x_α * f, model.y_α * f)
+end
+function evaluate(model::MoffatPSF{T}, px, py) where {T}
+    θ = deg2rad(model.theta)
+    dx = px - model.x
+    dy = py - model.y
+    sn, cs = sincos(θ)
+    u = cs * dx + sn * dy
+    v = -sn * dx + cs * dy
+    ax = model.x_α
+    ay = model.y_α
+    q = u^2 / ax^2 + v^2 / ay^2
+    amp = model.flux * (model.β - 1) / (T(π) * ax * ay)
+    return muladd(amp, (1 + q)^(-model.β), model.bkg)
+end
+# using ForwardDiff: gradient
+# using CrowdPhot.PSF: MoffatPSF, evaluate_fg, evaluate
+# using ConstructionBase: getproperties
+# t = MoffatPSF(x=1.0, y=2.0, x_α=3.0, y_α=4.0, theta=35.0, β=2.5, flux=6.0, bkg=7.0)
+# _, g = evaluate_fg(t, -1, 1)
+# gradient(x->evaluate(MoffatPSF(x...), -1, 1), collect(getproperties(t))) ≈ collect(g)
+function evaluate_fg(model::MoffatPSF{T}, px, py) where {T}
+    d = deg2rad(one(T))
+    dx = px - model.x
+    dy = py - model.y
+    ax, ay, β = model.x_α, model.y_α, model.β
+    ax² = ax^2
+    ay² = ay^2
+    θ = deg2rad(model.theta)
+    sn, cs = sincos(θ)
+    u = cs * dx + sn * dy
+    v = -sn * dx + cs * dy
+    q = u^2 / ax² + v^2 / ay²
+    h = 1 + q
+    profile = h^(-β)
+    norm = π * ax * ay / (β - 1)
+    amp = model.flux / norm
+    Ag = amp * profile
+    f = muladd(amp, profile, model.bkg)
+
+    D = 1 / ax² - 1 / ay²
+    Qx = -2 * (cs * u / ax² - sn * v / ay²)
+    Qy = -2 * (sn * u / ax² + cs * v / ay²)
+    Qax = -2 * u^2 / ax^3
+    Qay = -2 * v^2 / ay^3
+    Qtheta = d * 2 * u * v * D
+    scale = -β / h
+    df_dx = Ag * scale * Qx
+    df_dy = Ag * scale * Qy
+    df_dax = Ag * (-1 / ax + scale * Qax)
+    df_day = Ag * (-1 / ay + scale * Qay)
+    df_dtheta = Ag * scale * Qtheta
+    df_dβ = Ag * (1 / (β - 1) - log(h))
+    df_dflux = profile / norm
+    df_dbkg = one(T)
+    G = SA[df_dx, df_dy, df_dax, df_day, df_dtheta, df_dβ, df_dflux, df_dbkg]
+    return f, G
+end
+
+
+@doc raw"""
     AiryPSF(x, y, radius, flux, bkg) -> AiryPSF{T}
 
-Airy disk point spread function (PSF) with centroid `(x_0, y_0)`, first-dark-ring `radius`,
+Airy disk point spread function (PSF) with centroid ``(x_0, y_0)``, first-dark-ring `radius`,
 total `flux`, and scalar background `bkg`.
 
 The `radius` parameter is the radial distance from the centroid to the first dark ring
 (also called the first zero) of the Airy pattern. This is the limiting angular
-resolution of an optical system with ``R = R_z \lambda/D``, where `D` is the
-aperture diameter, ``\lambda`` is the wavelength of the light, and `R_z ≈ 1.2197` is the
-first positive zero of the first-order Bessel function `J_1`. 
+resolution of an optical system with ``R = R_z \lambda/D``, where ``D`` is the
+aperture diameter, ``\lambda`` is the wavelength of the light, and ``R_z \approx 1.2197``
+is defined by ``J_1(\pi R_z) = 0``.
 
 The model is evaluated by sampling the Airy disk PSF
 at the given position and adding the background:
 
 ```math
-I(x, y) = \frac{\pi\,\mathrm{F}}{4\,a^2}
+I(x, y) = \frac{\pi\,F}{4\,a^2}
           \left(\frac{2\,J_1(u)}{u}\right)^2 + B
 ```
 
@@ -626,13 +871,14 @@ where
 ```math
 r = \sqrt{(x - x_0)^2 + (y - y_0)^2}, \qquad
 u = \frac{\pi\,r}{a}, \qquad
-a = \frac{\mathrm{radius}}{r_z}, \qquad
-r_z = \frac{j_{1,1}}{\pi} \approx 1.2197
+a = \frac{\mathrm{radius}}{R_z}, \qquad
+R_z = \frac{j_{1,1}}{\pi} \approx 1.2197
 ```
 
-with $j_{1,1}$ the first positive zero of the first-order Bessel function $J_1$.
+Here ``(x_0, y_0)`` is the centroid, ``F`` is the total flux, ``B`` is the background level,
+and $j_{1,1}$ is the first positive zero of the first-order Bessel function $J_1$.
 The singularity at $u = 0$ is handled analytically; the peak value at the centroid
-is $\pi\,\mathrm{flux}/(4a^2) + B$ for background `B`.
+is $\pi\,F/(4a^2) + B$.
 The FWHM is approximately $0.8437 \times \mathrm{radius}$ along each axis.
 
 ```jldoctest
@@ -724,202 +970,4 @@ function evaluate_fg(model::AiryPSF{T}, px, py) where {T}
     df_da = amp / a * (-u * dA2_du - 2 * A2)
     df_dradius = df_da * da_dR
     return f, SA[df_dx, df_dy, df_dradius, df_dflux, df_dbkg]
-end
-
-@doc raw"""
-    CircularMoffatPSF(x, y, α, β, flux, bkg) -> CircularMoffatPSF{T}
-
-Circular Moffat PSF with centroid `(x, y)`, scale length `α`, wing parameter
-`β`, total `flux`, and background `bkg`.
-
-The model is evaluated by sampling the Moffat PSF at the given position and
-adding the background:
-
-```math
-I(x, y) =
-F\,\frac{\beta - 1}{\pi\,\alpha^2}
-\left(
-1 + \frac{(x-x_0)^2 + (y-y_0)^2}{\alpha^2}
-\right)^{-\beta}
-+ B.
-```
-
-# Examples
-```jldoctest
-julia> using CrowdPhot.PSF: CircularMoffatPSF
-
-julia> CircularMoffatPSF(x=1.0, y=2.0, α=3.0, β=2.5,
-           flux=4.0, bkg=5.0) isa CircularMoffatPSF{Float64}
-true
-```
-"""
-Base.@kwdef struct CircularMoffatPSF{T} <: AbstractPSFModel{T}
-    x::T
-    y::T
-    α::T
-    β::T
-    flux::T
-    bkg::T
-
-    function CircularMoffatPSF(x, y, α, β, flux, bkg)
-        T = promote_type(typeof(x), typeof(y), typeof(α), typeof(β), typeof(flux), typeof(bkg))
-        T = T <: Integer ? Float64 : T
-        return new{T}(T(x), T(y), T(α), T(β), T(flux), T(bkg))
-    end
-end
-amplitude(model::CircularMoffatPSF{T}) where {T} = model.flux * (model.β - 1) / (π * model.α^2)
-peak(model::CircularMoffatPSF) = amplitude(model) + model.bkg
-effective_area(model::CircularMoffatPSF{T}) where {T} = T(π) * model.α^2 * (2 * model.β - 1) / (model.β - 1)^2
-function fwhm(model::CircularMoffatPSF{T}) where {T}
-    _f = 2 * model.α * sqrt(exp2(1 / model.β) - 1)
-    return (_f, _f)
-end
-function evaluate(model::CircularMoffatPSF{T}, px, py) where {T}
-    r2 = (px - model.x)^2 + (py - model.y)^2
-    amp = model.flux * (model.β - 1) / (π * model.α^2)
-    return muladd(amp, (1 + r2 / model.α^2)^(-model.β), model.bkg)
-end
-# using ForwardDiff: gradient
-# using CrowdPhot.PSF: CircularMoffatPSF, evaluate_fg, evaluate
-# using ConstructionBase: getproperties
-# t = CircularMoffatPSF(x=0.0, y=0.0, α=5.0, β=3.0, flux=50.0, bkg=10.0)
-# _, g = evaluate_fg(t, 1, 2)
-# gradient(x->evaluate(CircularMoffatPSF(x...), 1, 2), collect(getproperties(t))) ≈ collect(g)
-function evaluate_fg(model::CircularMoffatPSF{T}, px, py) where {T}
-    α, β = model.α, model.β
-    α² = α^2
-    dx = px - model.x
-    dy = py - model.y
-    r2 = dx^2 + dy^2
-    u = 1 + r2 / α²
-    profile = u^(-β)
-    norm = T(π) * α² / (β - 1)
-    amp = model.flux / norm
-    Ag = amp * profile
-    f = muladd(amp, profile, model.bkg)
-
-    df_dx = 2 * Ag * β * dx / (α² * u)
-    df_dy = 2 * Ag * β * dy / (α² * u)
-    df_dα = Ag * (-2 / α + 2 * β * r2 / (α^3 * u))
-    df_dβ = Ag * (1 / (β - 1) - log(u))
-    df_dflux = profile / norm
-    df_dbkg = one(T)
-    return f, SA[df_dx, df_dy, df_dα, df_dβ, df_dflux, df_dbkg]
-end
-
-@doc raw"""
-    MoffatPSF(x, y, x_α, y_α, theta, β, flux, bkg) -> MoffatPSF{T}
-
-General asymmetric Moffat PSF with centroid `(x, y)`, scale lengths `x_α`
-and `y_α` along the rotated axes, rotation angle `theta` in degrees
-counter-clockwise from the x-axis, wing parameter `β`, total `flux`, and
-background `bkg`.
-
-The model is evaluated by sampling the Moffat PSF
-at the given position and adding the background:
-
-```math
-I(x, y) =
-F\,\frac{\beta - 1}{\pi\,\alpha_x\,\alpha_y}
-\left(
-1 + \frac{u^2}{\alpha_x^2} + \frac{v^2}{\alpha_y^2}
-\right)^{-\beta}
-+ B,
-```
-
-where
-
-```math
-u = \cos\theta\,(x-x_0) + \sin\theta\,(y-y_0),
-\qquad
-v = -\sin\theta\,(x-x_0) + \cos\theta\,(y-y_0).
-```
-
-# Examples
-```jldoctest
-julia> using CrowdPhot.PSF: MoffatPSF
-
-julia> MoffatPSF(x=1.0, y=2.0, x_α=3.0, y_α=4.0, theta=35.0,
-           β=2.5, flux=4.0, bkg=5.0) isa MoffatPSF{Float64}
-true
-```
-"""
-Base.@kwdef struct MoffatPSF{T} <: AbstractPSFModel{T}
-    x::T
-    y::T
-    x_α::T
-    y_α::T
-    theta::T
-    β::T
-    flux::T
-    bkg::T
-
-    function MoffatPSF(x, y, x_α, y_α, theta, β, flux, bkg)
-        T = promote_type(typeof(x), typeof(y), typeof(x_α), typeof(y_α), typeof(theta), typeof(β), typeof(flux), typeof(bkg))
-        T = T <: Integer ? Float64 : T
-        return new{T}(T(x), T(y), T(x_α), T(y_α), T(theta), T(β), T(flux), T(bkg))
-    end
-end
-amplitude(model::MoffatPSF) = model.flux * (model.β - 1) / (π * model.x_α * model.y_α)
-peak(model::MoffatPSF) = amplitude(model) + model.bkg
-effective_area(model::MoffatPSF) = π * model.x_α * model.y_α * (2 * model.β - 1) / (model.β - 1)^2
-function fwhm(model::MoffatPSF)
-    f = 2 * sqrt(exp2(1 / model.β) - 1)
-    return (model.x_α * f, model.y_α * f)
-end
-function evaluate(model::MoffatPSF{T}, px, py) where {T}
-    θ = deg2rad(model.theta)
-    dx = px - model.x
-    dy = py - model.y
-    sn, cs = sincos(θ)
-    u = cs * dx + sn * dy
-    v = -sn * dx + cs * dy
-    ax = model.x_α
-    ay = model.y_α
-    q = u^2 / ax^2 + v^2 / ay^2
-    amp = model.flux * (model.β - 1) / (T(π) * ax * ay)
-    return muladd(amp, (1 + q)^(-model.β), model.bkg)
-end
-# using ForwardDiff: gradient
-# using CrowdPhot.PSF: MoffatPSF, evaluate_fg, evaluate
-# using ConstructionBase: getproperties
-# t = MoffatPSF(x=1.0, y=2.0, x_α=3.0, y_α=4.0, theta=35.0, β=2.5, flux=6.0, bkg=7.0)
-# _, g = evaluate_fg(t, -1, 1)
-# gradient(x->evaluate(MoffatPSF(x...), -1, 1), collect(getproperties(t))) ≈ collect(g)
-function evaluate_fg(model::MoffatPSF{T}, px, py) where {T}
-    d = deg2rad(one(T))
-    dx = px - model.x
-    dy = py - model.y
-    ax, ay, β = model.x_α, model.y_α, model.β
-    ax² = ax^2
-    ay² = ay^2
-    θ = deg2rad(model.theta)
-    sn, cs = sincos(θ)
-    u = cs * dx + sn * dy
-    v = -sn * dx + cs * dy
-    q = u^2 / ax² + v^2 / ay²
-    h = 1 + q
-    profile = h^(-β)
-    norm = π * ax * ay / (β - 1)
-    amp = model.flux / norm
-    Ag = amp * profile
-    f = muladd(amp, profile, model.bkg)
-
-    D = 1 / ax² - 1 / ay²
-    Qx = -2 * (cs * u / ax² - sn * v / ay²)
-    Qy = -2 * (sn * u / ax² + cs * v / ay²)
-    Qax = -2 * u^2 / ax^3
-    Qay = -2 * v^2 / ay^3
-    Qtheta = d * 2 * u * v * D
-    scale = -β / h
-    df_dx = Ag * scale * Qx
-    df_dy = Ag * scale * Qy
-    df_dax = Ag * (-1 / ax + scale * Qax)
-    df_day = Ag * (-1 / ay + scale * Qay)
-    df_dtheta = Ag * scale * Qtheta
-    df_dβ = Ag * (1 / (β - 1) - log(h))
-    df_dflux = profile / norm
-    df_dbkg = one(T)
-    G = SA[df_dx, df_dy, df_dax, df_day, df_dtheta, df_dβ, df_dflux, df_dbkg]
-    return f, G
 end

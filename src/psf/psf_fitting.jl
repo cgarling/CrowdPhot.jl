@@ -75,7 +75,7 @@ is accepted and ``\\lambda`` is decreased; otherwise it is rejected and
 # Iteratively Reweighted Least Squares
 
 Pass `reweight` as a `LossFunctions.SupervisedLoss` (e.g. `LossFunctions.HuberLoss()`,
-`CrowdPhot.TukeyLoss()`) to enable iteratively reweighted least squares (IRLS). After
+[`CrowdPhot.TukeyLoss()`](@ref TukeyLoss)) to enable iteratively reweighted least squares (IRLS). After
 each accepted LM step, the residuals are used to recompute pixel weights via
 ``w_i^{\\text{final}} = w_i^{\\text{base}} \\cdot w(r_i/\\sigma)`` where
 ``w(r) = \\psi(r)/r`` is derived from the loss function's influence function
@@ -84,32 +84,32 @@ rejection — useful for cosmic rays, bad pixels, and satellite trails in
 astronomical images.
 
 The scale ``\\sigma`` is estimated by `scale_estimator`. If not provided,
-it defaults to `FixedScale` inferred from `inv_var` if supplied,
-otherwise `MADScale()` is used. Available scale estimators:
-- `MADScale()` — median absolute deviation (robust, default without `inv_var`)
-- `FixedScale(σ)` — fixed user-provided scale
-- `MScale(; δ=0.5)` — iterative M-scale (most robust, highest cost)
+it defaults to [`FixedScale`](@ref) inferred from `inv_var` if supplied,
+otherwise [`MADScale()`](@ref MADScale) is used. Available scale estimators:
+- [`MADScale()`](@ref MADScale) — median absolute deviation (robust, default without `inv_var`)
+- [`FixedScale(σ)`](@ref FixedScale) — fixed user-provided scale
+- [`MScale(; δ=0.5)`](@ref MScale) — iterative M-scale (most robust, highest cost)
 
 Recommended loss functions for IRLS:
 - `LossFunctions.HuberLoss(c)` — soft downweighting of outliers, suitable for mildly
   contaminated data or crowded-field photometry
-- `CrowdPhot.TukeyLoss(; c=4.685)` — complete rejection of extreme outliers, ideal
-  for cosmic rays and bad pixels in space-based imaging
+- [`CrowdPhot.TukeyLoss(; c=4.685)`](@ref TukeyLoss) — complete rejection of extreme
+  outliers, ideal for cosmic rays and bad pixels in space-based imaging
 
 # Covariance Estimation
 The covariance of the fitted parameters is estimated from the Gauss-Newton Hessian
 approximation to the Hessian at the solution. For known good input weights `inv_var`,
 the covariance is simply the inverse of this Hessian approximation. Use 
-`covariance_estimator = KnownWeightsCovarianceEstimator()` for this behavior.
+[`covariance_estimator = KnownWeightsCovarianceEstimator()`](@ref KnownWeightsCovarianceEstimator) for this behavior.
 However, when IRLS reweighting is used and the weights are estimated from the data,
 the covariance is inflated by the reduced cost per degree of freedom to account for
-uncertainty in the weights. In this case, use `ReweightedCovarianceEstimator`.
+uncertainty in the weights. In this case, use [`ReweightedCovarianceEstimator`](@ref ReweightedCovarianceEstimator).
 
 # Damping Strategies
-- `Marquardt`: diagonal entries are scaled by `max(A[i, i], min_diagonal)` to
+- [`MarquardtDamping`](@ref CrowdPhot.MarquardtDamping): diagonal entries are scaled by `max(A[i, i], min_diagonal)` to
   prevent small curvature directions from being under-damped
-- `Levenberg`: uniform damping with no scaling
-- `NoDamping`: no damping; equivalent to Gauss-Newton (not recommended)
+- [`LevenbergDamping`](@ref CrowdPhot.LevenbergDamping): uniform damping with no scaling
+- [`NoDamping`](@ref CrowdPhot.NoDamping): no damping; equivalent to Gauss-Newton (not recommended)
 
 # Keyword arguments
 
@@ -118,17 +118,22 @@ uncertainty in the weights. In this case, use `ReweightedCovarianceEstimator`.
 - `reweight`: a `LossFunctions.SupervisedLoss` for IRLS reweighting,
   or `nothing` (default) for standard L2 fitting
 - `scale_estimator::AbstractScaleEstimator`: scale estimator for IRLS;
-  defaults to `FixedScale` (from `inv_var`) or `MADScale()` (see above)
+  defaults to [`FixedScale`](@ref) (from `inv_var`) or [`MADScale`](@ref) (see above)
 - `weight_reset_tol`: reset `λ` to `λ_init` after an IRLS weight update only
   when the symmetric relative L2 norm of the weight change is at least this
   threshold (default `0.1`)
-- `covariance_estimator::AbstractCovarianceEstimator`: method for estimating the covariance matrix of the fitted parameters; defaults to `ReweightedCovarianceEstimator` when IRLS is used and `KnownWeightsCovarianceEstimator` otherwise
+- `covariance_estimator::AbstractCovarianceEstimator`: method for estimating
+  the covariance matrix of the fitted parameters; defaults to
+  [`ReweightedCovarianceEstimator`](@ref) when IRLS is used and
+  [`KnownWeightsCovarianceEstimator`](@ref) otherwise
 - `λ_init`: initial damping parameter (default `1e-4`)
 - `λ_up`: factor by which `λ` is multiplied on rejection (default `10`)
 - `λ_down`: factor by which `λ` is divided on acceptance (default `10`)
 - `λ_min`, `λ_max`: lower/upper bounds on the damping parameter
 - `damping::AbstractLMDamping`: specifies the damping strategy
-  (`MarquardtDamping`, `LevenbergDamping`, or `NoDamping`)
+  ([`MarquardtDamping`](@ref CrowdPhot.MarquardtDamping),
+  [`LevenbergDamping`](@ref CrowdPhot.LevenbergDamping), or
+  [`NoDamping`](@ref CrowdPhot.NoDamping))
 - `max_iter`: maximum number of LM iterations (default `200`)
 - `x_tol`: step-norm convergence criterion:
   ``\\|\\delta\\| \\le x\\_tol\\cdot(\\|x\\|+x\\_tol)`` (default `1e-8`)

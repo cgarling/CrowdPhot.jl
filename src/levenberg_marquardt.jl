@@ -98,7 +98,7 @@ function damp!(A, damping::NoDamping, λ) end # No-op
 abstract type AbstractScaleEstimator end
 
 """
-    MADScale()
+    MADScale()::MADScale
 
 Scale estimator using the median absolute deviation:
 ``σ̂ = 1.4826 · median(|rᵢ − median(rᵢ)|)``
@@ -108,14 +108,16 @@ The factor 1.4826 makes the estimate consistent for normally distributed data.
 # Examples
 
 ```jldoctest
+julia> using StableRNGs: StableRNG
+
 julia> using CrowdPhot.PSF: MADScale, estimate_scale
 
-julia> r = randn(10_000);
+julia> r = randn(StableRNG(1234), 10_000);
 
 julia> isapprox(estimate_scale(MADScale(), r), 1.0; atol=0.05)
 true
 
-julia> r2 = [randn(9_000); 100.0 * ones(1_000)]  # 10% outliers
+julia> r2 = [randn(StableRNG(1234), 9_000); 100.0 * ones(1_000)];  # 10% outliers
 
 julia> isapprox(estimate_scale(MADScale(), r2), 1.15; atol=0.05)
 true
@@ -129,7 +131,7 @@ function estimate_scale(::MADScale, r::AbstractArray)
 end
 
 """
-    FixedScale(σ::Real)
+    FixedScale(σ::Real)::FixedScale
 
 Scale estimator that returns a fixed, user-provided scale value.
 
@@ -148,7 +150,7 @@ end
 estimate_scale(est::FixedScale, ::AbstractArray) = est.σ
 
 """
-    MScale(; δ=0.5, tol=1e-6, max_iter=30)
+    MScale(; δ=0.5, tol=1e-6, max_iter=30)::MScale
 
 Iterative M-scale estimator solving ``(1/n) ∑ χ(rᵢ/σ) = δ`` where
 ``χ(r) = r²`` (Huber's proposal 2). The breakdown point is controlled
@@ -213,7 +215,7 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    TukeyLoss(; c=4.685)
+    TukeyLoss(; c=4.685)::TukeyLoss
 
 Tukey's bisquare (biweight) loss function for robust estimation.
 
@@ -312,7 +314,7 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    weight(loss::LossFunctions.SupervisedLoss, r::Real) → Real
+    weight(loss::LossFunctions.SupervisedLoss, r::Real)::Real
 
 Compute the IRLS weight ``w(r) = ψ(r) / (r · ψ'(0))`` where ``ψ`` is the
 influence function (first derivative) of `loss`.  The normalization by
@@ -382,7 +384,7 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    LMProblem(x0, nobs, accum!, base_weights=nothing)
+    LMProblem(x0, nobs, accum!, base_weights=nothing)::LMProblem
 
 Reusable Levenberg-Marquardt problem definition. `accum!` must stream the
 observations for a parameter vector `x`, fill the normal equations `A = J'WJ`
@@ -412,7 +414,7 @@ function LMProblem(x0::AbstractVector{T}, nobs::Integer, accum!::F, base_weights
 end
 
 """
-    lm_irls(problem::LMProblem; kwargs...) -> LMResult
+    lm_irls(problem::LMProblem; kwargs...)::LMResult
 
 Run Levenberg-Marquardt with optional IRLS reweighting on a generic
 normal-equation problem. The core optimizer is agnostic to images and PSF model

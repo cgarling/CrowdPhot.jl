@@ -28,14 +28,12 @@ GaussianPRF
 Moffat profiles have heavier wings than Gaussians, often providing a better
 match to ground-based imaging.
 
-### Circular Moffat PSF
-
 ```@docs
 CircularMoffatPSF
 MoffatPSF
 ```
 
-### Airy PSF
+## Airy Model
 
 ```@docs
 AiryPSF
