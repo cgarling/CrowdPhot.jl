@@ -1,8 +1,11 @@
 using CrowdPhot: simulate_image
 using CrowdPhot.PSF: GaussianPSF, CircularGaussianPSF, CircularGaussianPRF, evaluate, evaluate_fg, fit_star, fit_psf, TukeyLoss, bicubic_interpolate, fill_grid_holes!, ImagePSF
+using CrowdPhot.Background
+import BackgroundMeshes as BM
 using BenchmarkTools
 import LossFunctions
 using PrettyTables: pretty_table
+using StableRNGs: StableRNG
 
 function show_benchmarks(results)
     # Collect results
@@ -68,6 +71,13 @@ for n in (50, 100)
             end) evals=1
 end
 
+BKGSUITE = BenchmarkGroup()
+for s in (30, 500, 2000)
+    img = make_gaussians_image(s, (s, s); rng = StableRNG(7), background = 200.0, read_noise = 5.0, gain = 1.5)
+    BKGSUITE["MMMBackground, size=($s, $s)"] = @benchmarkable estimate_background($img; estimator = $MMMBackground(), rms_estimator = $StdRMS())
+    BKGSUITE["MMMBackground, BackgroundMeshes.jl, size=($s, $s)"] = @benchmarkable BM.estimate_background($img; location = $BM.MMMBackground(), rms = $BM.StdRMS())
+end
+
 # If not on CI, we'll show a nice table
 if get(ENV, "CI", "false") == "false"
     # Run the benchmarks
@@ -78,4 +88,8 @@ if get(ENV, "CI", "false") == "false"
     show_benchmarks(results["fitting"])
     println("⎯⎯⎯ Empirical Suite ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯")
     show_benchmarks(results["empirical"])
+
+    bkg_results = run(BKGSUITE, verbose=true)
+    println("⎯⎯⎯ Background Estimation Suite ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯")
+    show_benchmarks(bkg_results)
 end
