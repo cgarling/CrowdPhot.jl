@@ -4,7 +4,7 @@
 
 module Background
 
-using ..CrowdPhot: mad, mad!
+using ..CrowdPhot: mad
 import Random
 using Statistics: mean, median, median!, std
 
@@ -40,12 +40,6 @@ abstract type AbstractBackgroundRMSEstimator end
 ###############################################################################
 # Internal utilities
 
-# Median absolute deviation (unnormalized)
-@inline function _mad(data::AbstractVector)
-    m = median(data)
-    return median(abs.(data .- m))
-end
-
 # Iterative sigma clipping: return a new vector containing only the
 # unclipped values.  The result is always a fresh copy.
 function _sigma_clip(data::AbstractVector, σ_low::Real, σ_high::Real = σ_low;
@@ -68,7 +62,7 @@ end
 function _biweight_location(data::AbstractVector, c::Real = 6.0)
     T  = float(eltype(data))
     M  = median(data)
-    S  = _mad(data)
+    S  = mad(data; center=M, normalize=false)
     S == 0 && return T(M)
     u  = @. (data - M) / (c * S)
     w  = [abs(ui) < 1 ? (1 - ui^2)^2 : zero(T) for ui in u]
@@ -83,7 +77,7 @@ function _biweight_scale(data::AbstractVector, c::Real = 9.0)
     n   = length(data)
     n == 0 && return zero(T)
     M   = median(data)
-    S   = _mad(data)
+    S   = mad(data; center=M, normalize=false)
     S == 0 && return zero(T)
     u   = @. (data - M) / (c * S)
     g   = @. abs(u) < 1
@@ -272,7 +266,7 @@ julia> MADStdRMS()(fill(1.0, 10))
 ```
 """
 struct MADStdRMS <: AbstractBackgroundRMSEstimator end
-(::MADStdRMS)(data::AbstractVector) = 1.4826 * _mad(data)
+(::MADStdRMS)(data::AbstractVector) = mad(data; normalize=true)
 
 """
     BiweightScaleRMS(; c=9.0)
