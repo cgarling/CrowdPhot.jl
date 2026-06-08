@@ -4,13 +4,13 @@
 
 module Background
 
-using ..CrowdPhot: mad, mad!, mean_and_std
+using ..CrowdPhot: mad, mad!
 import Random
 using Statistics: mean, median, median!, std
 
 export AbstractBackgroundEstimator, AbstractBackgroundRMSEstimator
 export MeanBackground, MedianBackground, SExtractorBackground,
-       MMMBackground, BiweightLocationBackground
+    MMMBackground, BiweightLocationBackground
 export StdRMS, MADStdRMS, BiweightScaleRMS
 export Background2D, estimate_background, sigma_clip, sigma_clip!
 
@@ -101,17 +101,39 @@ end
 ###############################################################################
 # Sigma clipping
 
-# Iterative sigma clipping on an array-shaped working copy. Rejected values are
-# compacted into an active prefix and the remaining slots are marked NaN.
-function sigma_clip(data::AbstractArray, σ_low::Real, σ_high::Real = σ_low;
-                    maxiters::Integer = 10)
+"""
+    sigma_clip(data, sigma; maxiters=10)
+    sigma_clip(data, sigma_low, sigma_high; maxiters=10)
+
+Return a mutable floating-point copy of `data` after iterative sigma clipping.
+Rejected and non-finite samples are compacted out of the active prefix and
+marked as `NaN` in the returned array.
+
+Use [`sigma_clip!`](@ref) when the number of retained samples is needed.
+"""
+function sigma_clip(
+        data::AbstractArray, σ_low::Real, σ_high::Real = σ_low;
+        maxiters::Integer = 10
+    )
     work = _float_copy(data)
     sigma_clip!(work, σ_low, σ_high; maxiters)
     return work
 end
 
-function sigma_clip!(data::AbstractArray{T}, σ_low::Real, σ_high::Real = σ_low;
-                     maxiters::Integer = 10) where {T <: AbstractFloat}
+"""
+    sigma_clip!(data, sigma; maxiters=10)
+    sigma_clip!(data, sigma_low, sigma_high; maxiters=10)
+
+Iteratively sigma-clip `data` in place and return the number of retained
+finite samples.
+
+Rejected samples are removed from the active prefix of `vec(data)` and the
+remaining inactive slots are filled with `NaN`.
+"""
+function sigma_clip!(
+        data::AbstractArray{T}, σ_low::Real, σ_high::Real = σ_low;
+        maxiters::Integer = 10
+    ) where {T <: AbstractFloat}
     flat = vec(data)
     n = _compact_finite!(data)
     for _ in 1:maxiters
@@ -141,14 +163,14 @@ function sigma_clip!(data::AbstractArray{T}, σ_low::Real, σ_high::Real = σ_lo
 end
 
 # Biweight location (Tukey 1977; Beers, Flynn & Gebhardt 1990).
-function _biweight_location(data::AbstractArray, c::Real = 6.0)
-    T  = float(eltype(data))
-    M  = median(data)
-    S  = mad(data; center=M, normalize=false)
-    S == 0 && return T(M)
-    inv_cS = inv(T(c * S))
-    sw = zero(T)
-    sdw = zero(T)
+function _biweight_location(data::AbstractArray{T}, c::Real = 6.0) where {T}
+    FT = float(T)
+    M = median(data)
+    S = mad(data; center = M, normalize = false)
+    S == 0 && return FT(M)
+    inv_cS = inv(FT(c * S))
+    sw = zero(FT)
+    sdw = zero(FT)
     @inbounds for d in data
         # Accumulate Tukey biweight terms without materializing weights.
         u = (d - M) * inv_cS
@@ -158,21 +180,21 @@ function _biweight_location(data::AbstractArray, c::Real = 6.0)
             sdw += (d - M) * w
         end
     end
-    sw == 0 && return T(M)
-    return T(M) + sdw / sw
+    sw == 0 && return FT(M)
+    return FT(M) + sdw / sw
 end
 
 # Biweight scale (square-root of biweight midvariance; Beers et al. 1990).
-function _biweight_scale(data::AbstractArray, c::Real = 9.0)
-    T   = float(eltype(data))
-    n   = length(data)
-    n == 0 && return zero(T)
-    M   = median(data)
-    S   = mad(data; center=M, normalize=false)
-    S == 0 && return zero(T)
-    inv_cS = inv(T(c * S))
-    num = zero(T)
-    den_sum = zero(T)
+function _biweight_scale(data::AbstractArray{T}, c::Real = 9.0) where {T}
+    FT = float(T)
+    n = length(data)
+    n == 0 && return zero(FT)
+    M = median(data)
+    S = mad(data; center = M, normalize = false)
+    S == 0 && return zero(FT)
+    inv_cS = inv(FT(c * S))
+    num = zero(FT)
+    den_sum = zero(FT)
     @inbounds for d in data
         # Accumulate accepted residual terms without boolean or u arrays.
         u = (d - M) * inv_cS
@@ -183,7 +205,7 @@ function _biweight_scale(data::AbstractArray, c::Real = 9.0)
         end
     end
     den = abs(den_sum)^2
-    den == 0 && return zero(T)
+    den == 0 && return zero(FT)
     return sqrt(n * num / den)
 end
 
@@ -250,7 +272,7 @@ struct SExtractorBackground <: AbstractBackgroundEstimator end
 
 function (::SExtractorBackground)(data::AbstractArray; dims = :)
     function validate_se(background, m, med, s)
-        ifelse(s ≈ 0, m, ifelse(abs(m - med) / s > 0.3, med, background))
+        return ifelse(s ≈ 0, m, ifelse(abs(m - med) / s > 0.3, med, background))
     end
     med = median(data; dims)
     m = mean(data; dims)
@@ -388,7 +410,6 @@ julia> BiweightScaleRMS()(fill(2.0, 10))
 Base.@kwdef struct BiweightScaleRMS{T} <: AbstractBackgroundRMSEstimator
     c::T = 9
     function BiweightScaleRMS(c)
-        # Convert integer tuning constants to their floating storage type.
         T = float(typeof(c))
         return new{T}(T(c))
     end
@@ -405,7 +426,7 @@ _location_estimate!(::MedianBackground, data::AbstractArray) = median!(data)
 function _location_estimate!(::SExtractorBackground, data::AbstractArray)
     # Measure moments before median! permutes the working copy.
     m = mean(data)
-    s = std(data; mean=m, corrected = false)
+    s = std(data; mean = m, corrected = false)
     med = median!(data)
     s ≈ 0                  && return m
     abs(m - med) / s > 0.3 && return med
@@ -424,7 +445,7 @@ _location_estimate!(alg::BiweightLocationBackground, data::AbstractArray) =
 _location_estimate!(estimator, data::AbstractArray) = estimator(data)
 
 _rms_estimate!(::StdRMS, data::AbstractArray) = std(data; corrected = false)
-_rms_estimate!(::MADStdRMS, data::AbstractArray) = mad!(data; normalize=true)
+_rms_estimate!(::MADStdRMS, data::AbstractArray) = mad!(data; normalize = true)
 _rms_estimate!(alg::BiweightScaleRMS, data::AbstractArray) = _biweight_scale(data, alg.c)
 _rms_estimate!(rms_estimator, data::AbstractArray) = rms_estimator(data)
 
@@ -487,28 +508,34 @@ function estimate_background(
     )
     work = _working_copy(image, mask)
     n_valid = isnothing(sigma) ? _compact_finite!(work) : sigma_clip!(work, sigma; maxiters)
-    n_valid == 0 && throw(ArgumentError(isnothing(sigma) ?
-        "no finite pixels available for background estimation" :
-        "all pixels were removed by sigma clipping"))
+    n_valid == 0 && throw(
+        ArgumentError(
+            isnothing(sigma) ?
+                "no finite pixels available for background estimation" :
+                "all pixels were removed by sigma clipping"
+        )
+    )
     return _estimate_pair!(estimator, rms_estimator, work, n_valid)
 end
 
 ###############################################################################
 # Bicubic Catmull-Rom zoom interpolator (no external dependencies)
 
-@inline function _catmull_rom(p0::T, p1::T, p2::T, p3::T, t::T) where {T <: AbstractFloat}
-    return 0.5 * ((2 * p1) +
-                  (-p0 + p2) * t +
-                  (2 * p0 - 5 * p1 + 4 * p2 - p3) * t^2 +
-                  (-p0 + 3 * p1 - 3 * p2 + p3) * t^3)
+@inline function _catmull_rom(p0, p1, p2, p3, t)
+    return (
+        (2 * p1) +
+            (-p0 + p2) * t +
+            (2 * p0 - 5 * p1 + 4 * p2 - p3) * t^2 +
+            (-p0 + 3 * p1 - 3 * p2 + p3) * t^3
+    ) / 2
 end
 
 # Map output pixel k (1-indexed) in a dimension of length K_out to the
 # corresponding mesh coordinate (1-indexed) in a mesh of length K_mesh.
-@inline function _zoom_coord(k::Int, K_out::Int, K_mesh::Int)
-    K_mesh == 1 && return 1.0
-    K_out  == 1 && return 1.0
-    return 1.0 + (k - 1) * (K_mesh - 1) / (K_out - 1)
+@inline function _zoom_coord(T::Type, k::Int, K_out::Int, K_mesh::Int)
+    K_mesh == 1 && return one(T)
+    K_out == 1 && return one(T)
+    return one(T) + (k - 1) * (K_mesh - 1) / (K_out - 1)
 end
 
 @inline _clamp_idx(i::Int, n::Int) = max(1, min(n, i))
@@ -519,28 +546,30 @@ end
 Upsample `mesh` (size `M × N`) to a `H × W` array using bicubic
 Catmull-Rom interpolation.  Corner samples are preserved exactly.
 """
-function _bicubic_zoom(mesh::AbstractMatrix{T}, H::Integer, W::Integer,
-                       coord_H::Integer = H, coord_W::Integer = W) where {T <: Real}
-    M, N  = size(mesh)
-    F     = float(T)
-    out   = Matrix{F}(undef, H, W)
+function _bicubic_zoom(
+        mesh::AbstractMatrix{T}, H::Integer, W::Integer,
+        coord_H::Integer = H, coord_W::Integer = W
+    ) where {T <: Real}
+    M, N = size(mesh)
+    F = float(T)
+    out = Matrix{F}(undef, H, W)
     fmesh = F === T ? mesh : F.(mesh)
     for j in 1:W
-        yf   = _zoom_coord(j, coord_W, N)
-        jm   = floor(Int, yf)
-        ty   = F(yf - jm)
-        jm1  = _clamp_idx(jm - 1, N)
-        jm2  = _clamp_idx(jm,     N)
-        jm3  = _clamp_idx(jm + 1, N)
-        jm4  = _clamp_idx(jm + 2, N)
+        yf = _zoom_coord(F, j, coord_W, N)
+        jm = floor(Int, yf)
+        ty = F(yf - jm)
+        jm1 = _clamp_idx(jm - 1, N)
+        jm2 = _clamp_idx(jm, N)
+        jm3 = _clamp_idx(jm + 1, N)
+        jm4 = _clamp_idx(jm + 2, N)
         for i in 1:H
-            xf   = _zoom_coord(i, coord_H, M)
-            im_  = floor(Int, xf)
-            tx   = F(xf - im_)
-            r1   = _clamp_idx(im_ - 1, M)
-            r2   = _clamp_idx(im_,     M)
-            r3   = _clamp_idx(im_ + 1, M)
-            r4   = _clamp_idx(im_ + 2, M)
+            xf = _zoom_coord(F, i, coord_H, M)
+            im_ = floor(Int, xf)
+            tx = F(xf - im_)
+            r1 = _clamp_idx(im_ - 1, M)
+            r2 = _clamp_idx(im_, M)
+            r3 = _clamp_idx(im_ + 1, M)
+            r4 = _clamp_idx(im_ + 2, M)
             # Interpolate along the column axis for each of the four rows.
             q1 = _catmull_rom(fmesh[r1, jm1], fmesh[r1, jm2], fmesh[r1, jm3], fmesh[r1, jm4], ty)
             q2 = _catmull_rom(fmesh[r2, jm1], fmesh[r2, jm2], fmesh[r2, jm3], fmesh[r2, jm4], ty)
@@ -556,8 +585,10 @@ end
 # 2D median filter (no ImageFiltering dependency)
 
 # In-place 2-D median filter with boundary replication.
-function _median_filter2d!(dst::Matrix{T}, src::Matrix{T},
-                            fh::Int, fw::Int) where {T <: AbstractFloat}
+function _median_filter2d!(
+        dst::Matrix{T}, src::Matrix{T},
+        fh::Int, fw::Int
+    ) where {T <: AbstractFloat}
     M, N = size(src)
     hh, hw = fh ÷ 2, fw ÷ 2
     buf = Vector{T}(undef, fh * fw)
@@ -582,7 +613,7 @@ end
 
 function _fill_nans!(mesh::Matrix{T}) where {T <: AbstractFloat}
     any(isnan, mesh) || return mesh
-    M, N    = size(mesh)
+    M, N = size(mesh)
     changed = true
     while changed
         changed = false
@@ -598,7 +629,7 @@ function _fill_nans!(mesh::Matrix{T}) where {T <: AbstractFloat}
             end
             if k > 0
                 mesh[i, j] = s / k
-                changed     = true
+                changed = true
             end
         end
     end
@@ -638,11 +669,11 @@ Fields
 
 See the constructor [`Background2D(image, box_size; …)`](@ref) for details.
 """
-struct Background2D{T <: AbstractFloat}
-    background::Matrix{T}
-    background_rms::Matrix{T}
-    mesh_background::Matrix{T}
-    mesh_background_rms::Matrix{T}
+struct Background2D{T <: AbstractFloat, M <: AbstractMatrix{T}}
+    background::M
+    background_rms::M
+    mesh_background::M
+    mesh_background_rms::M
     box_size::Tuple{Int, Int}
 end
 
@@ -712,9 +743,9 @@ function Background2D(
         maxiters::Integer = 10,
         edge_method::Symbol = :pad,
     )
-    H, W    = size(image)
-    bh, bw  = _to_pair(box_size)
-    fh, fw  = _to_pair(filter_size)
+    H, W = size(image)
+    bh, bw = _to_pair(box_size)
+    fh, fw = _to_pair(filter_size)
     (isone(fh) || isodd(fh)) && (isone(fw) || isodd(fw)) ||
         throw(ArgumentError("filter_size must be odd; got ($fh, $fw)"))
     0 ≤ exclude_percentile ≤ 100 ||
@@ -763,8 +794,12 @@ function Background2D(
     end
 
     all(isnan, mesh_bkg) &&
-        throw(ArgumentError("all mesh boxes were excluded; try larger box_size, " *
-                            "smaller exclude_percentile, or looser sigma clipping"))
+        throw(
+        ArgumentError(
+            "all mesh boxes were excluded; try larger box_size, " *
+                "smaller exclude_percentile, or looser sigma clipping"
+        )
+    )
 
     # Fill excluded (NaN) mesh cells by iterative nearest-neighbour propagation.
     _fill_nans!(mesh_bkg)
@@ -791,14 +826,14 @@ _to_pair(x::Integer) = (Int(x), Int(x))
 _to_pair(x::NTuple{2, <:Integer}) = (Int(x[1]), Int(x[2]))
 
 function _tile_image(::Val{:pad}, image, bh, bw)
-    H, W  = size(image)
+    H, W = size(image)
     nextra_r = H % bh
     nextra_c = W % bw
     pad_r = nextra_r == 0 ? 0 : bh - nextra_r
     pad_c = nextra_c == 0 ? 0 : bw - nextra_c
     pad_H = H + pad_r
     pad_W = W + pad_c
-    T     = float(eltype(image))
+    T = float(eltype(image))
     padded = fill(T(NaN), pad_H, pad_W)
     padded[1:H, 1:W] .= image
     nmesh_rows = pad_H ÷ bh
@@ -807,11 +842,11 @@ function _tile_image(::Val{:pad}, image, bh, bw)
 end
 
 function _tile_image(::Val{:crop}, image, bh, bw)
-    H, W  = size(image)
+    H, W = size(image)
     nmesh_rows = H ÷ bh
     nmesh_cols = W ÷ bw
-    T     = float(eltype(image))
-    cropped = Matrix{T}(@view image[1:nmesh_rows * bh, 1:nmesh_cols * bw])
+    T = float(eltype(image))
+    cropped = Matrix{T}(@view image[1:(nmesh_rows * bh), 1:(nmesh_cols * bw)])
     return cropped, nmesh_rows, nmesh_cols
 end
 
