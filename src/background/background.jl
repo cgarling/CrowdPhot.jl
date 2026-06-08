@@ -58,40 +58,30 @@ function _compact_finite!(data::AbstractArray{T}) where {T <: AbstractFloat}
             flat[n] = v
         end
     end
-    _fill_tail_nan!(flat, n)
     return n
 end
 
-function _fill_tail_nan!(flat::AbstractVector{T}, n::Integer) where {T <: AbstractFloat}
-    @inbounds for i in (n + 1):length(flat)
-        # Mark inactive slots so array-shaped copies remain visibly invalid.
-        flat[i] = T(NaN)
-    end
-    return flat
-end
-
-function _mask_invalid!(work::AbstractArray{T}, mask::Nothing) where {T <: AbstractFloat}
-    @inbounds for i in eachindex(work)
-        # Convert non-finite input values into inactive slots.
-        isfinite(work[i]) || (work[i] = T(NaN))
+# Fused float-copy, non-finite rejection, and mask application in a single pass.
+function _prepare_work(image::AbstractArray{<:Real}, ::Nothing)
+    F = float(eltype(image))
+    work = similar(image, F)
+    @inbounds for i in eachindex(work, image)
+        v = image[i]
+        work[i] = isfinite(v) ? F(v) : F(NaN)
     end
     return work
 end
 
-function _mask_invalid!(work::AbstractArray{T}, mask::AbstractArray{Bool}) where {T <: AbstractFloat}
-    size(work) == size(mask) ||
+function _prepare_work(image::AbstractArray{<:Real}, mask::AbstractArray{Bool})
+    size(image) == size(mask) ||
         throw(DimensionMismatch("image and mask must have the same size"))
-    mask_work = axes(mask) == axes(work) ? mask : Base.copymutable(mask)
-    @inbounds for i in eachindex(work, mask_work)
-        # Apply user masking and non-finite rejection to the working copy.
-        (mask_work[i] || !isfinite(work[i])) && (work[i] = T(NaN))
+    F = float(eltype(image))
+    work = similar(image, F)
+    mask_work = axes(mask) == axes(image) ? mask : Base.copymutable(mask)
+    @inbounds for i in eachindex(work, image, mask_work)
+        v = image[i]
+        work[i] = (mask_work[i] || !isfinite(v)) ? F(NaN) : F(v)
     end
-    return work
-end
-
-function _working_copy(image::AbstractArray{<:Real}, mask)
-    work = _float_copy(image)
-    _mask_invalid!(work, mask)
     return work
 end
 
@@ -106,8 +96,7 @@ end
     sigma_clip(data, sigma_low, sigma_high; maxiters=10)
 
 Return a mutable floating-point copy of `data` after iterative sigma clipping.
-Rejected and non-finite samples are compacted out of the active prefix and
-marked as `NaN` in the returned array.
+Rejected and non-finite samples are compacted out of the active prefix.
 
 Use [`sigma_clip!`](@ref) when the number of retained samples is needed.
 """
@@ -115,7 +104,7 @@ function sigma_clip(
         data::AbstractArray, σ_low::Real, σ_high::Real = σ_low;
         maxiters::Integer = 10
     )
-    work = _float_copy(data)
+    work = _prepare_work(data, nothing)
     sigma_clip!(work, σ_low, σ_high; maxiters)
     return work
 end
@@ -127,8 +116,7 @@ end
 Iteratively sigma-clip `data` in place and return the number of retained
 finite samples.
 
-Rejected samples are removed from the active prefix of `vec(data)` and the
-remaining inactive slots are filled with `NaN`.
+Rejected samples are removed from the active prefix of `vec(data)`.
 """
 function sigma_clip!(
         data::AbstractArray{T}, σ_low::Real, σ_high::Real = σ_low;
@@ -158,7 +146,6 @@ function sigma_clip!(
         n_new == n && break
         n = n_new
     end
-    _fill_tail_nan!(flat, n)
     return n
 end
 
@@ -506,7 +493,7 @@ function estimate_background(
         sigma::Union{Nothing, Real} = 3.0,
         maxiters::Integer = 10,
     )
-    work = _working_copy(image, mask)
+    work = _prepare_work(image, mask)
     n_valid = isnothing(sigma) ? _compact_finite!(work) : sigma_clip!(work, sigma; maxiters)
     n_valid == 0 && throw(
         ArgumentError(
@@ -585,7 +572,7 @@ end
 
 # In-place 2-D median filter with boundary replication.
 function _median_filter2d!(
-        dst::Matrix{T}, src::Matrix{T},
+        dst::AbstractMatrix{T}, src::AbstractMatrix{T},
         fh::Int, fw::Int
     ) where {T <: AbstractFloat}
     M, N = size(src)
@@ -602,7 +589,7 @@ function _median_filter2d!(
     return dst
 end
 
-function _median_filter2d(arr::Matrix{T}, fh::Int, fw::Int) where {T <: AbstractFloat}
+function _median_filter2d(arr::AbstractMatrix{T}, fh::Int, fw::Int) where {T <: AbstractFloat}
     (fh == 1 && fw == 1) && return arr
     return _median_filter2d!(similar(arr), arr, fh, fw)
 end
@@ -610,7 +597,7 @@ end
 ###############################################################################
 # Mesh NaN filling by iterative nearest-neighbour propagation
 
-function _fill_nans!(mesh::Matrix{T}) where {T <: AbstractFloat}
+function _fill_nans!(mesh::AbstractMatrix{T}) where {T <: AbstractFloat}
     any(isnan, mesh) || return mesh
     M, N = size(mesh)
     changed = true
@@ -849,16 +836,16 @@ function _tile_image(::Val{:crop}, image, bh, bw)
     return cropped, nmesh_rows, nmesh_cols
 end
 
-function _copy_box_data!(box::Matrix{T}, image, mask::Nothing, rows, cols) where {T}
+function _copy_box_data!(box::AbstractMatrix{T}, image, mask::Nothing, rows, cols) where {T}
     @inbounds for (bj, j) in enumerate(cols), (bi, i) in enumerate(rows)
         # Preserve the box layout while marking invalid samples as inactive.
         v = image[i, j]
-        box[bi, bj] = isfinite(v) ? T(v) : T(NaN)
+        box[bi, bj] = ifelse(isfinite(v), T(v), T(NaN))
     end
     return box
 end
 
-function _copy_box_data!(box::Matrix{T}, image, mask::AbstractMatrix{Bool}, rows, cols) where {T}
+function _copy_box_data!(box::AbstractMatrix{T}, image, mask::AbstractMatrix{Bool}, rows, cols) where {T}
     @inbounds for (bj, j) in enumerate(cols), (bi, i) in enumerate(rows)
         # Check finiteness first so padded NaNs never index beyond the mask.
         v = image[i, j]
