@@ -453,23 +453,29 @@ end
         gain           = 1.5,
         sigma_psf      = 2.0,
         flux_range     = (500.0, 50_000.0),
-        border         = 10) -> Matrix{Float64}
+        border         = 10,
+        noise          = :poisson_gaussian) -> Matrix{Float64}
 
 Generate a realistic mock CCD image containing `n_stars` point sources
-with Gaussian profiles on a flat sky background.
+with Gaussian profiles on top of a background.
+
+`background` may be a scalar (for a flat sky) or a matrix the same size
+as the requested output (for a spatially varying background).  In both
+cases the values are interpreted as counts (ADU).
 
 Stars are placed uniformly at random (with a `border`-pixel exclusion zone),
 with fluxes drawn log-uniformly from `flux_range`.  The pixel model is:
 
 ```
-expected[i,j] = background + Σ_k  flux_k / (2π σ²) · exp(−r²_k / 2σ²)
+expected[i,j] = background[i,j] + Σ_k  flux_k / (2π σ²) · exp(−r²_k / 2σ²)
 ```
 
 where `r²_k = (i − x_k)² + (j − y_k)²` and `σ = sigma_psf`.
 
 Noise is applied as: shot noise on `expected * gain` electrons, then a
 Gaussian read-noise draw with standard deviation `read_noise` (in ADU).
-The returned image is in ADU (counts).
+The returned image is in ADU (counts).  Pass `noise = :none` to return
+the noiseless expected image.
 
 The same `rng` will always produce the same image, making this function
 suitable for deterministic doctests and benchmarks.
@@ -494,19 +500,26 @@ function make_gaussians_image(
         n_stars::Integer,
         image_size::Tuple{<:Integer, <:Integer} = (256, 256);
         rng::Random.AbstractRNG = Random.default_rng(),
-        background::Real = 200.0,
+        background::Union{Real, AbstractMatrix} = 200.0,
         read_noise::Real = 5.0,
         gain::Real = 1.5,
         sigma_psf::Real = 2.0,
         flux_range = (500.0, 50_000.0),
         border::Integer = 10,
+        noise = :poisson_gaussian,
     )
     n_stars ≥ 0 || throw(ArgumentError("`n_stars` must be non-negative"))
     gain > 0     || throw(ArgumentError("`gain` must be positive"))
     sigma_psf > 0 || throw(ArgumentError("`sigma_psf` must be positive"))
 
     H, W = image_size
-    img  = fill(float(background), H, W)
+    img  = if background isa AbstractMatrix
+        size(background) == (H, W) || throw(ArgumentError(
+            "`background` matrix must match `image_size`; got $(size(background))"))
+        float.(background)
+    else
+        fill(float(background), H, W)
+    end
 
     # Draw source positions and fluxes.
     xmin, xmax = 1 + border, H - border
@@ -533,6 +546,6 @@ function make_gaussians_image(
     end
 
     # Apply Poisson shot noise then Gaussian read noise.
-    add_noise!(img; noise = :poisson_gaussian, read_noise, gain, rng)
+    add_noise!(img; noise, read_noise, gain, rng)
     return img
 end
