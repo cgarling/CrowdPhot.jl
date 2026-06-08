@@ -56,6 +56,32 @@ source density and you use a mask to cover the brightest stars, or use
 source contamination.  Use `MADStdRMS` or `BiweightScaleRMS` for a more
 independent robustness guarantee.
 
+### Sigma clipping
+
+Both [`estimate_background`](@ref) and [`Background2D`](@ref) support iterative
+sigma clipping to suppress residual source contamination before the background
+estimator runs.  The clipping algorithm is:
+
+1. Compute the median $m$ and standard deviation $s$ of the pixel values in the
+   region (or box, for [`Background2D`](@ref)).
+2. Reject pixels with values outside $[m - \sigma s, \; m + \sigma s]$.
+3. Recompute $m$ and $s$ from the surviving pixels.
+4. Repeat steps 2–3 until no more pixels are rejected, or until `maxiters`
+   iterations (default 10) have been performed.
+
+The clipping uses **median and standard deviation** as its internal location
+and scale measures — it does **not** invoke the configured background estimator
+(e.g., `SExtractorBackground`) during the clipping loop.  Only after clipping
+converges is the background estimator applied once to the surviving pixels.
+
+Non-finite (`NaN`, `Inf`) and masked pixels are excluded before clipping
+begins.  Pass a scalar `sigma` for symmetric clipping (the default); for
+asymmetric clipping, pass a length-2 tuple or vector like `sigma = (5.0, 2.0)`;
+in this case, a pixel with value `x` will be clipped if `x ≤ median - 5 * std`
+or `x ≥ median + 2 * std`, so the high-value tail of the pixel distribution
+is being clipped more strongly than the low-value side. Set `sigma = nothing`
+to disable clipping entirely.
+
 ## Scalar background estimation
 
 For small images or cutouts where a single background level is sufficient, use
