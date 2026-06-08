@@ -552,8 +552,7 @@ function _bicubic_zoom(
     ) where {T <: Real}
     M, N = size(mesh)
     F = float(T)
-    out = Matrix{F}(undef, H, W)
-    fmesh = F === T ? mesh : F.(mesh)
+    out = similar(mesh, F, H, W)
     for j in 1:W
         yf = _zoom_coord(F, j, coord_W, N)
         jm = floor(Int, yf)
@@ -571,10 +570,10 @@ function _bicubic_zoom(
             r3 = _clamp_idx(im_ + 1, M)
             r4 = _clamp_idx(im_ + 2, M)
             # Interpolate along the column axis for each of the four rows.
-            q1 = _catmull_rom(fmesh[r1, jm1], fmesh[r1, jm2], fmesh[r1, jm3], fmesh[r1, jm4], ty)
-            q2 = _catmull_rom(fmesh[r2, jm1], fmesh[r2, jm2], fmesh[r2, jm3], fmesh[r2, jm4], ty)
-            q3 = _catmull_rom(fmesh[r3, jm1], fmesh[r3, jm2], fmesh[r3, jm3], fmesh[r3, jm4], ty)
-            q4 = _catmull_rom(fmesh[r4, jm1], fmesh[r4, jm2], fmesh[r4, jm3], fmesh[r4, jm4], ty)
+            q1 = _catmull_rom(mesh[r1, jm1], mesh[r1, jm2], mesh[r1, jm3], mesh[r1, jm4], ty)
+            q2 = _catmull_rom(mesh[r2, jm1], mesh[r2, jm2], mesh[r2, jm3], mesh[r2, jm4], ty)
+            q3 = _catmull_rom(mesh[r3, jm1], mesh[r3, jm2], mesh[r3, jm3], mesh[r3, jm4], ty)
+            q4 = _catmull_rom(mesh[r4, jm1], mesh[r4, jm2], mesh[r4, jm3], mesh[r4, jm4], ty)
             out[i, j] = _catmull_rom(q1, q2, q3, q4, tx)
         end
     end
@@ -816,7 +815,7 @@ function Background2D(
     full_bkg = _bicubic_zoom(fmesh_bkg, out_H, out_W, pad_H, pad_W)
     full_rms = _bicubic_zoom(fmesh_rms, out_H, out_W, pad_H, pad_W)
 
-    return Background2D{T}(full_bkg, full_rms, mesh_bkg, mesh_rms, (bh, bw))
+    return Background2D{T, typeof(full_bkg)}(full_bkg, full_rms, mesh_bkg, mesh_rms, (bh, bw))
 end
 
 ###############################################################################
