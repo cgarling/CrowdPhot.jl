@@ -95,6 +95,42 @@ end
         @test_throws ArgumentError estimate_background(data2; sigma = 0.0, maxiters = 10)
     end
 
+    @testset "asymmetric sigma clipping" begin
+        # sigma_clip! accepts independent low/high thresholds.  Test each
+        # direction in isolation so that the permissive side does not keep
+        # the standard deviation inflated and prevent the tight side from
+        # converging.
+
+        # Data with only high-side outliers (5000).
+        data_high = 100.0 .+ randn(_RNG_BG, 20, 20) .* 2.0
+        data_high[1, :] .= 5000.0
+
+        work_high = float(copy(data_high))
+        n_high = sigma_clip!(work_high, 100.0, 3.0; maxiters = 10)
+        ret_high = view(vec(work_high), 1:n_high)
+        @test maximum(ret_high) < 4000 # bright outliers removed by tight high side
+
+        # Data with only low-side outliers (-10).
+        data_low = 100.0 .+ randn(_RNG_BG, 20, 20) .* 2.0
+        data_low[1, :] .= -10.0
+
+        work_low = float(copy(data_low))
+        n_low = sigma_clip!(work_low, 3.0, 100.0; maxiters = 10)
+        ret_low = view(vec(work_low), 1:n_low)
+        @test minimum(ret_low) > -5 # dim outliers removed by tight low side
+
+        # Symmetric clipping removes outliers on both sides.
+        data_both = 100.0 .+ randn(_RNG_BG, 20, 20) .* 2.0
+        data_both[1, :] .= 5000.0
+        data_both[end, :] .= -10.0
+
+        work_both = float(copy(data_both))
+        n_both = sigma_clip!(work_both, 3.0, 3.0; maxiters = 10)
+        ret_both = view(vec(work_both), 1:n_both)
+        @test maximum(ret_both) < 4000   # bright clipped
+        @test minimum(ret_both) > -5     # dim clipped
+    end
+
     @testset "array-shaped inputs are accepted" begin
         # Estimators should operate on multidimensional arrays without callers flattening data first.
         cube = fill(12.0, 3, 4, 2)

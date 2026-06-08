@@ -469,7 +469,9 @@ Returns a `NamedTuple` `(bkg = …, bkg_rms = …)`.
 - `rms_estimator`: an [`AbstractBackgroundRMSEstimator`](@ref) or any callable.
 - `mask`: `AbstractArray{Bool}` with the same shape as `image`; `true`
   excludes the pixel.  `nothing` (default) uses all finite pixels.
-- `sigma`: sigma-clipping threshold.  Set to `nothing` to disable clipping.
+- `sigma`: sigma-clipping threshold (default 3.0).  Pass a scalar for symmetric
+  clipping.  For asymmetric clipping, pass a length-2 tuple or vector,
+  e.g. `sigma=(2.0, 5.0)`.  Set to `nothing` to disable clipping.
 - `maxiters`: maximum number of sigma-clipping iterations.
 
 # Examples
@@ -490,11 +492,16 @@ function estimate_background(
         estimator::Union{AbstractBackgroundEstimator, Function} = SExtractorBackground(),
         rms_estimator::Union{AbstractBackgroundRMSEstimator, Function} = StdRMS(),
         mask::Union{Nothing, AbstractArray{Bool}} = nothing,
-        sigma::Union{Nothing, Real} = 3.0,
+        sigma = 3.0,
         maxiters::Integer = 10,
     )
     work = _prepare_work(image, mask)
-    n_valid = isnothing(sigma) ? _compact_finite!(work) : sigma_clip!(work, sigma; maxiters)
+    n_valid = if isnothing(sigma)
+        _compact_finite!(work)
+    else
+        slo, shi = _to_pair(sigma)
+        sigma_clip!(work, slo, shi; maxiters)
+    end
     n_valid == 0 && throw(
         ArgumentError(
             isnothing(sigma) ?
@@ -684,8 +691,11 @@ when the image contains non-finite values that are not covered by `mask`.
   (must be odd; default `(3, 3)`; use `1` or `(1,1)` to skip filtering).
 - `exclude_percentile`: boxes with fewer than this percent of valid pixels
   are excluded and filled by interpolation.
-- `sigma`: sigma-clipping threshold (`nothing` disables clipping).
-- `maxiters`: maximum sigma-clipping iterations.
+- `sigma`: sigma-clipping threshold (default 3.0).  Pass a scalar for symmetric
+  clipping.  For asymmetric clipping, pass a length-2 tuple or vector,
+  e.g. `sigma=(2.0, 5.0)`, to preserve a faint extended source while rejecting
+  bright stars.  Set to `nothing` to disable clipping.
+- `maxiters`: maximum number of sigma-clipping iterations.
 - `edge_method`: `:pad` (default) or `:crop`.
 
 # Returns
@@ -720,13 +730,13 @@ function Background2D(
         mask::Union{Nothing, AbstractMatrix{Bool}} = nothing,
         filter_size::Union{Integer, NTuple{2, <:Integer}} = (3, 3),
         exclude_percentile::Real = 10.0,
-        sigma::Union{Nothing, Real} = 3.0,
+        sigma = 3.0,
         maxiters::Integer = 10,
         edge_method::Symbol = :pad,
     )
     H, W = size(image)
-    bh, bw = _to_pair(box_size)
-    fh, fw = _to_pair(filter_size)
+    bh, bw = _to_pair(Int, box_size)
+    fh, fw = _to_pair(Int, filter_size)
     (isone(fh) || isodd(fh)) && (isone(fw) || isodd(fw)) ||
         throw(ArgumentError("filter_size must be odd; got ($fh, $fw)"))
     0 ≤ exclude_percentile ≤ 100 ||
@@ -766,7 +776,8 @@ function Background2D(
         n_valid = _compact_finite!(box)
         n_valid < min_valid && continue
         if !isnothing(sigma)
-            n_valid = sigma_clip!(box, sigma; maxiters)
+            slo, shi = _to_pair(T, sigma)
+            n_valid = sigma_clip!(box, slo, shi; maxiters)
             iszero(n_valid) && continue
         end
         pair = _estimate_pair!(estimator, rms_estimator, box, n_valid)
@@ -803,8 +814,12 @@ end
 ###############################################################################
 # Internal helpers for Background2D
 
-_to_pair(x::Integer) = (Int(x), Int(x))
-_to_pair(x::NTuple{2, <:Integer}) = (Int(x[1]), Int(x[2]))
+_to_pair(x) = (x, x)
+_to_pair(x::NTuple{2, T}) where {T} = (x[1], x[2])
+_to_pair(T::Type, x) = (T(x), T(x))
+_to_pair(T::Type, x::NTuple{2, S}) where {S} = (T(x[1]), T(x[2]))
+_to_pair(x::AbstractVector) = length(x) == 2 ? (x[1], x[2]) : throw(ArgumentError("expected a length-2 argument; got length $(length(x))"))
+_to_pair(T::Type, x::AbstractVector) = length(x) == 2 ? (T(x[1]), T(x[2])) : throw(ArgumentError("expected a length-2 argument; got length $(length(x))"))
 
 function _tile_image(::Val{:pad}, image, bh, bw)
     H, W = size(image)
