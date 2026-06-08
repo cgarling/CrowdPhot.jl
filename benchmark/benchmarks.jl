@@ -10,8 +10,10 @@ using PrettyTables: pretty_table
 using StableRNGs: StableRNG
 
 function show_benchmarks(results)
-    # Collect results
-    sorted  = sort(collect(results), by=first)
+    # Collect results — results may be a flat Dict or a nested BenchmarkGroup;
+    # flatten first so that every value is a Trial.
+    flat = flatten_results(results)
+    sorted  = sort(collect(flat), by=first)
     names   = [k for (k,_) in sorted]
     trials  = [v for (_,v) in sorted]
 
@@ -28,6 +30,26 @@ function show_benchmarks(results)
         column_labels = ["Benchmark", "Median Time", "Memory", "Allocs"],
         alignment     = [:l, :r, :r, :r]
     )
+end
+
+function flatten_results(group)
+    # Recursively flatten a (possibly nested) BenchmarkGroup of Trial results
+    # into a flat Dict{String, Trial}.  Dict inputs are returned as-is so that
+    # the function is idempotent.
+    flat = Dict{String, Any}()
+    _flatten_results!(flat, group, "")
+    return flat
+end
+
+function _flatten_results!(flat, group, prefix)
+    for (k, v) in group
+        fullname = isempty(prefix) ? string(k) : "$prefix/$k"
+        if v isa BenchmarkGroup
+            _flatten_results!(flat, v, fullname)
+        else
+            flat[fullname] = v
+        end
+    end
 end
 
 const SUITE_NAMES = ["parametric", "fitting", "empirical", "background"]
