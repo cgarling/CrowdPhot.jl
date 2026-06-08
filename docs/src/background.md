@@ -75,13 +75,23 @@ clipping → estimate with `SExtractorBackground` and `StdRMS`.
 ### Example: scalar estimation with a mask
 
 ```@example scalar
-using CrowdPhot, CrowdPhot.Background, StableRNGs, Statistics
+using CrowdPhot, CrowdPhot.Background, StableRNGs, Statistics, CairoMakie
 
 rng = StableRNG(1)
 # 128×128 image: flat sky at 200 ADU with 30 Gaussian stars
-img = make_gaussians_image(30, (128, 128); rng, background = 200.0,
-                            read_noise = 5.0, gain = 1.5)
+img = make_gaussians_image(200, (128, 128); rng, background = 200.0,
+    border = 0, read_noise = 5.0, gain = 1.5)
 
+# Plot image
+fig = Figure(size=(500,500),)
+ax = Axis(fig[1,1], aspect = DataAspect(), yreversed = true, xlabel = "x", ylabel = "y")
+
+hm = heatmap!(ax, img)
+Colorbar(fig[1,2], hm; height = Relative(0.75), valign = :center)
+fig
+```
+
+```@example scalar
 # Estimate without any mask
 r_unmasked = estimate_background(img)
 println("Unmasked:  bkg = ", round(r_unmasked.bkg; digits=2),
@@ -132,7 +142,7 @@ It should be:
   the background reliably (typically ≥ 50–100 pixels per box after masking).
 - **Small enough** to track real spatial variation in the background.
 
-A starting point of `box_size ≈ image_width / 10` is often reasonable; you
+Somewhere in the range of `image_width / 10 ≤ box_size ≤ image_width / 5` is often reasonable; you
 should inspect `b.mesh_background` to verify that the mesh looks smooth and
 sensible.
 
@@ -151,36 +161,23 @@ H, W = 256, 256
 # True background: linear ramp from 150 (top) to 300 (bottom) ADU.
 true_bkg = [150.0 + 150.0 * (i - 1) / (H - 1) for i in 1:H, _ in 1:W]
 
-# Render stars on top of the gradient background.
-img_stars = make_gaussians_image(100, (H, W); rng,
-                                  background = 0.0,   # stars only
-                                  read_noise = 0.0, gain = 1.0)
-
-# Add the gradient background with realistic noise.
-gain, read_noise = 1.5, 5.0
-img = zeros(H, W)
-for i in eachindex(img)
-    mu_e  = (true_bkg[i] + img_stars[i]) * gain
-    img[i] = (mu_e > 0 ? sqrt(mu_e) * randn(rng) + mu_e : mu_e) / gain +
-              read_noise / gain * randn(rng)
-end
+# Render stars on the gradient background with realistic noise.
+img = make_gaussians_image(100, (H, W); rng,
+    background = true_bkg, read_noise = 5.0, gain = 1.5)
 
 # --- Estimate the spatially varying background ---
-b = Background2D(img, 32; sigma = 3.0, filter_size = (3, 3))
+b = Background2D(img, 16; sigma = 3.0, filter_size = (5, 5))
 residual = img .- b.background
 
-nothing
-```
+# --- Make plot ---
+fig = Figure(size = (900, 400))
 
-```@example bkg2d
-fig = Figure(size = (900, 600))
-
-ax1 = Axis(fig[1, 1]; title = "Image",            aspect = DataAspect())
+ax1 = Axis(fig[1, 1]; title = "Image", aspect = DataAspect())
 ax2 = Axis(fig[1, 2]; title = "Background model", aspect = DataAspect())
-ax3 = Axis(fig[1, 3]; title = "Residual",         aspect = DataAspect())
+ax3 = Axis(fig[1, 3]; title = "Residual", aspect = DataAspect())
 
 vmin, vmax = 140.0, 320.0
-heatmap!(ax1, img';        colorrange = (vmin, vmax))
+heatmap!(ax1, img'; colorrange = (vmin, vmax))
 heatmap!(ax2, b.background'; colorrange = (vmin, vmax))
 hm = heatmap!(ax3, residual'; colorrange = (-30.0, 30.0), colormap = :RdBu)
 Colorbar(fig[2, 3], hm; vertical = false, label = "ADU")
@@ -196,22 +193,26 @@ fig
 
 ```@example bkg2d
 rng2 = StableRNG(7)
-img2 = make_gaussians_image(80, (128, 128); rng = rng2, background = 200.0,
-                             read_noise = 5.0, gain = 1.5)
+img2 = make_gaussians_image(50, (128, 128); rng = rng2, background = 200.0,
+    border = 0, read_noise = 5.0, gain = 1.5)
+colorrange = (170.0, 230.0)
 
-estimators = [MeanBackground(), MedianBackground(), SExtractorBackground(),
-              MMMBackground(), BiweightLocationBackground()]
-names = ["Mean", "Median", "SExtractor", "MMM", "Biweight"]
+fig2 = Figure(size = (750, 520))
 
-fig2 = Figure(size = (950, 380))
 ax_img = Axis(fig2[1, 1]; title = "Image", aspect = DataAspect())
-heatmap!(ax_img, img2'; colormap = :grays)
+heatmap!(ax_img, img2'; colorrange, colormap = :grays)
 hidedecorations!(ax_img)
 
-for (k, (est, nm)) in enumerate(zip(estimators, names))
-    b_k = Background2D(img2, 16; estimator = est, sigma = 3.0, filter_size = 1)
-    ax  = Axis(fig2[1, k + 1]; title = nm, aspect = DataAspect())
-    heatmap!(ax, b_k.background'; colorrange = (190.0, 210.0))
+estimators = (MeanBackground(), MedianBackground(), SExtractorBackground(), 
+    MMMBackground(), BiweightLocationBackground())
+labels = ("Mean", "Median", "SExtractor", "MMM", "Biweight")
+
+for i in eachindex(estimators)
+    b = Background2D(img2, 16; estimator = estimators[i], sigma = 3.0, filter_size = 1)
+    row = i ÷ 3 + 1
+    col = i % 3 + 1
+    ax = Axis(fig2[row, col]; title = labels[i], aspect = DataAspect())
+    heatmap!(ax, b.background'; colormap = :grays, colorrange)
     hidedecorations!(ax)
 end
 
