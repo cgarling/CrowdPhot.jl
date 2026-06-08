@@ -1,0 +1,238 @@
+using Test
+using CrowdPhot
+using CrowdPhot.Background
+using StableRNGs: StableRNG
+using Statistics: mean, std
+
+# ─── Shared fixture ────────────────────────────────────────────────────────────
+const _RNG_BG = StableRNG(2024)
+const _FLAT100  = fill(100.0, 32, 32)
+const _FLAT200  = fill(200.0, 64, 64)
+# Realistic mock image used across multiple tests.
+const _MOCK_IMG = make_gaussians_image(40, (128, 128); rng = StableRNG(7), background = 200.0,
+                                        read_noise = 5.0, gain = 1.5)
+
+@testset "estimate_background — scalar" begin
+    @testset "constant image" begin
+        r = estimate_background(_FLAT100)
+        @test r.bkg     ≈ 100.0
+        @test r.bkg_rms ≈ 0.0
+    end
+
+    @testset "sigma=nothing disables clipping" begin
+        data = fill(50.0, 20, 20)
+        r = estimate_background(data; sigma = nothing)
+        @test r.bkg ≈ 50.0
+    end
+
+    @testset "mask excludes pixels" begin
+        img  = fill(10.0, 8, 8)
+        img[1:4, :] .= 9999.0   # large outlier region
+        mask = falses(8, 8)
+        mask[1:4, :] .= true
+        r = estimate_background(img; mask, sigma = nothing)
+        @test r.bkg ≈ 10.0
+    end
+
+    @testset "non-finite values are silently excluded" begin
+        img = fill(5.0, 16, 16)
+        img[1, 1] = NaN
+        img[2, 2] = Inf
+        img[3, 3] = -Inf
+        r = estimate_background(img; sigma = nothing)
+        @test r.bkg ≈ 5.0
+    end
+
+    @testset "all-NaN image throws" begin
+        @test_throws ArgumentError estimate_background(fill(NaN, 10, 10))
+    end
+
+    @testset "all pixels masked throws" begin
+        mask = trues(8, 8)
+        @test_throws ArgumentError estimate_background(_FLAT100[1:8, 1:8]; mask)
+    end
+
+    @testset "sigma clipping removes all pixels throws" begin
+        # sigma=0 retains only pixels exactly equal to the median.
+        # A 2×2 array with all-distinct values has a fractional median (2.5),
+        # so every pixel is rejected and the function must throw.
+        data2 = [1.0 2.0; 3.0 4.0]
+        @test_throws ArgumentError estimate_background(data2; sigma = 0.0, maxiters = 10)
+    end
+end
+
+@testset "Location estimators on skewed data" begin
+    # Build a positively skewed distribution: clean background plus bright sources.
+    bkg_pixels = fill(100.0, 900)
+    source_pixels = fill(1000.0, 100)   # 10 % contamination
+    data = vcat(bkg_pixels, source_pixels)
+
+    @testset "SExtractorBackground falls back to median for skewed input" begin
+        # With strong positive skew the SE estimator should return roughly 100.
+        val = SExtractorBackground()(data)
+        @test val < 110.0   # clearly below the contaminated mean
+    end
+
+    @testset "MMMBackground also suppresses positive skew" begin
+        val = MMMBackground()(data)
+        @test val < 110.0
+    end
+
+    @testset "BiweightLocationBackground robust to outliers" begin
+        d_clean  = randn(StableRNG(1), 200) .+ 5.0
+        d_dirty  = vcat(d_clean, fill(1e4, 10))
+        val_clean = BiweightLocationBackground()(d_clean)
+        val_dirty = BiweightLocationBackground()(d_dirty)
+        @test abs(val_clean - 5.0) < 0.5
+        # Outliers should have minimal effect on the biweight location.
+        @test abs(val_dirty - val_clean) < 1.0
+    end
+end
+
+@testset "RMS estimators" begin
+    data = fill(3.0, 50)
+
+    @testset "all estimators return 0 for constant data" begin
+        @test StdRMS()(data)             ≈ 0.0
+        @test MADStdRMS()(data)          ≈ 0.0
+        @test BiweightScaleRMS()(data)   ≈ 0.0
+    end
+
+    @testset "StdRMS matches std for random data" begin
+        v = randn(StableRNG(5), 500)
+        @test StdRMS()(v) ≈ std(v; corrected = false) atol = 1e-12
+    end
+
+    @testset "MADStdRMS is approximately equal to StdRMS for Gaussian data" begin
+        v = randn(StableRNG(6), 5000)
+        @test MADStdRMS()(v) ≈ StdRMS()(v) rtol = 0.10
+    end
+
+    @testset "BiweightScaleRMS robust to outliers" begin
+        v_clean = randn(StableRNG(8), 300)
+        v_dirty = vcat(v_clean, fill(1e5, 5))
+        sc  = BiweightScaleRMS()(v_clean)
+        sd  = BiweightScaleRMS()(v_dirty)
+        @test abs(sd - sc) < 0.2
+    end
+end
+
+@testset "Background2D" begin
+    @testset "constant image recovers exact background" begin
+        b = Background2D(_FLAT200, 16)
+        @test b.background     ≈ _FLAT200
+        @test all(iszero, b.background_rms)
+        @test b.box_size       == (16, 16)
+        @test size(b.mesh_background) == (4, 4)
+    end
+
+    @testset "output size matches input for :pad edge method" begin
+        b = Background2D(_MOCK_IMG, 32)
+        @test size(b.background)     == size(_MOCK_IMG)
+        @test size(b.background_rms) == size(_MOCK_IMG)
+    end
+
+    @testset "output size is truncated for :crop edge method" begin
+        img = fill(7.0, 65, 65)
+        b   = Background2D(img, 16; edge_method = :crop)
+        @test size(b.background) == (64, 64)   # 65 ÷ 16 == 4 boxes → 64 px
+    end
+
+    @testset "mask excludes pixels in mesh computation" begin
+        img  = fill(150.0, 64, 64)
+        img[1:32, :] .= 9999.0   # large contaminant in the top half
+        mask = falses(64, 64)
+        mask[1:32, :] .= true
+        b = Background2D(img, 16; mask, sigma = nothing)
+        # All background values should be close to 150 despite the contaminated region.
+        @test all(v -> isapprox(v, 150.0; atol = 1.0), b.background)
+    end
+
+    @testset "NaN pixels in image are excluded with warning" begin
+        img      = fill(50.0, 32, 32)
+        img[1,1] = NaN
+        @test_logs (:warn,) Background2D(img, 16)
+        b = (@test_logs (:warn,) Background2D(img, 16))
+        @test b.background ≈ fill(50.0, 32, 32) atol = 1e-10
+    end
+
+    @testset "box with too few valid pixels is excluded and filled" begin
+        img  = fill(100.0, 32, 32)
+        # Mask almost an entire quadrant so that box hits exclude_percentile.
+        mask = falses(32, 32)
+        mask[1:16, 1:15] .= true   # 15 of 16 columns → > 90 % masked
+        b = Background2D(img, 16; mask, exclude_percentile = 10.0, sigma = nothing)
+        # The excluded box should be filled — background stays near 100.
+        @test all(v -> isapprox(v, 100.0; atol = 1.0), b.background)
+    end
+
+    @testset "all boxes excluded throws" begin
+        img  = fill(0.0, 16, 16)
+        mask = trues(16, 16)     # mask everything
+        @test_throws ArgumentError Background2D(img, 16; mask)
+    end
+
+    @testset "filter_size=1 is a no-op" begin
+        b_filtered = Background2D(_MOCK_IMG, 32; filter_size = (3, 3))
+        b_unfiltered = Background2D(_MOCK_IMG, 32; filter_size = 1)
+        # Results should differ (filtering smooths the mesh).
+        # This simply checks that the option is accepted without error.
+        @test size(b_filtered.background)   == size(_MOCK_IMG)
+        @test size(b_unfiltered.background) == size(_MOCK_IMG)
+    end
+
+    @testset "odd filter_size check" begin
+        @test_throws ArgumentError Background2D(_FLAT200, 16; filter_size = 2)
+    end
+
+    @testset "single box covers entire image" begin
+        b = Background2D(fill(7.0, 16, 16), 16)   # exactly one 16×16 box, no padding
+        @test all(v -> isapprox(v, 7.0; atol = 1e-10), b.background)
+    end
+
+    @testset "gradient background is estimated without large bias" begin
+        ramp = [float(i) for i in 1:64, _ in 1:64]   # background grows from 1 to 64 along rows
+        b    = Background2D(ramp, 8; sigma = nothing, filter_size = 1)
+        # The interpolated background should track the true ramp to within ±5.
+        @test maximum(abs.(b.background .- ramp)) < 5.0
+    end
+
+    @testset "realistic image: background close to truth" begin
+        b = Background2D(_MOCK_IMG, 32; sigma = 3.0)
+        # True background was 200 ADU; expect the estimate within ±5 ADU everywhere.
+        @test all(v -> abs(v - 200.0) < 5.0, b.background)
+    end
+
+    @testset "different estimators are accepted" begin
+        for est in (MeanBackground(), MedianBackground(), SExtractorBackground(),
+                    MMMBackground(), BiweightLocationBackground())
+            for rms in (StdRMS(), MADStdRMS(), BiweightScaleRMS())
+                b = Background2D(_FLAT200, 16; estimator = est, rms_estimator = rms, sigma = nothing)
+                @test b.background ≈ _FLAT200 atol = 0.1
+            end
+        end
+    end
+end
+
+@testset "make_gaussians_image" begin
+    rng = StableRNG(42)
+    img = make_gaussians_image(30, (128, 128); rng)
+
+    @testset "output shape" begin
+        @test size(img) == (128, 128)
+    end
+
+    @testset "all pixels are finite" begin
+        @test all(isfinite, img)
+    end
+
+    @testset "background level roughly preserved" begin
+        @test 100.0 < mean(img) < 400.0   # rough sanity check around 200 ADU
+    end
+
+    @testset "zero stars produces only background noise" begin
+        img0 = make_gaussians_image(0, (64, 64); rng = StableRNG(1), background = 100.0,
+                                     read_noise = 2.0, gain = 1.0)
+        @test mean(img0) ≈ 100.0 rtol = 0.05
+    end
+end

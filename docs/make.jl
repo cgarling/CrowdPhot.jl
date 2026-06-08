@@ -1,5 +1,6 @@
 using CrowdPhot
 using CrowdPhot.PSF
+using CrowdPhot.Background
 using Documenter
 # using Documenter.Remotes: GitHub
 using DocumenterCitations: CitationBibliography
@@ -7,6 +8,7 @@ using DocumenterCitations: CitationBibliography
 setup = quote
     using CrowdPhot
     using CrowdPhot.PSF
+    using CrowdPhot.Background
 end
 
 DocMeta.setdocmeta!(CrowdPhot, :DocTestSetup, setup; recursive = true)
@@ -16,7 +18,7 @@ bib = CitationBibliography(joinpath(@__DIR__, "src", "refs.bib"); style=:numeric
 
 makedocs(;
     sitename = "CrowdPhot.jl",
-    modules = [CrowdPhot, CrowdPhot.PSF],
+    modules = [CrowdPhot, CrowdPhot.PSF, CrowdPhot.Background],
     format = Documenter.HTML(;
         prettyurls = CI,
         assets = String[],
@@ -35,6 +37,7 @@ makedocs(;
         ],
         "Levenberg-Marquardt Fitter" => "lm_fitter.md",
         "Simulation" => "simulation.md",
+        "Background Estimation" => "background.md",
         "Index" => "doc_index.md",
         "References" => "refs.md",
         ],
