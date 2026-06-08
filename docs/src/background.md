@@ -191,6 +191,8 @@ fig
 
 ### Example: comparing estimators on the same image
 
+First, with a small 16 pixel box size
+
 ```@example bkg2d
 rng2 = StableRNG(7)
 img2 = make_gaussians_image(50, (128, 128); rng = rng2, background = 200.0,
@@ -217,6 +219,31 @@ for i in eachindex(estimators)
 end
 
 fig2
+```
+
+Repeating the measurement with a larger 21 pixel box size, which is less affected by contamination from chance arrangments of stars, but will fail to capture any real variations in sky below this scale.
+
+```@example bkg2d
+fig3 = Figure(size = (750, 520))
+
+ax_img = Axis(fig3[1, 1]; title = "Image", aspect = DataAspect())
+heatmap!(ax_img, img2'; colorrange, colormap = :grays)
+hidedecorations!(ax_img)
+
+estimators = (MeanBackground(), MedianBackground(), SExtractorBackground(), 
+    MMMBackground(), BiweightLocationBackground())
+labels = ("Mean", "Median", "SExtractor", "MMM", "Biweight")
+
+for i in eachindex(estimators)
+    b = Background2D(img2, 21; estimator = estimators[i], sigma = 3.0, filter_size = 1)
+    row = i ÷ 3 + 1
+    col = i % 3 + 1
+    ax = Axis(fig3[row, col]; title = labels[i], aspect = DataAspect())
+    heatmap!(ax, b.background'; colormap = :grays, colorrange)
+    hidedecorations!(ax)
+end
+
+fig3
 ```
 
 ### Tips
