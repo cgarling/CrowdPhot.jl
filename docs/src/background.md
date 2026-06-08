@@ -1,5 +1,8 @@
 # Background Estimation
 
+NOTICE: Our background estimation module is adapted from
+[BackgroundMeshes.jl](https://juliaastro.org/BackgroundMeshes/stable/).
+
 Accurate sky-background subtraction is a prerequisite for reliable photometry.
 In a typical optical or near-infrared image, the sky background arises from a
 combination of airglow, zodiacal light, scattered moonlight, and detector bias;
@@ -15,9 +18,10 @@ excluded from — the background estimate.
 | [`estimate_background`](@ref) | Single scalar estimate for the whole image (or a cutout) |
 | [`Background2D`](@ref) | Spatially varying map over a mesh grid |
 
-Both interfaces accept a [`mask`](@ref) that marks pixels to skip (saturated
+Both interfaces accept a mask that marks pixels to skip (saturated
 stars, bad pixels, diffraction spikes, etc.) and support iterative sigma
-clipping to suppress residual source contamination.
+clipping to suppress residual source contamination. *The mask is `true`
+for pixels that should be skipped.*
 
 ## Location and RMS estimators
 
