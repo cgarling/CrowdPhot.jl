@@ -12,6 +12,41 @@ const _FLAT200  = fill(200.0, 64, 64)
 const _MOCK_IMG = make_gaussians_image(40, (128, 128); rng = StableRNG(7), background = 200.0,
                                         read_noise = 5.0, gain = 1.5)
 
+@testset "Estimator constructor promotion" begin
+    # Constructor inputs should share a promoted floating storage type.
+    mmm_default = MMMBackground()
+    @test mmm_default isa MMMBackground{Float64}
+    @test mmm_default.median_factor === 3.0
+    @test mmm_default.mean_factor === 2.0
+
+    mmm_mixed = MMMBackground(Int8(3), Float32(2))
+    @test mmm_mixed isa MMMBackground{Float32}
+    @test mmm_mixed.median_factor === Float32(3)
+    @test mmm_mixed.mean_factor === Float32(2)
+
+    mmm_keyword = MMMBackground(; median_factor = 3, mean_factor = 2.0)
+    @test mmm_keyword isa MMMBackground{Float64}
+    @test mmm_keyword.median_factor === 3.0
+    @test mmm_keyword.mean_factor === 2.0
+
+    # Integers not allowed
+    @test_throws MethodError MMMBackground{Int}(3, 2)
+
+    loc32 = BiweightLocationBackground(Float32(6))
+    @test loc32 isa BiweightLocationBackground{Float32}
+    @test loc32.c === Float32(6)
+
+    # Integers not allowed
+    @test_throws MethodError BiweightLocationBackground{Int}(6)
+
+    scale32 = BiweightScaleRMS(; c = Float32(9))
+    @test scale32 isa BiweightScaleRMS{Float32}
+    @test scale32.c === Float32(9)
+
+    # Integers not allowed
+    @test_throws MethodError BiweightScaleRMS{Int}(c = 9)
+end
+
 @testset "estimate_background — scalar" begin
     @testset "constant image" begin
         r = estimate_background(_FLAT100)
@@ -58,6 +93,16 @@ const _MOCK_IMG = make_gaussians_image(40, (128, 128); rng = StableRNG(7), backg
         # so every pixel is rejected and the function must throw.
         data2 = [1.0 2.0; 3.0 4.0]
         @test_throws ArgumentError estimate_background(data2; sigma = 0.0, maxiters = 10)
+    end
+
+    @testset "array-shaped inputs are accepted" begin
+        # Estimators should operate on multidimensional arrays without callers flattening data first.
+        cube = fill(12.0, 3, 4, 2)
+        r = estimate_background(cube; sigma = nothing)
+        @test r.bkg ≈ 12.0
+        @test MeanBackground()(cube) ≈ 12.0
+        @test size(MMMBackground()(cube; dims = 1)) == (1, 4, 2)
+        @test size(sigma_clip(cube, 3.0)) == size(cube)
     end
 end
 
