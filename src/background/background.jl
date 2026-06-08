@@ -1,7 +1,12 @@
+# This work is based largely on BackgroundMeshes.jl, which in turn
+# acknowledges their work is partially derived from astropy/photutils
+# and astropy/astropy. The relevant derivations are considered under a BSD 3-clause license.
+
 module Background
 
+using ..CrowdPhot: mad, mad!
 import Random
-using Statistics: mean, median, std
+using Statistics: mean, median, median!, std
 
 export AbstractBackgroundEstimator, AbstractBackgroundRMSEstimator
 export MeanBackground, MedianBackground, SExtractorBackground,

@@ -4,10 +4,11 @@ import Random
 using LinearAlgebra: cholesky!, ldiv!, I, Symmetric, pinv, PosDefException
 import LossFunctions
 import ConstructionBase
-using Statistics: median, mean
+using Statistics: median, median!, mean
 
 export simulate_sources, simulate_image, make_gaussians_image
 
+include("utilities.jl")
 include("levenberg_marquardt.jl")
 include("psf/PSF.jl")
 using .PSF
