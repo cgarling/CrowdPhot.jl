@@ -4,7 +4,7 @@ import Random
 using LinearAlgebra: cholesky!, ldiv!, I, Symmetric, pinv, PosDefException
 import LossFunctions
 import ConstructionBase
-using Statistics: median, median!, mean
+using Statistics: median, median!, mean, std
 
 export simulate_sources, simulate_image, make_gaussians_image
 

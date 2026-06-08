@@ -4,7 +4,7 @@
 
 module Background
 
-using ..CrowdPhot: mad
+using ..CrowdPhot: mad, mad!, mean_and_std
 import Random
 using Statistics: mean, median, median!, std
 
@@ -12,7 +12,7 @@ export AbstractBackgroundEstimator, AbstractBackgroundRMSEstimator
 export MeanBackground, MedianBackground, SExtractorBackground,
        MMMBackground, BiweightLocationBackground
 export StdRMS, MADStdRMS, BiweightScaleRMS
-export Background2D, estimate_background
+export Background2D, estimate_background, sigma_clip, sigma_clip!
 
 ###############################################################################
 # Abstract types
@@ -22,7 +22,7 @@ export Background2D, estimate_background
 
 Supertype for all scalar background location estimators.
 
-Concrete subtypes must implement `(::MyEstimator)(data::AbstractVector)`,
+Concrete subtypes must implement `(::MyEstimator)(data::AbstractArray)`,
 returning a scalar background estimate for the pixel values in `data`.
 """
 abstract type AbstractBackgroundEstimator end
@@ -32,7 +32,7 @@ abstract type AbstractBackgroundEstimator end
 
 Supertype for all background RMS (scatter) estimators.
 
-Concrete subtypes must implement `(::MyEstimator)(data::AbstractVector)`,
+Concrete subtypes must implement `(::MyEstimator)(data::AbstractArray)`,
 returning a scalar RMS estimate for the pixel values in `data`.
 """
 abstract type AbstractBackgroundRMSEstimator end
@@ -40,62 +40,151 @@ abstract type AbstractBackgroundRMSEstimator end
 ###############################################################################
 # Internal utilities
 
-# Iterative sigma clipping: return a new vector containing only the
-# unclipped values.  The result is always a fresh copy.
-function _sigma_clip(data::AbstractVector, σ_low::Real, σ_high::Real = σ_low;
-                     maxiters::Integer = 10)
-    d = collect(float.(data))
+# Copy input data into mutable floating-point storage without changing shape.
+function _float_copy(data::AbstractArray{T}) where {T}
+    F = float(T)
+    work = Base.copymutable(data)
+    return eltype(work) === F ? work : F.(work)
+end
+
+function _compact_finite!(data::AbstractArray{T}) where {T <: AbstractFloat}
+    flat = vec(data)
+    n = 0
+    @inbounds for i in eachindex(flat)
+        # Move finite samples into the active prefix while preserving storage.
+        v = flat[i]
+        if isfinite(v)
+            n += 1
+            flat[n] = v
+        end
+    end
+    _fill_tail_nan!(flat, n)
+    return n
+end
+
+function _fill_tail_nan!(flat::AbstractVector{T}, n::Integer) where {T <: AbstractFloat}
+    @inbounds for i in (n + 1):length(flat)
+        # Mark inactive slots so array-shaped copies remain visibly invalid.
+        flat[i] = T(NaN)
+    end
+    return flat
+end
+
+function _mask_invalid!(work::AbstractArray{T}, mask::Nothing) where {T <: AbstractFloat}
+    @inbounds for i in eachindex(work)
+        # Convert non-finite input values into inactive slots.
+        isfinite(work[i]) || (work[i] = T(NaN))
+    end
+    return work
+end
+
+function _mask_invalid!(work::AbstractArray{T}, mask::AbstractArray{Bool}) where {T <: AbstractFloat}
+    size(work) == size(mask) ||
+        throw(DimensionMismatch("image and mask must have the same size"))
+    mask_work = axes(mask) == axes(work) ? mask : Base.copymutable(mask)
+    @inbounds for i in eachindex(work, mask_work)
+        # Apply user masking and non-finite rejection to the working copy.
+        (mask_work[i] || !isfinite(work[i])) && (work[i] = T(NaN))
+    end
+    return work
+end
+
+function _working_copy(image::AbstractArray{<:Real}, mask)
+    work = _float_copy(image)
+    _mask_invalid!(work, mask)
+    return work
+end
+
+@inline _active_data(data::AbstractArray, n::Integer) =
+    n == length(data) ? data : view(vec(data), 1:n)
+
+###############################################################################
+# Sigma clipping
+
+# Iterative sigma clipping on an array-shaped working copy. Rejected values are
+# compacted into an active prefix and the remaining slots are marked NaN.
+function sigma_clip(data::AbstractArray, σ_low::Real, σ_high::Real = σ_low;
+                    maxiters::Integer = 10)
+    work = _float_copy(data)
+    sigma_clip!(work, σ_low, σ_high; maxiters)
+    return work
+end
+
+function sigma_clip!(data::AbstractArray{T}, σ_low::Real, σ_high::Real = σ_low;
+                     maxiters::Integer = 10) where {T <: AbstractFloat}
+    flat = vec(data)
+    n = _compact_finite!(data)
     for _ in 1:maxiters
-        isempty(d) && break
-        m = median(d)
-        s = std(d; corrected = false)
+        n == 0 && break
+
+        # Estimate clipping bounds from the current active finite prefix.
+        active = view(flat, 1:n)
+        m = median!(active)
+        s = std(active; corrected = false)
         s == 0 && break
         lo, hi = m - σ_low * s, m + σ_high * s
-        d_new = filter(x -> lo ≤ x ≤ hi, d)
-        length(d_new) == length(d) && break
-        d = d_new
+
+        # Compact retained values in place so each iteration reuses storage.
+        n_new = 0
+        @inbounds for i in 1:n
+            x = flat[i]
+            if lo ≤ x ≤ hi
+                n_new += 1
+                flat[n_new] = x
+            end
+        end
+        n_new == n && break
+        n = n_new
     end
-    return d
+    _fill_tail_nan!(flat, n)
+    return n
 end
 
 # Biweight location (Tukey 1977; Beers, Flynn & Gebhardt 1990).
-function _biweight_location(data::AbstractVector, c::Real = 6.0)
+function _biweight_location(data::AbstractArray, c::Real = 6.0)
     T  = float(eltype(data))
     M  = median(data)
     S  = mad(data; center=M, normalize=false)
     S == 0 && return T(M)
-    u  = @. (data - M) / (c * S)
-    w  = [abs(ui) < 1 ? (1 - ui^2)^2 : zero(T) for ui in u]
-    sw = sum(w)
+    inv_cS = inv(T(c * S))
+    sw = zero(T)
+    sdw = zero(T)
+    @inbounds for d in data
+        # Accumulate Tukey biweight terms without materializing weights.
+        u = (d - M) * inv_cS
+        if abs(u) < 1
+            w = (1 - u^2)^2
+            sw += w
+            sdw += (d - M) * w
+        end
+    end
     sw == 0 && return T(M)
-    return T(M) + sum((d - M) * wi for (d, wi) in zip(data, w)) / sw
+    return T(M) + sdw / sw
 end
 
 # Biweight scale (square-root of biweight midvariance; Beers et al. 1990).
-function _biweight_scale(data::AbstractVector, c::Real = 9.0)
+function _biweight_scale(data::AbstractArray, c::Real = 9.0)
     T   = float(eltype(data))
     n   = length(data)
     n == 0 && return zero(T)
     M   = median(data)
     S   = mad(data; center=M, normalize=false)
     S == 0 && return zero(T)
-    u   = @. (data - M) / (c * S)
-    g   = @. abs(u) < 1
-    num = sum((data[i] - M)^2 * (1 - u[i]^2)^4 for i in eachindex(data) if g[i]; init = zero(T))
-    den = abs(sum((1 - 5 * u[i]^2) for i in eachindex(data) if g[i]; init = zero(T)))^2
+    inv_cS = inv(T(c * S))
+    num = zero(T)
+    den_sum = zero(T)
+    @inbounds for d in data
+        # Accumulate accepted residual terms without boolean or u arrays.
+        u = (d - M) * inv_cS
+        if abs(u) < 1
+            one_minus_u2 = 1 - u^2
+            num += (d - M)^2 * one_minus_u2^4
+            den_sum += 1 - 5 * u^2
+        end
+    end
+    den = abs(den_sum)^2
     den == 0 && return zero(T)
     return sqrt(n * num / den)
-end
-
-# Collect valid (unmasked, finite) pixel values as a flat float vector.
-function _valid_pixels(image::AbstractMatrix, mask::Nothing)
-    return [float(v) for v in image if isfinite(v)]
-end
-
-function _valid_pixels(image::AbstractMatrix, mask::AbstractMatrix{Bool})
-    size(image) == size(mask) ||
-        throw(DimensionMismatch("image and mask must have the same size"))
-    return [float(image[i]) for i in eachindex(image) if !mask[i] && isfinite(image[i])]
 end
 
 ###############################################################################
@@ -115,7 +204,7 @@ julia> MeanBackground()(fill(3.0, 10))
 ```
 """
 struct MeanBackground <: AbstractBackgroundEstimator end
-(::MeanBackground)(data::AbstractVector) = mean(data)
+(::MeanBackground)(data::AbstractArray; dims = :) = mean(data; dims)
 
 """
     MedianBackground()
@@ -131,7 +220,7 @@ julia> MedianBackground()(fill(3.0, 10))
 ```
 """
 struct MedianBackground <: AbstractBackgroundEstimator end
-(::MedianBackground)(data::AbstractVector) = median(data)
+(::MedianBackground)(data::AbstractArray; dims = :) = median(data; dims)
 
 """
     SExtractorBackground()
@@ -159,13 +248,14 @@ julia> SExtractorBackground()([5.0, 5.1, 4.9, 5.0, 5.2, 4.8])
 """
 struct SExtractorBackground <: AbstractBackgroundEstimator end
 
-function (::SExtractorBackground)(data::AbstractVector)
-    m   = mean(data)
-    med = median(data)
-    s   = std(data; corrected = false)
-    s ≈ 0                         && return m
-    abs(m - med) / s > 0.3        && return med
-    return 2.5 * med - 1.5 * m
+function (::SExtractorBackground)(data::AbstractArray; dims = :)
+    function validate_se(background, m, med, s)
+        ifelse(s ≈ 0, m, ifelse(abs(m - med) / s > 0.3, med, background))
+    end
+    med = median(data; dims)
+    m = mean(data; dims)
+    s = std(data; mean = m, corrected = false, dims)
+    return @. validate_se(2.5 * med - 1.5 * m, m, med, s)
 end
 
 """
@@ -190,13 +280,21 @@ julia> MMMBackground(; median_factor=4, mean_factor=3)(fill(7.0, 15))
 7.0
 ```
 """
-Base.@kwdef struct MMMBackground <: AbstractBackgroundEstimator
-    median_factor::Float64 = 3.0
-    mean_factor::Float64   = 2.0
+Base.@kwdef struct MMMBackground{T} <: AbstractBackgroundEstimator
+    median_factor::T = 3
+    mean_factor::T = 2
+    function MMMBackground(median_factor, mean_factor)
+        T = promote_type(typeof(median_factor), typeof(mean_factor))
+        T = float(T)
+        return new{T}(T(median_factor), T(mean_factor))
+    end
 end
 
-(alg::MMMBackground)(data::AbstractVector) =
-    alg.median_factor * median(data) - alg.mean_factor * mean(data)
+function (alg::MMMBackground)(data; dims = :)
+    med = median(data; dims)
+    m = mean(data; dims)
+    return @. alg.median_factor * med - alg.mean_factor * m
+end
 
 """
     BiweightLocationBackground(; c=6.0)
@@ -219,12 +317,15 @@ julia> BiweightLocationBackground(; c=4.0)(fill(4.0, 20))
 4.0
 ```
 """
-Base.@kwdef struct BiweightLocationBackground <: AbstractBackgroundEstimator
-    c::Float64 = 6.0
+Base.@kwdef struct BiweightLocationBackground{T} <: AbstractBackgroundEstimator
+    c::T = 6
+    function BiweightLocationBackground(c)
+        T = float(typeof(c))
+        return new{T}(T(c))
+    end
 end
-
-(alg::BiweightLocationBackground)(data::AbstractVector) =
-    _biweight_location(float.(data), alg.c)
+(alg::BiweightLocationBackground)(data; dims = :) =
+    _biweight_stat(_biweight_location, data, dims, alg.c)
 
 ###############################################################################
 # RMS estimators
@@ -243,7 +344,7 @@ julia> StdRMS()(fill(1.0, 10))
 ```
 """
 struct StdRMS <: AbstractBackgroundRMSEstimator end
-(::StdRMS)(data::AbstractVector) = std(data; corrected = false)
+(::StdRMS)(data::AbstractArray; dims = :) = std(data; corrected = false, dims)
 
 """
     MADStdRMS()
@@ -266,7 +367,7 @@ julia> MADStdRMS()(fill(1.0, 10))
 ```
 """
 struct MADStdRMS <: AbstractBackgroundRMSEstimator end
-(::MADStdRMS)(data::AbstractVector) = mad(data; normalize=true)
+(::MADStdRMS)(data::AbstractArray; dims = :) = mad(data, dims; normalize = true)
 
 """
     BiweightScaleRMS(; c=9.0)
@@ -284,12 +385,56 @@ julia> BiweightScaleRMS()(fill(2.0, 10))
 0.0
 ```
 """
-Base.@kwdef struct BiweightScaleRMS <: AbstractBackgroundRMSEstimator
-    c::Float64 = 9.0
+Base.@kwdef struct BiweightScaleRMS{T} <: AbstractBackgroundRMSEstimator
+    c::T = 9
+    function BiweightScaleRMS(c)
+        # Convert integer tuning constants to their floating storage type.
+        T = float(typeof(c))
+        return new{T}(T(c))
+    end
+end
+(alg::BiweightScaleRMS)(data; dims = :) =
+    _biweight_stat(_biweight_scale, data, dims, alg.c)
+
+_biweight_stat(f, data, ::Colon, c) = f(_float_copy(data), c)
+_biweight_stat(f, data, dims, c) = mapslices(x -> f(_float_copy(x), c), data; dims)
+
+_location_estimate!(::MeanBackground, data::AbstractArray) = mean(data)
+_location_estimate!(::MedianBackground, data::AbstractArray) = median!(data)
+
+function _location_estimate!(::SExtractorBackground, data::AbstractArray)
+    # Measure moments before median! permutes the working copy.
+    m = mean(data)
+    s = std(data; mean=m, corrected = false)
+    med = median!(data)
+    s ≈ 0                  && return m
+    abs(m - med) / s > 0.3 && return med
+    return 2.5 * med - 1.5 * m
 end
 
-(alg::BiweightScaleRMS)(data::AbstractVector) =
-    _biweight_scale(float.(data), alg.c)
+function _location_estimate!(alg::MMMBackground, data::AbstractArray)
+    # Combine order-independent mean with in-place median on copied pixels.
+    m = mean(data)
+    med = median!(data)
+    return alg.median_factor * med - alg.mean_factor * m
+end
+
+_location_estimate!(alg::BiweightLocationBackground, data::AbstractArray) =
+    _biweight_location(data, alg.c)
+_location_estimate!(estimator, data::AbstractArray) = estimator(data)
+
+_rms_estimate!(::StdRMS, data::AbstractArray) = std(data; corrected = false)
+_rms_estimate!(::MADStdRMS, data::AbstractArray) = mad!(data; normalize=true)
+_rms_estimate!(alg::BiweightScaleRMS, data::AbstractArray) = _biweight_scale(data, alg.c)
+_rms_estimate!(rms_estimator, data::AbstractArray) = rms_estimator(data)
+
+function _estimate_pair!(estimator, rms_estimator, data::AbstractArray, n_valid::Integer)
+    active = _active_data(data, n_valid)
+    # Estimate location first, then let RMS estimators consume the same copy.
+    bkg = _location_estimate!(estimator, active)
+    bkg_rms = _rms_estimate!(rms_estimator, active)
+    return (bkg = bkg, bkg_rms = bkg_rms)
+end
 
 ###############################################################################
 # Scalar estimation
@@ -312,9 +457,9 @@ Returns a `NamedTuple` `(bkg = …, bkg_rms = …)`.
 
 # Arguments
 - `estimator`: an [`AbstractBackgroundEstimator`](@ref) or any callable
-  `f(v::AbstractVector) -> scalar`.
+  `f(v::AbstractArray) -> scalar`.
 - `rms_estimator`: an [`AbstractBackgroundRMSEstimator`](@ref) or any callable.
-- `mask`: `AbstractMatrix{Bool}` with the same shape as `image`; `true`
+- `mask`: `AbstractArray{Bool}` with the same shape as `image`; `true`
   excludes the pixel.  `nothing` (default) uses all finite pixels.
 - `sigma`: sigma-clipping threshold.  Set to `nothing` to disable clipping.
 - `maxiters`: maximum number of sigma-clipping iterations.
@@ -333,20 +478,19 @@ julia> r = estimate_background(img; estimator=MMMBackground(), rms_estimator=MAD
 ```
 """
 function estimate_background(
-        image::AbstractMatrix{<:Real};
+        image::AbstractArray{<:Real};
         estimator::Union{AbstractBackgroundEstimator, Function} = SExtractorBackground(),
         rms_estimator::Union{AbstractBackgroundRMSEstimator, Function} = StdRMS(),
-        mask::Union{Nothing, AbstractMatrix{Bool}} = nothing,
+        mask::Union{Nothing, AbstractArray{Bool}} = nothing,
         sigma::Union{Nothing, Real} = 3.0,
         maxiters::Integer = 10,
     )
-    pixels = _valid_pixels(image, mask)
-    isempty(pixels) && throw(ArgumentError("no finite pixels available for background estimation"))
-    if !isnothing(sigma)
-        pixels = _sigma_clip(pixels, sigma; maxiters)
-        isempty(pixels) && throw(ArgumentError("all pixels were removed by sigma clipping"))
-    end
-    return (bkg = estimator(pixels), bkg_rms = rms_estimator(pixels))
+    work = _working_copy(image, mask)
+    n_valid = isnothing(sigma) ? _compact_finite!(work) : sigma_clip!(work, sigma; maxiters)
+    n_valid == 0 && throw(ArgumentError(isnothing(sigma) ?
+        "no finite pixels available for background estimation" :
+        "all pixels were removed by sigma clipping"))
+    return _estimate_pair!(estimator, rms_estimator, work, n_valid)
 end
 
 ###############################################################################
@@ -375,13 +519,14 @@ end
 Upsample `mesh` (size `M × N`) to a `H × W` array using bicubic
 Catmull-Rom interpolation.  Corner samples are preserved exactly.
 """
-function _bicubic_zoom(mesh::AbstractMatrix{T}, H::Integer, W::Integer) where {T <: Real}
+function _bicubic_zoom(mesh::AbstractMatrix{T}, H::Integer, W::Integer,
+                       coord_H::Integer = H, coord_W::Integer = W) where {T <: Real}
     M, N  = size(mesh)
     F     = float(T)
     out   = Matrix{F}(undef, H, W)
     fmesh = F === T ? mesh : F.(mesh)
     for j in 1:W
-        yf   = _zoom_coord(j, W, N)
+        yf   = _zoom_coord(j, coord_W, N)
         jm   = floor(Int, yf)
         ty   = F(yf - jm)
         jm1  = _clamp_idx(jm - 1, N)
@@ -389,7 +534,7 @@ function _bicubic_zoom(mesh::AbstractMatrix{T}, H::Integer, W::Integer) where {T
         jm3  = _clamp_idx(jm + 1, N)
         jm4  = _clamp_idx(jm + 2, N)
         for i in 1:H
-            xf   = _zoom_coord(i, H, M)
+            xf   = _zoom_coord(i, coord_H, M)
             im_  = floor(Int, xf)
             tx   = F(xf - im_)
             r1   = _clamp_idx(im_ - 1, M)
@@ -428,7 +573,7 @@ function _median_filter2d!(dst::Matrix{T}, src::Matrix{T},
 end
 
 function _median_filter2d(arr::Matrix{T}, fh::Int, fw::Int) where {T <: AbstractFloat}
-    (fh == 1 && fw == 1) && return copy(arr)
+    (fh == 1 && fw == 1) && return arr
     return _median_filter2d!(similar(arr), arr, fh, fw)
 end
 
@@ -459,8 +604,15 @@ function _fill_nans!(mesh::Matrix{T}) where {T <: AbstractFloat}
     end
     # Fallback: fill any remaining NaNs with the global mean of finite values.
     if any(isnan, mesh)
-        vals = [v for v in mesh if !isnan(v)]
-        gm = isempty(vals) ? zero(T) : sum(vals) / length(vals)
+        s, n = zero(T), 0
+        @inbounds for v in mesh
+            # Accumulate finite mesh values without a temporary vector.
+            if !isnan(v)
+                s += v
+                n += 1
+            end
+        end
+        gm = iszero(n) ? zero(T) : s / n
         for i in eachindex(mesh)
             isnan(mesh[i]) && (mesh[i] = gm)
         end
@@ -573,9 +725,12 @@ function Background2D(
         size(mask) == (H, W) ||
             throw(DimensionMismatch("mask must be the same size as image"))
     end
+    # Normalize unusual mask axes so mesh-box indexing can stay one-based.
+    mask_work = isnothing(mask) || axes(mask) == (Base.OneTo(H), Base.OneTo(W)) ? mask : Matrix(mask)
+
     # Warn about non-finite values not covered by the mask.
     for i in eachindex(image)
-        if !isfinite(image[i]) && (isnothing(mask) || !mask[i])
+        if !isfinite(image[i]) && (isnothing(mask_work) || !mask_work[i])
             @warn "image contains non-finite values that are not covered by the mask; they will be excluded automatically"
             break
         end
@@ -585,29 +740,26 @@ function Background2D(
     padded, nmesh_rows, nmesh_cols = _tile_image(Val(edge_method), image, bh, bw)
     pad_H, pad_W = size(padded)
 
-    # Build a combined boolean mask (true = excluded).
-    total_mask = _build_total_mask(padded, mask, H, W, pad_H, pad_W)
-
     T = float(eltype(image))
     mesh_bkg = fill(T(NaN), nmesh_rows, nmesh_cols)
     mesh_rms = fill(T(NaN), nmesh_rows, nmesh_cols)
 
     min_valid = exclude_percentile / 100.0 * bh * bw
+    box = Matrix{T}(undef, bh, bw)
 
     for mi in 1:nmesh_rows, mj in 1:nmesh_cols
         rows = ((mi - 1) * bh + 1):(mi * bh)
         cols = ((mj - 1) * bw + 1):(mj * bw)
-        view_img  = view(padded, rows, cols)
-        view_mask = view(total_mask, rows, cols)
-        pixels    = [float(view_img[k]) for k in eachindex(view_img)
-                     if !view_mask[k] && isfinite(view_img[k])]
-        length(pixels) < min_valid && continue
+        _copy_box_data!(box, padded, mask_work, rows, cols)
+        n_valid = _compact_finite!(box)
+        n_valid < min_valid && continue
         if !isnothing(sigma)
-            pixels = _sigma_clip(pixels, sigma; maxiters)
-            isempty(pixels) && continue
+            n_valid = sigma_clip!(box, sigma; maxiters)
+            iszero(n_valid) && continue
         end
-        mesh_bkg[mi, mj] = estimator(pixels)
-        mesh_rms[mi, mj] = rms_estimator(pixels)
+        pair = _estimate_pair!(estimator, rms_estimator, box, n_valid)
+        mesh_bkg[mi, mj] = pair.bkg
+        mesh_rms[mi, mj] = pair.bkg_rms
     end
 
     all(isnan, mesh_bkg) &&
@@ -622,13 +774,12 @@ function Background2D(
     fmesh_bkg = _median_filter2d(mesh_bkg, fh, fw)
     fmesh_rms = _median_filter2d(mesh_rms, fh, fw)
 
-    # Upsample to the padded image size and crop to the original size.
-    # For :pad, output is cropped back to (H, W).  For :crop, the output
-    # is smaller — nmesh * box_size ≤ (H, W) — so no extra cropping is needed.
+    # Upsample directly to the returned size while preserving padded coordinates.
+    # For :crop, the output is smaller because nmesh * box_size ≤ (H, W).
     out_H = min(H, pad_H)
     out_W = min(W, pad_W)
-    full_bkg = _bicubic_zoom(fmesh_bkg, pad_H, pad_W)[1:out_H, 1:out_W]
-    full_rms = _bicubic_zoom(fmesh_rms, pad_H, pad_W)[1:out_H, 1:out_W]
+    full_bkg = _bicubic_zoom(fmesh_bkg, out_H, out_W, pad_H, pad_W)
+    full_rms = _bicubic_zoom(fmesh_rms, out_H, out_W, pad_H, pad_W)
 
     return Background2D{T}(full_bkg, full_rms, mesh_bkg, mesh_rms, (bh, bw))
 end
@@ -660,24 +811,26 @@ function _tile_image(::Val{:crop}, image, bh, bw)
     nmesh_rows = H ÷ bh
     nmesh_cols = W ÷ bw
     T     = float(eltype(image))
-    cropped = T.(image[1:nmesh_rows * bh, 1:nmesh_cols * bw])
+    cropped = Matrix{T}(@view image[1:nmesh_rows * bh, 1:nmesh_cols * bw])
     return cropped, nmesh_rows, nmesh_cols
 end
 
-function _build_total_mask(padded, mask::Nothing, H, W, pad_H, pad_W)
-    total = falses(pad_H, pad_W)
-    # Padded region is excluded (the padded values are NaN, picked up automatically).
-    total[(H + 1):pad_H, :] .= true
-    total[:, (W + 1):pad_W] .= true
-    return total
+function _copy_box_data!(box::Matrix{T}, image, mask::Nothing, rows, cols) where {T}
+    @inbounds for (bj, j) in enumerate(cols), (bi, i) in enumerate(rows)
+        # Preserve the box layout while marking invalid samples as inactive.
+        v = image[i, j]
+        box[bi, bj] = isfinite(v) ? T(v) : T(NaN)
+    end
+    return box
 end
 
-function _build_total_mask(padded, mask::AbstractMatrix{Bool}, H, W, pad_H, pad_W)
-    total = falses(pad_H, pad_W)
-    total[1:H, 1:W] .= mask
-    total[(H + 1):pad_H, :] .= true
-    total[:, (W + 1):pad_W] .= true
-    return total
+function _copy_box_data!(box::Matrix{T}, image, mask::AbstractMatrix{Bool}, rows, cols) where {T}
+    @inbounds for (bj, j) in enumerate(cols), (bi, i) in enumerate(rows)
+        # Check finiteness first so padded NaNs never index beyond the mask.
+        v = image[i, j]
+        box[bi, bj] = isfinite(v) && !mask[i, j] ? T(v) : T(NaN)
+    end
+    return box
 end
 
 end # module Background
