@@ -26,17 +26,19 @@ makedocs(;
     pages = [
         "Home" => "index.md",
         "PSFs" => [
-            # "PSF Overview" => "psf_api.md",
-            # "Parametric PSF Models" => "parametric_models.md",
-            "Effective PSF Models" => 
-                [
-            "ePSF Overview" => "empirical/epsf_overview.md",
-            "ImagePSF" => "empirical/image_psf.md"
+            "PSF API" => "psf/psf_api.md",
+            "Parametric PSF Models" => "psf/parametric_models.md",
+            "Effective PSF Models" => [
+                "ePSF Overview" => "psf/empirical/epsf_overview.md",
+                "ImagePSF" => "psf/empirical/image_psf.md",
             ],
         ],
-        # "Benchmarks" => "bench.md",
-    ],
-    doctest = false,
+        "Levenberg-Marquardt Fitter" => "lm_fitter.md",
+        "Simulation" => "simulation.md",
+        "Index" => "doc_index.md",
+        "References" => "refs.md",
+        ],
+    doctest = true,
     linkcheck = CI,
     warnonly = [:missing_docs, :linkcheck],
     plugins = [bib],

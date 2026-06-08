@@ -1,5 +1,6 @@
 """
-    free_params(model::AbstractPSFModel, fixed::NamedTuple=NamedTuple()) -> (free_names, free_idx, x0)
+    free_params(model::AbstractPSFModel, 
+        fixed::NamedTuple=NamedTuple()) -> (free_names, free_idx, x0)
 
 Return the names of the free (non-fixed) parameters, their indices, and their initial values as
 a `Vector`. `fixed` is a `NamedTuple` whose keys name the fields to freeze.
@@ -33,7 +34,7 @@ function _has_deriv(model::AbstractPSFModel)
 end
 
 """
-    fit(model::AbstractPSFModel, image, inds=axes(image);
+    fit_star(model::AbstractPSFModel, image, inds=axes(image);
         fixed=(;), inv_var=nothing,
         damping::AbstractLMDamping=MarquardtDamping(),
         max_iter=200, x_tol=1e-8, f_tol=1e-8, g_tol=1e-8,
@@ -137,7 +138,7 @@ uncertainty in the weights. In this case, use `ReweightedCovarianceEstimator`.
   (default `1e-8`)
 - `show_trace`: print per-iteration statistics to stdout (default `false`)
 """
-function fit(
+function fit_star(
         model::AbstractPSFModel{T},
         image::AbstractMatrix,
         inds = axes(image);

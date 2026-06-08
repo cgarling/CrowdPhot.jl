@@ -1,5 +1,5 @@
 ```@meta
-CurrentModule = CrowdPhot
+CurrentModule = CrowdPhot.PSF
 ```
 
 # [ImagePSF — ePSF model for single images](@id image_psf)
@@ -34,8 +34,7 @@ model's `flux` parameter directly scales detector-pixel fluxes.
 ### Building an ePSF from data
 
 ```@docs
-fit(::Type{ImagePSF}, ::AbstractMatrix, ::Any, ::Any)
-fit(::Type{ImagePSF}, ::AbstractMatrix, ::Any)
+fit_psf(::Type{ImagePSF}, ::AbstractMatrix, ::Any, ::Any)
 ```
 
 ### Result types
@@ -68,7 +67,9 @@ identically for `ImagePSF` as for analytic models:
 
 ## Implementation
 
-The ePSF construction algorithm in [`fit(::Type{ImagePSF}, ...)`](@ref) is an adaptation of the [`Anderson2000`](@citet) iterative
+The ePSF construction algorithm in
+[`fit_psf`](@ref fit_psf(::Type{ImagePSF}, ::AbstractMatrix, ::Any, ::Any))
+is an adaptation of the [Anderson2000](@citet) iterative
 residual-stacking method to the **single-image** regime. The classical method
 operates across dithered multi-exposure datasets with three stages: (1) ePSF
 construction, (2) per-star fitting, and (3) multi-dither position averaging to
@@ -112,10 +113,10 @@ classical method handles through its sigma-rejection stacking step.
 **Plan to integrate more closely with Photometry.jl to improve this step.**
 
 ```@docs
-CrowdPhot.PSF.extract_stars
-CrowdPhot.PSF.EmpiricalStar
-CrowdPhot.PSF.estimate_local_sky
-CrowdPhot.PSF.estimate_initial_star_params
+extract_stars
+EmpiricalStar
+estimate_local_sky
+estimate_initial_star_params
 ```
 
 ### Step 2 — ePSF grid stacking
@@ -145,7 +146,9 @@ sigma-clipped median — the median is computed, then samples beyond
 Cells with no samples are left as `NaN`.
 
 ```@docs
-CrowdPhot.PSF.robust_combine_grid_cells
+stack_epsf_grid
+project_star_pixels_to_grid
+robust_combine_grid_cells
 ```
 
 **Comparison to [Anderson2000](@citet):** The classical method forms
@@ -170,11 +173,11 @@ samples in a 5×5 neighborhood); (iii) any remaining holes are filled with
 local neighbor medians, falling back to zero.
 
 ```@docs
-CrowdPhot.PSF.fill_grid_holes!
+fill_grid_holes!
 ```
 
 **Comparison to [Anderson2000](@citet):** The bicubic infill stage has no 
-direct counterpart in [`Anderson2000`](@citet) and may introduce mild
+direct counterpart in [Anderson2000](@citet) and may introduce mild
 smoothing artifacts in very sparsely sampled regions, but if more than 10%
 of ePSF pixels are empty, a warning is issued. In well-sampled grids it is
 effectively a no-op.
@@ -189,8 +192,8 @@ origin via bicubic interpolation. Shifts larger than 2 oversampling pixels
 are ignored as likely stack failures.
 
 ```@docs
-CrowdPhot.PSF.smooth_grid_quartic!
-CrowdPhot.PSF.recenter_grid_to_origin!
+smooth_grid_quartic!
+recenter_grid_to_origin!
 ```
 
 **Comparison to [Anderson2000](@citet):** The classical method uses an
@@ -209,7 +212,7 @@ flux per oversampling cell — the same convention used by
 [`evaluate`](@ref) for [`ImagePSF`](@ref).
 
 ```@docs
-CrowdPhot.PSF.normalize_grid_to_oversampling_area!
+normalize_grid_to_oversampling_area!
 ```
 
 ### Step 3 — Per-star fitting
@@ -222,7 +225,7 @@ optimization ([`lm_irls`](@ref)) with analytic derivatives provided by
 down-weight outlier pixels.
 
 ```@docs
-CrowdPhot.PSF.fit_star_against_epsf
+fit_star_against_epsf
 ```
 
 **Comparison to [Anderson2000](@citet):** The classical method uses a
@@ -243,7 +246,7 @@ surviving stars and subtracts it. This breaks the global degeneracy between
 the PSF shape and the absolute centroid reference frame.
 
 ```@docs
-CrowdPhot.PSF.remove_centroid_drift
+remove_centroid_drift
 ```
 
 **Comparison to [Anderson2000](@citet):** This is the single most significant
@@ -268,7 +271,8 @@ $10^{-3}$ pixels). A minimum of two surviving stars is required.
 
 ### Return value
 
-[`fit(::Type{ImagePSF}, ...)`](@ref) returns a `(psf, result)` pair, where `result` is an
+[`fit_psf`](@ref fit_psf(::Type{ImagePSF}, ::AbstractMatrix, ::Any, ::Any))
+returns a `(psf, result)` pair, where `result` is an
 [`ImagePSFBuildResult`](@ref) containing the final per-star parameters,
 usage and convergence flags, iteration count, and per-star costs — enabling
 downstream quality filtering.

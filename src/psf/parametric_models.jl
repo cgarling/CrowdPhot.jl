@@ -158,7 +158,7 @@ The model is evaluated by sampling the general 2D
 Gaussian function at the given position and adding the background:
 
 ```math
-I(x, y) = \frac{F}{\pi\,\mathrm{FWHM}_x\,\mathrm{FWHM}_y/(4\ln 2)}
+I(x, y) = \frac{F}{\pi\,\mathrm{FWHM}_x\,\mathrm{FWHM}_y/(4\ln 2)} \,
 \exp\!\left[-4\ln 2\,
 \left(
 \frac{u^2}{\mathrm{FWHM}_x^2}
@@ -176,13 +176,14 @@ u = \cos\theta\,(x-x_0) + \sin\theta\,(y-y_0),
 v = -\sin\theta\,(x-x_0) + \cos\theta\,(y-y_0),
 ```
 
-``F`` is the total flux and ``B`` is the background level.
+where ``F`` is the total flux and ``B`` is the background level.
 
 # Examples
 ```jldoctest
 julia> using CrowdPhot.PSF: GaussianPSF
 
-julia> GaussianPSF(x=1.0, y=2.0, x_fwhm=3.0, y_fwhm=4.0, theta=35.0, flux=4.0, bkg=5.0) isa GaussianPSF{Float64}
+julia> GaussianPSF(x=1.0, y=2.0, x_fwhm=3.0, y_fwhm=4.0, theta=35.0,
+           flux=4.0, bkg=5.0) isa GaussianPSF{Float64}
 true
 ```
 """
@@ -368,6 +369,14 @@ function evaluate_fgh(model::GaussianPSF{T}, px, py) where {T}
 end
 
 ############################################
+# ```math
+# f(px, py) = \frac{\mathrm{flux}}{4}
+#     \left[\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(px + 0.5 - x)}{\mathrm{fwhm}}\right)
+#          -\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(px - 0.5 - x)}{\mathrm{fwhm}}\right)\right]
+#     \left[\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(py + 0.5 - y)}{\mathrm{fwhm}}\right)
+#          -\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(py - 0.5 - y)}{\mathrm{fwhm}}\right)\right]
+#     + \mathrm{bkg}
+# ```
 
 @doc raw"""
     CircularGaussianPRF(x, y, fwhm, flux, bkg) -> CircularGaussianPRF{T}
@@ -377,17 +386,14 @@ given by `fwhm`. The PRF is the underlying Gaussian PSF integrated analytically 
 pixel. The `flux` is the total flux (sum of PRF values over all pixels equals `flux`), and
 `bkg` is a scalar background level added to the PRF.
 
-The PRF value at pixel center `(px, py)` is the integral of the Gaussian PSF over the pixel
-area `[px-0.5, px+0.5] × [py-0.5, py+0.5]`. The model is evaluated as
+The PRF value at pixel center `(x, y)` is the integral of the Gaussian PSF over the pixel
+area `[x-0.5, x+0.5] × [y-0.5, y+0.5]`. The model is evaluated as
 
 ```math
-f(px, py) = \frac{\mathrm{flux}}{4}
-    \left[\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(px + 0.5 - x)}{\mathrm{fwhm}}\right)
-         -\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(px - 0.5 - x)}{\mathrm{fwhm}}\right)\right]
-    \left[\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(py + 0.5 - y)}{\mathrm{fwhm}}\right)
-         -\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(py - 0.5 - y)}{\mathrm{fwhm}}\right)\right]
-    + \mathrm{bkg}
+\begin{aligned} I(x, y) ={}& \frac{F}{4} \left[\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(x + 0.5 - x_0)}{\mathrm{fwhm}}\right) -\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(x - 0.5 - x_0)}{\mathrm{fwhm}}\right)\right] \\ &\times \left[\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(y + 0.5 - y_0)}{\mathrm{fwhm}}\right) -\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(y - 0.5 - y_0)}{\mathrm{fwhm}}\right)\right] + B \end{aligned}
 ```
+
+where ``F`` is the total flux, ``B`` is the background level, and ``\mathrm{erf}`` is the error function.
 
 # Examples
 ```jldoctest
@@ -469,31 +475,38 @@ counter-clockwise from the x-axis. The PRF is the underlying Gaussian PSF
 integrated analytically over each pixel. The `flux` is the total flux (sum of PRF values
 over all pixels equals `flux`), and `bkg` is a scalar background level added to the PRF.
 
-The PRF value at pixel center `(px, py)` is the integral of the Gaussian PSF over the pixel
-area `[px-0.5, px+0.5] × [py-0.5, py+0.5]`, evaluated after rotating the coordinates
-by `-theta` to align with the principal axes. The model is evaluated as 
+The PRF value at pixel center `(x, y)` is the integral of the Gaussian PSF over the pixel
+area `[x-0.5, x+0.5] × [y-0.5, y+0.5]`, evaluated after rotating the coordinates
+by `-theta` to align with the principal axes. The model is evaluated as
 
 ```math
-f(px, py) = \\frac{\\mathrm{flux}}{4}
-    \\left[\\mathrm{erf}\\!\\left(\\frac{2\\sqrt{\\ln 2}\\,(u + 0.5)}{x\\_\\mathrm{fwhm}}\\right)
-         -\\mathrm{erf}\\!\\left(\\frac{2\\sqrt{\\ln 2}\\,(u - 0.5)}{x\\_\\mathrm{fwhm}}\\right)\\right]
-    \\left[\\mathrm{erf}\\!\\left(\\frac{2\\sqrt{\\ln 2}\\,(v + 0.5)}{y\\_\\mathrm{fwhm}}\\right)
-         -\\mathrm{erf}\\!\\left(\\frac{2\\sqrt{\\ln 2}\\,(v - 0.5)}{y\\_\\mathrm{fwhm}}\\right)\\right]
-    + \\mathrm{bkg}
+\begin{aligned}
+I(x, y) ={}& \frac{F}{4}
+    \left[\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(u + 0.5)}{x_{\mathrm{fwhm}}}\right)
+         -\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(u - 0.5)}{x_{\mathrm{fwhm}}}\right)\right] \\
+&\times
+    \left[\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(v + 0.5)}{y_{\mathrm{fwhm}}}\right)
+         -\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(v - 0.5)}{y_{\mathrm{fwhm}}}\right)\right]
+    + B
+\end{aligned}
 ```
 
-where 
+where
 
 ```math
-u = \cos\theta\,(x-x_0) + \sin\theta\,(y-y_0),
-\qquad
-v = -\sin\theta\,(x-x_0) + \cos\theta\,(y-y_0),
+\begin{aligned}
+u &= \cos\theta\,(x - x_0) + \sin\theta\,(y - y_0), \\
+v &= -\sin\theta\,(x - x_0) + \cos\theta\,(y - y_0)
+\end{aligned}
 ```
+
+where ``F`` is the total flux and ``B`` is the background level.
 
 ```jldoctest
 julia> using CrowdPhot.PSF: GaussianPRF
 
-julia> GaussianPRF(x=1.0, y=2.0, x_fwhm=3.0, y_fwhm=4.0, theta=35.0, flux=4.0, bkg=5.0) isa GaussianPRF{Float64}
+julia> GaussianPRF(x=1.0, y=2.0, x_fwhm=3.0, y_fwhm=4.0, theta=35.0,
+           flux=4.0, bkg=5.0) isa GaussianPRF{Float64}
 true
 ```
 """
@@ -591,7 +604,7 @@ end
 @doc raw"""
     AiryPSF(x, y, radius, flux, bkg) -> AiryPSF{T}
 
-Airy disk point spread function (PSF) with centroid `(x, y)`, first-dark-ring `radius`,
+Airy disk point spread function (PSF) with centroid `(x_0, y_0)`, first-dark-ring `radius`,
 total `flux`, and scalar background `bkg`.
 
 The `radius` parameter is the radial distance from the centroid to the first dark ring
@@ -604,14 +617,14 @@ The model is evaluated by sampling the Airy disk PSF
 at the given position and adding the background:
 
 ```math
-f(px, py) = \frac{\pi\,\mathrm{flux}}{4\,a^2}
-            \left(\frac{2\,J_1(u)}{u}\right)^2 + \mathrm{bkg}
+I(x, y) = \frac{\pi\,\mathrm{F}}{4\,a^2}
+          \left(\frac{2\,J_1(u)}{u}\right)^2 + B
 ```
 
 where
 
 ```math
-r = \sqrt{(px - x)^2 + (py - y)^2}, \qquad
+r = \sqrt{(x - x_0)^2 + (y - y_0)^2}, \qquad
 u = \frac{\pi\,r}{a}, \qquad
 a = \frac{\mathrm{radius}}{r_z}, \qquad
 r_z = \frac{j_{1,1}}{\pi} \approx 1.2197
@@ -619,7 +632,7 @@ r_z = \frac{j_{1,1}}{\pi} \approx 1.2197
 
 with $j_{1,1}$ the first positive zero of the first-order Bessel function $J_1$.
 The singularity at $u = 0$ is handled analytically; the peak value at the centroid
-is $\pi\,\mathrm{flux}/(4a^2) + \mathrm{bkg}$.
+is $\pi\,\mathrm{flux}/(4a^2) + B$ for background `B`.
 The FWHM is approximately $0.8437 \times \mathrm{radius}$ along each axis.
 
 ```jldoctest
@@ -735,7 +748,8 @@ F\,\frac{\beta - 1}{\pi\,\alpha^2}
 ```jldoctest
 julia> using CrowdPhot.PSF: CircularMoffatPSF
 
-julia> CircularMoffatPSF(x=1.0, y=2.0, α=3.0, β=2.5, flux=4.0, bkg=5.0) isa CircularMoffatPSF{Float64}
+julia> CircularMoffatPSF(x=1.0, y=2.0, α=3.0, β=2.5,
+           flux=4.0, bkg=5.0) isa CircularMoffatPSF{Float64}
 true
 ```
 """
@@ -825,7 +839,8 @@ v = -\sin\theta\,(x-x_0) + \cos\theta\,(y-y_0).
 ```jldoctest
 julia> using CrowdPhot.PSF: MoffatPSF
 
-julia> MoffatPSF(x=1.0, y=2.0, x_α=3.0, y_α=4.0, theta=35.0, β=2.5, flux=4.0, bkg=5.0) isa MoffatPSF{Float64}
+julia> MoffatPSF(x=1.0, y=2.0, x_α=3.0, y_α=4.0, theta=35.0,
+           β=2.5, flux=4.0, bkg=5.0) isa MoffatPSF{Float64}
 true
 ```
 """

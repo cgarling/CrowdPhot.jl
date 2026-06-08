@@ -8,10 +8,10 @@ using StaticArrays: SA, SVector, MMatrix
 using Statistics: median, mean
 
 export AbstractPSFModel, AiryPSF, CircularGaussianPSF, GaussianPSF, CircularGaussianPRF, GaussianPRF, CircularMoffatPSF, MoffatPSF, ImagePSF
-export evaluate, centroid, integral, render, render!, peak, amplitude, effective_area, fit
+export evaluate, evaluate_fg, centroid, integral, render, render!, peak, amplitude, effective_area, fit_star, fit_psf
 export LMResult, MADScale, FixedScale, MScale, estimate_scale, TukeyLoss, weight, KnownWeightsCovarianceEstimator, ReweightedCovarianceEstimator
 
-"""Abstract type for PSF models. All PSF models should be subtypes of this abstract type, and implement the following methods:"""
+"""AbstractPSFModel{T}: Abstract type for PSF models with element type `T`. All PSF models should be subtypes of this abstract type, and implement the following methods:"""
 abstract type AbstractPSFModel{T} end
 Base.Broadcast.broadcastable(m::AbstractPSFModel) = Ref(m)
 (model::AbstractPSFModel)(x, y) = evaluate(model, x, y)
@@ -94,12 +94,16 @@ minus the background. Default implementation is
 """
 amplitude(model::AbstractPSFModel) = peak(model) - background(model)
 
-"""
+@doc raw"""
     effective_area(model::AbstractPSFModel{T})::T
 
-Return the effective area of the PSF model, defined as 
-``\\frac{\\left(\\int PSF(x, y) dx dy\\right)^2}{\\int PSF(x, y)^2 dx dy}``. 
-For PSF fitting
+Return the effective area of the PSF model, defined as
+
+```math
+\frac{\left(\int PSF(x, y) \, dx \, dy\right)^2}{\int PSF(x, y)^2 \, dx \, dy}
+```
+
+For PSF fitting 
 photometry, this is the effective number of noisy pixels that contribute
 to the measurement -- the variance of the flux measurement is approximately
 the variance of the background noise per pixel times the effective area. 
@@ -107,7 +111,14 @@ Models with more complex definitions of effective area should implement
 their own version of this function.
 
 For a star image with PSF `P` and background noise per pixel with variance `σ²`, 
-the maximum likelihood estimate of the flux is ``F^\\hat = \\frac{\\sum_i P_i (D_i - B_i)}{\\sum_i P_i^2}``, where `D_i` is the observed data, `B_i` is the background, and `P_i` is the PSF value at pixel `i`. The variance of the flux measurement is ``var(F^\\hat) = σ² * effective_area(P)``.
+the maximum likelihood estimate of the flux is
+
+```math
+\hat{F} = \frac{\sum_i P_i (D_i - B_i)}{\sum_i P_i^2}
+```
+
+where `D_i` is the observed data, `B_i` is the background, and `P_i` is the PSF
+value at pixel `i`. The variance of the flux measurement is `var(\hat{F}) = σ² * effective_area(P)`.
 """
 function effective_area(model::AbstractPSFModel) end
 
@@ -184,7 +195,8 @@ function ellipse_bounds(a, b, θ)
 end
 
 """
-    extent([T::Integer], model::AbstractPSFModel, fwhm_factor=5; roundint::Bool=false) → (x_range::Tuple, y_range::Tuple)
+    extent([T::Integer], model::AbstractPSFModel, 
+        fwhm_factor=5; roundint::Bool=false) → (x_range::Tuple, y_range::Tuple)
 
 Returns the extent of the PSF model which is typically useful for fitting, plotting, etc., 
 `((x_min, x_max), (y_min, y_max))`. By default, the extent is the smallest axis-aligned
@@ -262,7 +274,8 @@ end
 
 
 """
-    subtract_star!(out::AbstractMatrix, model::AbstractPSFModel, inds::CartesianIndices=CartesianIndices(model))
+    subtract_star!(out::AbstractMatrix, model::AbstractPSFModel, 
+        inds::CartesianIndices=CartesianIndices(model))
 
 Subtract the model PSF flux from each pixel of `out` over the indices `inds`,
 i.e. `out[idx] -= evaluate(model, Tuple(idx)...)`.

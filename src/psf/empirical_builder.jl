@@ -12,7 +12,7 @@
 # Smoothing kernel — Anderson & King (2000) Eq. 8
 # ------------------------------------------------------------------------------
 
-"""The quartic smoothing kernel of [`Anderson2000`](@cite) (Eq. 8) used by default when `smooth=true` in `fit(ImagePSF, ...)`."""
+"""The quartic smoothing kernel of [Anderson2000](@cite) (Eq. 8) used by default when `smooth=true` in `fit_psf(ImagePSF, ...)`."""
 const _QUARTIC_SMOOTHING_KERNEL = (
     (0.041632, -0.080816, 0.078368, -0.080816, 0.041632),
     (-0.080816, -0.019592, 0.200816, -0.019592, -0.080816),
@@ -520,6 +520,13 @@ function robust_combine_grid_cells(cells, state::BuilderState{T}) where {T}
     return data
 end
 
+"""
+    smooth_grid_quartic!(data)
+
+Return a quartic-smoothed copy of an empirical ePSF grid using the fixed
+5×5 kernel from [Anderson2000](@citet). Boundary samples are extended by
+clamping to the nearest valid grid cell.
+"""
 function smooth_grid_quartic!(data::AbstractMatrix{T}) where {T}
     nx, ny = size(data)
     out = similar(data)
@@ -535,6 +542,14 @@ function smooth_grid_quartic!(data::AbstractMatrix{T}) where {T}
     return out
 end
 
+"""
+    recenter_grid_to_origin!(data, origin, oversampling)
+
+Return a bicubic-shifted copy of an empirical ePSF grid whose positive
+mass-weighted centroid is aligned with `origin`. Very small shifts are skipped,
+and shifts larger than two detector pixels in oversampled coordinates are
+ignored as likely failed stacks.
+"""
 function recenter_grid_to_origin!(data, origin, oversampling)
     T = eltype(data)
     weights = max.(data, zero(T))
@@ -565,6 +580,14 @@ function recenter_grid_to_origin!(data, origin, oversampling)
     return out
 end
 
+"""
+    normalize_grid_to_oversampling_area!(data, oversampling; clip_negative::Bool)
+
+Normalize an empirical ePSF grid in place so its sum equals
+`oversampling[1] * oversampling[2]`, matching the `ImagePSF` convention for a
+unit-flux star. When `clip_negative` is true, negative cells are set to zero
+before normalization.
+"""
 function normalize_grid_to_oversampling_area!(data, oversampling; clip_negative::Bool)
     T = eltype(data)
     if clip_negative
@@ -717,6 +740,14 @@ function fit_all_stars(
     return stars
 end
 
+"""
+    remove_centroid_drift(stars, old_centroids) -> stars
+
+Compute the median centroid shift across all surviving stars and subtract it
+from each star's centroid. This breaks the global degeneracy between the PSF
+shape and the absolute centroid reference frame in the single-image ePSF
+building loop.
+"""
 function remove_centroid_drift(stars, old_centroids)
     T = typeof(stars[1].x)
     dxs = T[]
@@ -850,7 +881,7 @@ end
 # ==============================================================================
 
 """
-    fit(ImagePSF, image, x, y; psf_rad, fit_rad=psf_rad, kwargs...) -> (psf, result)
+    fit_psf(ImagePSF, image, x, y; psf_rad, fit_rad=psf_rad, kwargs...) -> (psf, result)
 
 Build a single empirical ePSF from stars in `image`, starting from initial
 detector-pixel coordinates `x` and `y`.
@@ -860,7 +891,7 @@ all pixels in the cutout are used for ePSF construction.  `fit_rad` controls
 the circular aperture (pixel-wholly-inside test) used when fitting each star's
 centroid and flux against the current ePSF; defaults to `psf_rad`.
 """
-function fit(
+function fit_psf(
         ::Type{ImagePSF}, image::AbstractMatrix, x, y;
         psf_rad::Real,
         fit_rad::Real = psf_rad,
@@ -871,7 +902,7 @@ function fit(
     return build_epsf(image, stars; psf_radius = psf_rad, fit_rad, kwargs...)
 end
 
-function fit(
+function fit_psf(
         ::Type{ImagePSF}, image::AbstractMatrix, inds;
         x = nothing, y = nothing, psf_rad::Real,
         fit_rad::Real = psf_rad,

@@ -297,7 +297,7 @@ end
 """
     ImagePSFBuildResult
 
-Metadata returned by `fit(ImagePSF, ...)`.
+Metadata returned by `fit_psf(ImagePSF, ...)`.
 """
 struct ImagePSFBuildResult{T}
     psf::ImagePSF{T}

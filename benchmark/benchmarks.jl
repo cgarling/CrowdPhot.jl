@@ -1,5 +1,5 @@
 using CrowdPhot: simulate_image
-using CrowdPhot.PSF: GaussianPSF, CircularGaussianPSF, CircularGaussianPRF, evaluate, evaluate_fg, fit, TukeyLoss, bicubic_interpolate, fill_grid_holes!, ImagePSF
+using CrowdPhot.PSF: GaussianPSF, CircularGaussianPSF, CircularGaussianPRF, evaluate, evaluate_fg, fit_star, fit_psf, TukeyLoss, bicubic_interpolate, fill_grid_holes!, ImagePSF
 using BenchmarkTools
 import LossFunctions
 using PrettyTables: pretty_table
@@ -42,10 +42,10 @@ let model = CircularGaussianPSF(x=15.0, y=15.0, fwhm=4.0, flux=10.0, bkg=1.0)
     inds  = (1:30, 1:30)
     image = evaluate.(model, inds[1], inds[2]')
     init = CircularGaussianPSF(x=15.5, y=14.5, fwhm=3.5, flux=9.0, bkg=1.2)
-    SUITE["fitting"]["fit CircularGaussianPSF (L2)"] = @benchmarkable fit($init, $image, $inds)
-    SUITE["fitting"]["fit CircularGaussianPSF (Huber IRLS)"] = @benchmarkable fit($init, $image, $inds;
+    SUITE["fitting"]["fit_star CircularGaussianPSF (L2)"] = @benchmarkable fit_star($init, $image, $inds)
+    SUITE["fitting"]["fit_star CircularGaussianPSF (Huber IRLS)"] = @benchmarkable fit_star($init, $image, $inds;
         reweight=$(LossFunctions.HuberLoss(1.0)))
-    SUITE["fitting"]["fit CircularGaussianPSF (Tukey IRLS)"] = @benchmarkable fit($init, $image, $inds;
+    SUITE["fitting"]["fit_star CircularGaussianPSF (Tukey IRLS)"] = @benchmarkable fit_star($init, $image, $inds;
         reweight=$(TukeyLoss()))
 end
 
@@ -57,8 +57,8 @@ SUITE["empirical"]["bicubic_interpolate"] = @benchmarkable bicubic_interpolate(x
 SUITE["empirical"]["fill_grid_holes!"] = @benchmarkable fill_grid_holes!(x) setup=(x=rand(21,21); inds=([9, 4, 15, 13, 1, 1], [6, 15, 17, 1, 17, 1]); x[inds...] .= NaN) evals=1
 
 for n in (50, 100)
-    SUITE["empirical"]["ImagePSF fit, n=$n"] = @benchmarkable psf, result =
-        fit(ImagePSF, image, sources.x, sources.y;
+    SUITE["empirical"]["ImagePSF fit_psf, n=$n"] = @benchmarkable psf, result =
+        fit_psf(ImagePSF, image, sources.x, sources.y;
             psf_rad = 5.0, oversampling = 2, smooth = true, recenter = false,
             reweight = nothing) setup=(begin
                 truth_model = CircularGaussianPRF(x = 0, y = 0, fwhm = 1.8, flux = 1, bkg = 0)

@@ -1,6 +1,6 @@
 using CrowdPhot
 using CrowdPhot.PSF
-using CrowdPhot.PSF: free_params, model_from_vector, _has_hessian, _has_deriv, fit
+using CrowdPhot.PSF: free_params, model_from_vector, _has_hessian, _has_deriv, fit_star
 using CrowdPhot: TukeyLoss, weight, FixedScale, LMProblem, lm_irls
 using Distributions: Poisson
 import LossFunctions
@@ -57,7 +57,7 @@ end
 # ---------------------------------------------------------------------------
 
 @testset "fit CircularGaussianPSF" begin
-    # Verify the public `fit` entry point uses the LM path for circular Gaussian models.
+    # Verify the public `fit_star` entry point uses the LM path for circular Gaussian models.
     inds = (1:30, 1:30)
     truth = CircularGaussianPSF(x = 13.5, y = 12.3, fwhm = 4.0, flux = 200.0, bkg = 5.0)
     img = evaluate.(truth, inds[1], inds[2]')
@@ -65,7 +65,7 @@ end
     init = CircularGaussianPSF(x = 14.1, y = 11.8, fwhm = 4.3, flux = 190.0, bkg = 5.5)
 
     # Default L2 fit should converge through the LM implementation.
-    best, result = fit(init, img, inds; x_tol = 1.0e-6)
+    best, result = fit_star(init, img, inds; x_tol = 1.0e-6)
     @test best.x ≈ truth.x    rtol = 1.0e-3
     @test best.y ≈ truth.y    rtol = 1.0e-3
     @test best.fwhm ≈ truth.fwhm rtol = 1.0e-3
@@ -75,13 +75,13 @@ end
 
     # With inv_var, covariance is available on the LM result.
     inv_var = fill(1.0, size(img))
-    best2, result2 = fit(init, img, inds; inv_var, x_tol = 1.0e-6)
+    best2, result2 = fit_star(init, img, inds; inv_var, x_tol = 1.0e-6)
     @test best2.x ≈ truth.x rtol = 1.0e-3
     @test size(result2.cov) == (5, 5)
 
     # Freeze background: init with wrong bkg, but bkg is fixed so it must converge anyway
     init_fixed = CircularGaussianPSF(x = 14.1, y = 11.8, fwhm = 4.3, flux = 190.0, bkg = 5.0)
-    best3, _ = fit(init_fixed, img, inds; fixed = (bkg = 5.0,), x_tol = 1.0e-6)
+    best3, _ = fit_star(init_fixed, img, inds; fixed = (bkg = 5.0,), x_tol = 1.0e-6)
     @test best3.bkg ≈ 5.0
     @test best3.x ≈ truth.x rtol = 1.0e-3
 end
@@ -98,7 +98,7 @@ end
     # Initial guess: perturbed ~5% away from truth
     init = GaussianPSF(x = 19.3, y = 16.7, x_fwhm = 5.3, y_fwhm = 3.3, theta = 13.0, flux = 285.0, bkg = 2.2)
 
-    best, result = fit(init, img, inds; x_tol = 1.0e-6)
+    best, result = fit_star(init, img, inds; x_tol = 1.0e-6)
     @test best.x ≈ truth.x      rtol = 1.0e-3
     @test best.y ≈ truth.y      rtol = 1.0e-3
     @test best.x_fwhm ≈ truth.x_fwhm rtol = 1.0e-3
@@ -108,13 +108,13 @@ end
 
     # Freeze theta: init with slightly wrong theta but it's fixed
     init_fixed = GaussianPSF(x = 19.3, y = 16.7, x_fwhm = 5.3, y_fwhm = 3.3, theta = 15.0, flux = 285.0, bkg = 2.2)
-    best2, _ = fit(init_fixed, img, inds; fixed = (theta = 15.0,), x_tol = 1.0e-6)
+    best2, _ = fit_star(init_fixed, img, inds; fixed = (theta = 15.0,), x_tol = 1.0e-6)
     @test best2.theta ≈ 15.0
     @test best2.x ≈ truth.x rtol = 1.0e-3
 
     # With inv_var, covariance is available on the LM result.
     inv_var = fill(1.0, size(img))
-    best3, result3 = fit(init, img, inds; inv_var, x_tol = 1.0e-6)
+    best3, result3 = fit_star(init, img, inds; inv_var, x_tol = 1.0e-6)
     @test best3.x ≈ truth.x rtol = 1.0e-3
     @test size(result3.cov) == (7, 7)
 end
@@ -128,9 +128,9 @@ end
     m = CircularGaussianPSF(x = 5.5, y = 5.2, fwhm = 3.0, flux = 100.0, bkg = 1.0)
     img = evaluate.(m, 1:10, (1:10)')
     init = CircularGaussianPSF(x = 5.8, y = 4.9, fwhm = 3.2, flux = 95.0, bkg = 1.1)
-    @test_throws ArgumentError fit(init, img; inv_var = zeros(size(img)))
-    @test_throws ArgumentError fit(init, img; inv_var = fill(-1.0, size(img)))
-    @test_throws ArgumentError fit(init, img; inv_var = fill(1.0, (11, 10)))
+    @test_throws ArgumentError fit_star(init, img; inv_var = zeros(size(img)))
+    @test_throws ArgumentError fit_star(init, img; inv_var = fill(-1.0, size(img)))
+    @test_throws ArgumentError fit_star(init, img; inv_var = fill(1.0, (11, 10)))
 end
 
 # ---------------------------------------------------------------------------
@@ -247,7 +247,7 @@ end
     init = CircularGaussianPSF(x = 14.1, y = 11.8, fwhm = 4.3, flux = 190.0, bkg = 5.5)
 
     # No inv_var
-    best, result = fit(init, img, inds)
+    best, result = fit_star(init, img, inds)
     @test result.converged
     @test best.x ≈ truth.x    rtol = 1.0e-3
     @test best.y ≈ truth.y    rtol = 1.0e-3
@@ -258,7 +258,7 @@ end
 
     # With unity inv_var
     inv_var = fill(1.0, size(img))
-    best2, result2 = fit(init, img, inds; inv_var)
+    best2, result2 = fit_star(init, img, inds; inv_var)
     @test result2.converged
     @test result.minimizer ≈ result2.minimizer
 end
@@ -270,9 +270,9 @@ end
     img = evaluate.(truth, inds[1], inds[2]')
     init = CircularGaussianPSF(x = 14.1, y = 11.8, fwhm = 4.3, flux = 190.0, bkg = 5.5)
 
-    best_l2, result_l2 = fit(init, img, inds)
-    best_huber, result_huber = fit(init, img, inds; reweight = LossFunctions.HuberLoss(1.0))
-    best_tukey, result_tukey = fit(init, img, inds; reweight = TukeyLoss())
+    best_l2, result_l2 = fit_star(init, img, inds)
+    best_huber, result_huber = fit_star(init, img, inds; reweight = LossFunctions.HuberLoss(1.0))
+    best_tukey, result_tukey = fit_star(init, img, inds; reweight = TukeyLoss())
 
     @test result_huber.converged
     @test result_tukey.converged
@@ -298,13 +298,13 @@ end
 
     init = CircularGaussianPSF(x = 15.5, y = 14.5, fwhm = 3.5, flux = 180.0, bkg = 1.5)
 
-    best_l2, result_l2 = fit(init, img, inds; max_iter = 500)
+    best_l2, result_l2 = fit_star(init, img, inds; max_iter = 500)
     @test result_l2.converged
 
-    best_huber, result_huber = fit(init, img, inds; reweight = LossFunctions.HuberLoss(1.0), max_iter = 500)
+    best_huber, result_huber = fit_star(init, img, inds; reweight = LossFunctions.HuberLoss(1.0), max_iter = 500)
     @test result_huber.converged
 
-    best_tukey, result_tukey = fit(init, img, inds; reweight = TukeyLoss(), max_iter = 500)
+    best_tukey, result_tukey = fit_star(init, img, inds; reweight = TukeyLoss(), max_iter = 500)
     @test result_tukey.converged
 
     # IRLS improves flux accuracy: outliers inflate the wings, which L2
@@ -342,7 +342,7 @@ end
                 minimizers = Matrix{Float64}(undef, 5, N_tests)
                 for i in 1:N_tests
                     img_noisy .= rand.(Ref(rng), Poisson.(img))
-                    best, result = fit(init, img_noisy; reweight = loss)
+                    best, result = fit_star(init, img_noisy; reweight = loss)
                     @test result.converged
                     minimizers[:, i] = result.minimizer
                 end
@@ -385,11 +385,11 @@ end
     m = CircularGaussianPSF(x = 5.5, y = 5.2, fwhm = 3.0, flux = 100.0, bkg = 1.0)
     img = evaluate.(m, 1:10, (1:10)')
     init = CircularGaussianPSF(x = 5.8, y = 4.9, fwhm = 3.2, flux = 95.0, bkg = 1.1)
-    @test_throws ArgumentError fit(init, img; inv_var = zeros(size(img)))
-    @test_throws ArgumentError fit(init, img; inv_var = fill(-1.0, size(img)))
-    @test_throws ArgumentError fit(init, img; inv_var = fill(1.0, (11, 10)))
-    @test_throws ArgumentError fit(init, img; fixed = (x = 1.0, y = 2.0, fwhm = 3.0, flux = 100.0, bkg = 1.0))
-    @test_throws ArgumentError fit(init, img; inv_var = fill(NaN, size(img)))
-    @test_throws ArgumentError fit(init, img; inv_var = fill(Inf, size(img)))
-    @test_throws ArgumentError fit(init, img, (1:2, 1:2)) # dof < 0
+    @test_throws ArgumentError fit_star(init, img; inv_var = zeros(size(img)))
+    @test_throws ArgumentError fit_star(init, img; inv_var = fill(-1.0, size(img)))
+    @test_throws ArgumentError fit_star(init, img; inv_var = fill(1.0, (11, 10)))
+    @test_throws ArgumentError fit_star(init, img; fixed = (x = 1.0, y = 2.0, fwhm = 3.0, flux = 100.0, bkg = 1.0))
+    @test_throws ArgumentError fit_star(init, img; inv_var = fill(NaN, size(img)))
+    @test_throws ArgumentError fit_star(init, img; inv_var = fill(Inf, size(img)))
+    @test_throws ArgumentError fit_star(init, img, (1:2, 1:2)) # dof < 0
 end

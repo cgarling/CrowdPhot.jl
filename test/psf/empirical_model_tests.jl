@@ -1,6 +1,6 @@
 import CrowdPhot
 using CrowdPhot: simulate_image
-using CrowdPhot.PSF: _as_oversampling, background, bicubic_interpolate, centroid, CircularGaussianPRF, evaluate, evaluate_fg, extent, integral, fill_grid_holes!, TukeyLoss, ImagePSF, fit
+using CrowdPhot.PSF: _as_oversampling, background, bicubic_interpolate, centroid, CircularGaussianPRF, evaluate, evaluate_fg, extent, integral, fill_grid_holes!, TukeyLoss, ImagePSF, fit_star, fit_psf
 import ConstructionBase
 using StableRNGs: StableRNG
 using Statistics: mean, median
@@ -114,7 +114,7 @@ end
     @test_throws ArgumentError _as_oversampling((2, 3, 4))
 end
 
-@testset "ImagePSF LM fit -- single star" begin
+@testset "ImagePSF LM fit_star -- single star" begin
     # Fit only ImagePSF's source parameters to ensure it works with LM/IRLS.
     grid_model = CircularGaussianPRF(x = 8, y = 8, fwhm = 2.4, flux = 1, bkg = 0)
     psf_data = evaluate.(grid_model, 1:16, (1:16)')
@@ -122,7 +122,7 @@ end
     image = evaluate.(truth, 1:16, (1:16)')
     init = ImagePSF(psf_data; x = 8.0, y = 8.1, flux = 260.0, bkg = 3.5, origin = (8.0, 8.0), normalize = true)
 
-    best, result = fit(init, image, (1:16, 1:16); max_iter = 100)
+    best, result = fit_star(init, image, (1:16, 1:16); max_iter = 100)
     @test result.converged
     @test best.x ≈ truth.x atol = 1e-6
     @test best.y ≈ truth.y atol = 1e-6
@@ -147,7 +147,7 @@ end
         rng
     )
 
-    psf, result = fit(
+    psf, result = fit_psf(
         ImagePSF,
         image,
         sources.x .+ randn(rng, length(sources.x)) * 0.5,
@@ -171,7 +171,7 @@ end
     # Fit the stars in the image with the measured PSF model to confirm it can reproduce the input fluxes and centroids.
     for k in eachindex(sources.x)
         model = ConstructionBase.setproperties(psf, (x = sources.x[k] + randn(rng) * 0.5, y = sources.y[k] + randn(rng) * 0.5, flux = sources.flux[k] * (1 - randn(rng) * 0.1)))
-        result, _ = fit(model, image, (1:128, 1:128))
+        result, _ = fit_star(model, image, (1:128, 1:128))
         @test result.flux ≈ sources.flux[k] rtol = 0.05
         @test result.x ≈ sources.x[k] atol = 0.1
         @test result.y ≈ sources.y[k] atol = 0.1
@@ -185,7 +185,7 @@ end
         ),
         length(sources.x)
     )
-    psf_from_inds, inds_result = fit(
+    psf_from_inds, inds_result = fit_psf(
         ImagePSF,
         image,
         inds;
@@ -229,7 +229,7 @@ end
         image[i, j] += rand(rng) < 0.8 ? 1500.0 : -14.0
     end
 
-    psf, result = fit(
+    psf, result = fit_psf(
         ImagePSF,
         image,
         sources.x .+ randn(rng, length(sources.x)) * 0.25,
