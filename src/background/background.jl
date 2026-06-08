@@ -640,22 +640,7 @@ end
 ###############################################################################
 # 2D background estimation
 
-"""
-    Background2D
-
-Result of spatially varying background estimation over a mesh grid.
-
-Fields
-------
-- `background`      — full-resolution background map (same size as the input image
-  when `edge_method = :pad`; smaller when `:crop` is used).
-- `background_rms`  — full-resolution background-RMS map.
-- `mesh_background` — low-resolution per-box background estimates.
-- `mesh_background_rms` — low-resolution per-box background-RMS estimates.
-- `box_size`        — the `(rows, cols)` box dimensions used.
-
-See the constructor [`Background2D(image, box_size; …)`](@ref) for details.
-"""
+# Result of spatially varying background estimation over a mesh grid.
 struct Background2D{T <: AbstractFloat, M <: AbstractMatrix{T}}
     background::M
     background_rms::M
@@ -673,7 +658,7 @@ end
         exclude_percentile = 10.0,
         sigma              = 3.0,
         maxiters           = 10,
-        edge_method        = :pad) -> Background2D
+        edge_method        = :pad)::Background2D
 
 Estimate a spatially varying background by tiling `image` into boxes,
 estimating the background (and RMS) in each box, optionally median-filtering
@@ -702,6 +687,15 @@ when the image contains non-finite values that are not covered by `mask`.
 - `sigma`: sigma-clipping threshold (`nothing` disables clipping).
 - `maxiters`: maximum sigma-clipping iterations.
 - `edge_method`: `:pad` (default) or `:crop`.
+
+# Returns
+A `Background2D` struct containing the following fields.
+- `background`:  full-resolution background map (same size as the input image
+  when `edge_method = :pad`; smaller when `:crop` is used).
+- `background_rms`: full-resolution background-RMS map.
+- `mesh_background`: low-resolution per-box background estimates.
+- `mesh_background_rms`: low-resolution per-box background-RMS estimates.
+- `box_size`: the `(rows, cols)` box dimensions used.
 
 # Examples
 ```jldoctest
