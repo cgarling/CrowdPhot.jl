@@ -647,7 +647,8 @@ Result of spatially varying background estimation over a mesh grid.
 
 Fields
 ------
-- `background`      — full-resolution background map (same size as the input image).
+- `background`      — full-resolution background map (same size as the input image
+  when `edge_method = :pad`; smaller when `:crop` is used).
 - `background_rms`  — full-resolution background-RMS map.
 - `mesh_background` — low-resolution per-box background estimates.
 - `mesh_background_rms` — low-resolution per-box background-RMS estimates.
@@ -687,8 +688,8 @@ A box is excluded from the mesh (and filled by interpolation from neighbours)
 when the fraction of valid (unmasked, finite, not sigma-clipped) pixels falls
 below `exclude_percentile / 100 * box_npixels`.
 
-Non-finite image values are automatically masked; an error is thrown if the
-result contains more non-finite values than covered by `mask`.
+Non-finite image values are automatically excluded.  A warning is emitted
+when the image contains non-finite values that are not covered by `mask`.
 
 # Arguments
 - `estimator`: background location estimator (default [`SExtractorBackground`](@ref)).
