@@ -444,3 +444,95 @@ function simulate_image(
     )
     return image, sources
 end
+
+"""
+    make_gaussians_image(n_stars, image_size=(256, 256);
+        rng            = Random.default_rng(),
+        background     = 200.0,
+        read_noise     = 5.0,
+        gain           = 1.5,
+        sigma_psf      = 2.0,
+        flux_range     = (500.0, 50_000.0),
+        border         = 10) -> Matrix{Float64}
+
+Generate a realistic mock CCD image containing `n_stars` point sources
+with Gaussian profiles on a flat sky background.
+
+Stars are placed uniformly at random (with a `border`-pixel exclusion zone),
+with fluxes drawn log-uniformly from `flux_range`.  The pixel model is:
+
+```
+expected[i,j] = background + Σ_k  flux_k / (2π σ²) · exp(−r²_k / 2σ²)
+```
+
+where `r²_k = (i − x_k)² + (j − y_k)²` and `σ = sigma_psf`.
+
+Noise is applied as: shot noise on `expected * gain` electrons, then a
+Gaussian read-noise draw with standard deviation `read_noise` (in ADU).
+The returned image is in ADU (counts).
+
+The same `rng` will always produce the same image, making this function
+suitable for deterministic doctests and benchmarks.
+
+# Examples
+
+```jldoctest
+julia> using CrowdPhot, StableRNGs
+
+julia> rng = StableRNG(42);
+
+julia> img = make_gaussians_image(30, (128, 128); rng);
+
+julia> size(img)
+(128, 128)
+
+julia> img[1, 1] > 0
+true
+```
+"""
+function make_gaussians_image(
+        n_stars::Integer,
+        image_size::Tuple{<:Integer, <:Integer} = (256, 256);
+        rng::Random.AbstractRNG = Random.default_rng(),
+        background::Real = 200.0,
+        read_noise::Real = 5.0,
+        gain::Real = 1.5,
+        sigma_psf::Real = 2.0,
+        flux_range = (500.0, 50_000.0),
+        border::Integer = 10,
+    )
+    n_stars ≥ 0 || throw(ArgumentError("`n_stars` must be non-negative"))
+    gain > 0     || throw(ArgumentError("`gain` must be positive"))
+    sigma_psf > 0 || throw(ArgumentError("`sigma_psf` must be positive"))
+
+    H, W = image_size
+    img  = fill(float(background), H, W)
+
+    # Draw source positions and fluxes.
+    xmin, xmax = 1 + border, H - border
+    ymin, ymax = 1 + border, W - border
+    lo, hi = float(flux_range[1]), float(flux_range[2])
+    lo > 0 && hi ≥ lo || throw(ArgumentError("`flux_range` must be positive and ordered"))
+
+    # Render each Gaussian source by scanning a ±4σ footprint.
+    half = ceil(Int, 4 * sigma_psf)
+    norm = 1.0 / (2π * sigma_psf^2)
+    inv2σ2 = 1.0 / (2 * sigma_psf^2)
+
+    for _ in 1:n_stars
+        x0  = xmin + rand(rng) * (xmax - xmin)
+        y0  = ymin + rand(rng) * (ymax - ymin)
+        # Log-uniform flux.
+        f   = exp(log(lo) + rand(rng) * (log(hi) - log(lo)))
+        fval = f * norm
+        ilo, ihi = max(1, floor(Int, x0) - half), min(H, ceil(Int, x0) + half)
+        jlo, jhi = max(1, floor(Int, y0) - half), min(W, ceil(Int, y0) + half)
+        for i in ilo:ihi, j in jlo:jhi
+            img[i, j] += fval * exp(-((i - x0)^2 + (j - y0)^2) * inv2σ2)
+        end
+    end
+
+    # Apply Poisson shot noise then Gaussian read noise.
+    add_noise!(img; noise = :poisson_gaussian, read_noise, gain, rng)
+    return img
+end

@@ -1,0 +1,253 @@
+# Background Estimation
+
+Accurate sky-background subtraction is a prerequisite for reliable photometry.
+In a typical optical or near-infrared image, the sky background arises from a
+combination of airglow, zodiacal light, scattered moonlight, and detector bias;
+it is spatially smooth on scales of tens to hundreds of pixels but can vary
+across an image at the few-percent level.  Point sources, extended objects, and
+cosmic-ray hits are local enhancements that must be distinguished from — and
+excluded from — the background estimate.
+
+`CrowdPhot.Background` provides two complementary interfaces:
+
+| Interface | When to use |
+|-----------|-------------|
+| [`estimate_background`](@ref) | Single scalar estimate for the whole image (or a cutout) |
+| [`Background2D`](@ref) | Spatially varying map over a mesh grid |
+
+Both interfaces accept a [`mask`](@ref) that marks pixels to skip (saturated
+stars, bad pixels, diffraction spikes, etc.) and support iterative sigma
+clipping to suppress residual source contamination.
+
+## Location and RMS estimators
+
+All estimation algorithms are encapsulated in small callable structs.  Choosing
+an estimator amounts to trading off noise robustness, sensitivity to source
+contamination, and computational cost.
+
+### Location estimators
+
+| Estimator | Description |
+|-----------|-------------|
+| [`MeanBackground`](@ref) | Arithmetic mean — efficient but sensitive to bright sources |
+| [`MedianBackground`](@ref) | Sample median — resistant to outliers up to ~50 % contamination |
+| [`SExtractorBackground`](@ref) | Mode approximation `2.5 × median − 1.5 × mean`; falls back to the median when the distribution is strongly skewed |
+| [`MMMBackground`](@ref) | DAOPHOT-style `3 × median − 2 × mean`; assumes positive skew from sources |
+| [`BiweightLocationBackground`](@ref) | Tukey biweight location; highly robust but requires a good starting median |
+
+**Recommendation:** `SExtractorBackground` (the default) is a good general
+choice.  Switch to `BiweightLocationBackground` when your images contain a high
+source density and you use a mask to cover the brightest stars, or use
+`MedianBackground` for maximum simplicity.
+
+### RMS (scatter) estimators
+
+| Estimator | Description |
+|-----------|-------------|
+| [`StdRMS`](@ref) | Population standard deviation (default) |
+| [`MADStdRMS`](@ref) | Normalised median absolute deviation `1.4826 × MAD`; robust to ~50 % outliers |
+| [`BiweightScaleRMS`](@ref) | Biweight midvariance; most robust, slightly higher variance than MAD |
+
+**Recommendation:** `StdRMS` works well when sigma clipping has already removed
+source contamination.  Use `MADStdRMS` or `BiweightScaleRMS` for a more
+independent robustness guarantee.
+
+## Scalar background estimation
+
+For small images or cutouts where a single background level is sufficient, use
+[`estimate_background`](@ref):
+
+```julia
+using CrowdPhot.Background
+
+r = estimate_background(image)
+println(r.bkg)      # background level
+println(r.bkg_rms)  # background scatter
+```
+
+The default pipeline is: exclude non-finite pixels → apply 3σ iterative sigma
+clipping → estimate with `SExtractorBackground` and `StdRMS`.
+
+### Example: scalar estimation with a mask
+
+```@example scalar
+using CrowdPhot, CrowdPhot.Background, StableRNGs, Statistics
+
+rng = StableRNG(1)
+# 128×128 image: flat sky at 200 ADU with 30 Gaussian stars
+img = make_gaussians_image(30, (128, 128); rng, background = 200.0,
+                            read_noise = 5.0, gain = 1.5)
+
+# Estimate without any mask
+r_unmasked = estimate_background(img)
+println("Unmasked:  bkg = ", round(r_unmasked.bkg; digits=2),
+        "  rms = ", round(r_unmasked.bkg_rms; digits=2))
+
+# Build a source mask by thresholding at bkg + 3×rms
+src_mask = img .> r_unmasked.bkg + 3 * r_unmasked.bkg_rms
+
+# Re-estimate with the mask
+r_masked = estimate_background(img; mask = src_mask)
+println("Masked:    bkg = ", round(r_masked.bkg; digits=2),
+        "  rms = ", round(r_masked.bkg_rms; digits=2))
+println("True bkg:  200.00")
+```
+
+## Spatially varying background with Background2D
+
+When the background varies across the field — as is typical for wide-field
+cameras or when a large extended source is present — use [`Background2D`](@ref).
+The algorithm proceeds in four stages:
+
+1. **Tile** the image into rectangular boxes of size `box_size`.
+2. **Estimate** the background (and RMS) in each box after masking and sigma
+   clipping.  Boxes with fewer than `exclude_percentile`% valid pixels are
+   excluded.
+3. **Filter** the resulting low-resolution mesh with a 2-D median filter of
+   width `filter_size` to reduce sensitivity to individual contaminated boxes.
+4. **Upsample** the smoothed mesh back to the full image resolution using a
+   bicubic Catmull-Rom interpolator.
+
+```julia
+using CrowdPhot.Background
+
+b = Background2D(image, 64)
+# Access the full-resolution maps:
+b.background      # background model
+b.background_rms  # RMS model
+# or the low-resolution mesh:
+b.mesh_background
+```
+
+### Choosing `box_size`
+
+The box size determines the spatial resolution of the background model.
+It should be:
+
+- **Large enough** that each box contains enough sky pixels to estimate
+  the background reliably (typically ≥ 50–100 pixels per box after masking).
+- **Small enough** to track real spatial variation in the background.
+
+A starting point of `box_size ≈ image_width / 10` is often reasonable; you
+should inspect `b.mesh_background` to verify that the mesh looks smooth and
+sensible.
+
+### Example: spatially varying background
+
+The example below simulates an image with a gradient background (brighter at
+the bottom) and embedded point sources, then estimates and subtracts it.
+
+```@example bkg2d
+using CrowdPhot, CrowdPhot.Background, StableRNGs, CairoMakie
+
+rng = StableRNG(42)
+H, W = 256, 256
+
+# --- Build a gradient background image ---
+# True background: linear ramp from 150 (top) to 300 (bottom) ADU.
+true_bkg = [150.0 + 150.0 * (i - 1) / (H - 1) for i in 1:H, _ in 1:W]
+
+# Render stars on top of the gradient background.
+img_stars = make_gaussians_image(100, (H, W); rng,
+                                  background = 0.0,   # stars only
+                                  read_noise = 0.0, gain = 1.0)
+
+# Add the gradient background with realistic noise.
+gain, read_noise = 1.5, 5.0
+img = zeros(H, W)
+for i in eachindex(img)
+    mu_e  = (true_bkg[i] + img_stars[i]) * gain
+    img[i] = (mu_e > 0 ? sqrt(mu_e) * randn(rng) + mu_e : mu_e) / gain +
+              read_noise / gain * randn(rng)
+end
+
+# --- Estimate the spatially varying background ---
+b = Background2D(img, 32; sigma = 3.0, filter_size = (3, 3))
+residual = img .- b.background
+
+nothing
+```
+
+```@example bkg2d
+fig = Figure(size = (900, 600))
+
+ax1 = Axis(fig[1, 1]; title = "Image",            aspect = DataAspect())
+ax2 = Axis(fig[1, 2]; title = "Background model", aspect = DataAspect())
+ax3 = Axis(fig[1, 3]; title = "Residual",         aspect = DataAspect())
+
+vmin, vmax = 140.0, 320.0
+heatmap!(ax1, img';        colorrange = (vmin, vmax))
+heatmap!(ax2, b.background'; colorrange = (vmin, vmax))
+hm = heatmap!(ax3, residual'; colorrange = (-30.0, 30.0), colormap = :RdBu)
+Colorbar(fig[2, 3], hm; vertical = false, label = "ADU")
+
+for ax in (ax1, ax2, ax3)
+    hidedecorations!(ax)
+end
+
+fig
+```
+
+### Example: comparing estimators on the same image
+
+```@example bkg2d
+rng2 = StableRNG(7)
+img2 = make_gaussians_image(80, (128, 128); rng = rng2, background = 200.0,
+                             read_noise = 5.0, gain = 1.5)
+
+estimators = [MeanBackground(), MedianBackground(), SExtractorBackground(),
+              MMMBackground(), BiweightLocationBackground()]
+names = ["Mean", "Median", "SExtractor", "MMM", "Biweight"]
+
+fig2 = Figure(size = (950, 380))
+ax_img = Axis(fig2[1, 1]; title = "Image", aspect = DataAspect())
+heatmap!(ax_img, img2'; colormap = :grays)
+hidedecorations!(ax_img)
+
+for (k, (est, nm)) in enumerate(zip(estimators, names))
+    b_k = Background2D(img2, 16; estimator = est, sigma = 3.0, filter_size = 1)
+    ax  = Axis(fig2[1, k + 1]; title = nm, aspect = DataAspect())
+    heatmap!(ax, b_k.background'; colorrange = (190.0, 210.0))
+    hidedecorations!(ax)
+end
+
+fig2
+```
+
+### Tips
+
+- **Source masks** significantly improve accuracy at high source densities.
+  Build an initial mask by thresholding at a few sigma above a first-pass
+  background estimate, then re-run `Background2D`.
+
+- **`filter_size`** should be odd (default `(3, 3)`).  Larger values (e.g.,
+  `(5, 5)`) smooth over mesh cells that are corrupted by bright isolated stars;
+  but sizes larger than the spatial scale of genuine background variation
+  will bias the estimate.
+
+- **`exclude_percentile`** (default 10 %) controls how many pixels per box must
+  survive masking and sigma clipping for the box to be used.  Lower values
+  allow poorly constrained boxes into the mesh; higher values force more
+  interpolation.
+
+- **Edge handling**: `:pad` (default) pads the image to the nearest multiple of
+  `box_size` with `NaN`, ensuring the output has exactly the same size as the
+  input.  `:crop` trims the right and bottom edges instead; the output is then
+  smaller than the input if the image size is not a multiple of `box_size`.
+
+## API reference
+
+```@docs
+CrowdPhot.Background.estimate_background
+CrowdPhot.Background.Background2D
+CrowdPhot.Background.AbstractBackgroundEstimator
+CrowdPhot.Background.AbstractBackgroundRMSEstimator
+CrowdPhot.Background.MeanBackground
+CrowdPhot.Background.MedianBackground
+CrowdPhot.Background.SExtractorBackground
+CrowdPhot.Background.MMMBackground
+CrowdPhot.Background.BiweightLocationBackground
+CrowdPhot.Background.StdRMS
+CrowdPhot.Background.MADStdRMS
+CrowdPhot.Background.BiweightScaleRMS
+```
