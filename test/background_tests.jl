@@ -61,7 +61,7 @@ end
     end
 
     @testset "mask excludes pixels" begin
-        img  = fill(10.0, 8, 8)
+        img = fill(10.0, 8, 8)
         img[1:4, :] .= 9999.0   # large outlier region
         mask = falses(8, 8)
         mask[1:4, :] .= true
@@ -207,16 +207,16 @@ end
         @test size(b.mesh_background) == (4, 4)
     end
 
-    @testset "output size matches input for :pad edge method" begin
+    @testset "output size matches input" begin
         b = Background2D(_MOCK_IMG, 32)
         @test size(b.background)     == size(_MOCK_IMG)
         @test size(b.background_rms) == size(_MOCK_IMG)
     end
 
-    @testset "output size is truncated for :crop edge method" begin
+    @testset "non-multiple image dimensions handled (ceil division)" begin
         img = fill(7.0, 65, 65)
-        b   = Background2D(img, 16; edge_method = :crop)
-        @test size(b.background) == (64, 64)   # 65 ÷ 16 == 4 boxes → 64 px
+        b   = Background2D(img, 16)
+        @test size(b.background) == (65, 65)   # ceil(65/16)=5 boxes → output matches input
     end
 
     @testset "mask excludes pixels in mesh computation" begin

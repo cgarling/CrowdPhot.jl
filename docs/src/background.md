@@ -294,10 +294,11 @@ fig3
   allow poorly constrained boxes into the mesh; higher values force more
   interpolation.
 
-- **Edge handling**: `:pad` (default) pads the image to the nearest multiple of
-  `box_size` with `NaN`, ensuring the output has exactly the same size as the
-  input.  `:crop` trims the right and bottom edges instead; the output is then
-  smaller than the input if the image size is not a multiple of `box_size`.
+- **Edge handling**: when the image dimensions are not exact multiples of
+  `box_size`, the mesh extends to the next multiple via ceil division.
+  Out-of-bounds pixels in partial edge boxes are treated as `NaN` and
+  excluded automatically.  The output always has exactly the same size as
+  the input, with no internal allocation of a padded image.
 
 ## API reference
 
