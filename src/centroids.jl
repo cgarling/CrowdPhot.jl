@@ -48,7 +48,8 @@ the covariance will be large but the centroid estimates remain finite.
     checking (whether a full 3×3 neighbourhood exists around the peak
     pixel) is the caller's responsibility — see [`centroid_poly`](@ref).
     `NaN` and `Inf` pixel values are not checked; they should be handled by
-    a higher-level function.
+    a higher-level function.  Bad or saturated pixels can be masked by
+    setting the corresponding entries in `inv_var` to zero.
 
 # References
 See [Vakili2016](@citet) for details.
@@ -207,7 +208,8 @@ pixel coordinates.
 - `image::AbstractMatrix`: image cutout containing a point source.
 - `inv_var::AbstractMatrix`: per-pixel inverse variance (same size as
   `image`).  If omitted, a uniform inverse variance `Fill(1, size(image))`
-  is used (equivalent to ordinary least squares).
+  is used (equivalent to ordinary least squares).  Set entries to zero to
+  mask bad or saturated pixels.
 
 # Returns
 A `NamedTuple` with keys `(; x, y, peak, x_err, y_err, peak_err, cov, com)` where
