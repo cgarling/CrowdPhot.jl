@@ -750,17 +750,16 @@ end
         filter_size        = (3, 3),
         exclude_percentile = 10.0,
         sigma              = 3.0,
-        maxiters           = 10,
-        edge_method        = :pad)::Background2D
+        maxiters           = 10)::Background2D
 
 Estimate a spatially varying background by tiling `image` into boxes,
 estimating the background (and RMS) in each box, optionally median-filtering
 the mesh, and upsampling the result back to the original image size via a
 bicubic Catmull-Rom interpolator.
 
-`box_size` may be an integer (square boxes) or a `(rows, cols)` tuple.
-The image is padded with `NaN` along the right/bottom edges when it is not
-an exact multiple of `box_size`; pass `edge_method = :crop` to crop instead.
+`box_size` may be an integer (square boxes) or a `(rows, cols)` tuple and
+does not need to be a multiple of the image dimensions; partial edge boxes
+are included in the mesh.
 
 A box is excluded from the mesh (and filled by interpolation from neighbours)
 when the fraction of valid (unmasked, finite, not sigma-clipped) pixels falls
@@ -782,12 +781,10 @@ when the image contains non-finite values that are not covered by `mask`.
   e.g. `sigma=(2.0, 5.0)`, to preserve a faint extended source while rejecting
   bright stars.  Set to `nothing` to disable clipping.
 - `maxiters`: maximum number of sigma-clipping iterations.
-- `edge_method`: `:pad` (default) or `:crop`.
 
 # Returns
 A `Background2D` struct containing the following fields.
-- `background`:  full-resolution background map (same size as the input image
-  when `edge_method = :pad`; smaller when `:crop` is used).
+- `background`:  full-resolution background map (same size as the input image).
 - `background_rms`: full-resolution background-RMS map.
 - `mesh_background`: low-resolution per-box background estimates.
 - `mesh_background_rms`: low-resolution per-box background-RMS estimates.
@@ -818,7 +815,6 @@ function Background2D(
         exclude_percentile::Real = 10.0,
         sigma = 3.0,
         maxiters::Integer = 10,
-        edge_method::Symbol = :pad,
     )
     H, W = size(image)
     bh, bw = _to_pair(Int, box_size)
@@ -844,9 +840,14 @@ function Background2D(
         end
     end
 
-    # Tile the image with padding or cropping.
-    padded, nmesh_rows, nmesh_cols = _tile_image(Val(edge_method), image, bh, bw)
-    pad_H, pad_W = size(padded)
+    # ceil division: partial edge boxes are included in the mesh and get their
+    # out-of-bounds pixels filled with NaN by _copy_box_data!.  pad_H / pad_W
+    # are the virtual padded dimensions used only for _bicubic_zoom coordinate
+    # scaling; the output is always sized to the original image.
+    nmesh_rows = cld(H, bh)
+    nmesh_cols = cld(W, bw)
+    pad_H = nmesh_rows * bh
+    pad_W = nmesh_cols * bw
 
     T = float(eltype(image))
     mesh_bkg = fill(T(NaN), nmesh_rows, nmesh_cols)
@@ -858,7 +859,7 @@ function Background2D(
     for mi in 1:nmesh_rows, mj in 1:nmesh_cols
         rows = ((mi - 1) * bh + 1):(mi * bh)
         cols = ((mj - 1) * bw + 1):(mj * bw)
-        _copy_box_data!(box, padded, mask_work, rows, cols)
+        _copy_box_data!(box, image, mask_work, rows, cols)
         n_valid = if !isnothing(sigma)
             # sigma_clip! compacts finite values internally.
             slo, shi = _to_pair(T, sigma)
@@ -888,12 +889,10 @@ function Background2D(
     fmesh_bkg = _median_filter2d(mesh_bkg, fh, fw)
     fmesh_rms = _median_filter2d(mesh_rms, fh, fw)
 
-    # Upsample directly to the returned size while preserving padded coordinates.
-    # For :crop, the output is smaller because nmesh * box_size ≤ (H, W).
-    out_H = min(H, pad_H)
-    out_W = min(W, pad_W)
-    full_bkg = _bicubic_zoom(fmesh_bkg, out_H, out_W, pad_H, pad_W)
-    full_rms = _bicubic_zoom(fmesh_rms, out_H, out_W, pad_H, pad_W)
+    # Upsample directly to the returned size.  pad_H ≥ H and pad_W ≥ W
+    # always (ceil division), so out_H = H, out_W = W.
+    full_bkg = _bicubic_zoom(fmesh_bkg, H, W, pad_H, pad_W)
+    full_rms = _bicubic_zoom(fmesh_rms, H, W, pad_H, pad_W)
 
     return Background2D{T, typeof(full_bkg)}(full_bkg, full_rms, mesh_bkg, mesh_rms, (bh, bw))
 end
@@ -908,45 +907,28 @@ _to_pair(T::Type, x::NTuple{2, S}) where {S} = (T(x[1]), T(x[2]))
 _to_pair(x::AbstractVector) = length(x) == 2 ? (x[1], x[2]) : throw(ArgumentError("expected a length-2 argument; got length $(length(x))"))
 _to_pair(T::Type, x::AbstractVector) = length(x) == 2 ? (T(x[1]), T(x[2])) : throw(ArgumentError("expected a length-2 argument; got length $(length(x))"))
 
-function _tile_image(::Val{:pad}, image, bh, bw)
-    H, W = size(image)
-    nextra_r = H % bh
-    nextra_c = W % bw
-    pad_r = nextra_r == 0 ? 0 : bh - nextra_r
-    pad_c = nextra_c == 0 ? 0 : bw - nextra_c
-    pad_H = H + pad_r
-    pad_W = W + pad_c
-    T = float(eltype(image))
-    padded = fill(T(NaN), pad_H, pad_W)
-    padded[1:H, 1:W] .= image
-    nmesh_rows = pad_H ÷ bh
-    nmesh_cols = pad_W ÷ bw
-    return padded, nmesh_rows, nmesh_cols
-end
-
-function _tile_image(::Val{:crop}, image, bh, bw)
-    H, W = size(image)
-    nmesh_rows = H ÷ bh
-    nmesh_cols = W ÷ bw
-    T = float(eltype(image))
-    cropped = Matrix{T}(@view image[1:(nmesh_rows * bh), 1:(nmesh_cols * bw)])
-    return cropped, nmesh_rows, nmesh_cols
-end
-
 function _copy_box_data!(box::AbstractMatrix{T}, image, mask::Nothing, rows, cols) where {T}
+    H, W = size(image)
     @inbounds for (bj, j) in enumerate(cols), (bi, i) in enumerate(rows)
-        # Preserve the box layout while marking invalid samples as inactive.
-        v = image[i, j]
-        box[bi, bj] = ifelse(isfinite(v), T(v), T(NaN))
+        if i <= H && j <= W
+            v = image[i, j]
+            box[bi, bj] = ifelse(isfinite(v), T(v), T(NaN))
+        else
+            box[bi, bj] = T(NaN)
+        end
     end
     return box
 end
 
 function _copy_box_data!(box::AbstractMatrix{T}, image, mask::AbstractMatrix{Bool}, rows, cols) where {T}
+    H, W = size(image)
     @inbounds for (bj, j) in enumerate(cols), (bi, i) in enumerate(rows)
-        # Check finiteness first so padded NaNs never index beyond the mask.
-        v = image[i, j]
-        box[bi, bj] = isfinite(v) && !mask[i, j] ? T(v) : T(NaN)
+        if i <= H && j <= W
+            v = image[i, j]
+            box[bi, bj] = isfinite(v) && !mask[i, j] ? T(v) : T(NaN)
+        else
+            box[bi, bj] = T(NaN)
+        end
     end
     return box
 end
