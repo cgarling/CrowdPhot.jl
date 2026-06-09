@@ -25,11 +25,13 @@ using LinearAlgebra: Symmetric, cholesky
 
 Fit a 2nd-order 2-D polynomial ``P(x,y) = a + bx + cy + dx² + exy + fy²``
 to a 3×3 patch using weighted least squares with inverse-variance weights
-`inv_var`.  Returns `(; x, y, peak, x_err, y_err, peak_err, cov)` where
-`x, y` are the sub-pixel centroid coordinates relative to the patch centre,
-`peak` is the polynomial value at the centroid, the `_err` fields are 1-σ
-uncertainties, and `cov` is the full 3×3 ``SMatrix`` covariance of
-``(x, y, peak)``.
+`inv_var`.  Returns `(; x, y, peak, x_err, y_err, peak_err, cov, com)`
+where `x, y` are the sub-pixel polynomial centroid coordinates relative
+to the patch center, `peak` is the polynomial value at the centroid, the
+`_err` fields are 1-σ uncertainties, `cov` is the full 3×3 ``SMatrix``
+covariance of ``(x, y, peak)``, and `com` is a ``NamedTuple``
+`(; x, y, x_err, y_err, cov)` with the inverse-variance-weighted
+center-of-mass centroid and its 2×2 covariance on the same 3×3 patch.
 
 The design matrix is fixed (local coordinates `{-1,0,1}²`), so the
 only free inputs are the 9 pixel values and 9 inverse-variance weights.
@@ -38,7 +40,14 @@ If the curvature matrix ``D = [2d  e;  e  2f]`` is near-singular
 (``|4df - e²| < 10^{-10}``), a small Tikhonov-style regularisation is
 added to its diagonal before computing the centroid.  If the data are
 so noisy that the regularised determinant is still effectively zero,
-`cov` will be large but the centroid estimates remain finite.
+the covariance will be large but the centroid estimates remain finite.
+
+!!! note
+    This function assumes the inputs are valid 3×3 matrices.  Border
+    checking (whether a full 3×3 neighbourhood exists around the peak
+    pixel) is the caller's responsibility — see [`centroid_poly`](@ref).
+    NaN and Inf pixel values are not checked; they should be handled by
+    a higher-level function.
 """
 function _centroid_poly3(image::AbstractMatrix{T}, inv_var::AbstractMatrix{T}) where {T <: Real}
     # Coordinates:
@@ -145,9 +154,9 @@ function _centroid_poly3(image::AbstractMatrix{T}, inv_var::AbstractMatrix{T}) w
     # At the stationary point ∂P/∂x = ∂P/∂y = 0, so d(peak)/dθ simplifies
     # to the basis vector evaluated at the centroid.
     J = @SMatrix [
-        zero(T)  -two_f * invΔ                     e * invΔ        -4 * freg * xc * invΔ              (c + 2 * e * xc) * invΔ   -(2 * b + 4 * dreg * xc) * invΔ
-        zero(T)   e * invΔ                        -two_d * invΔ    -(2 * c + 4 * freg * yc) * invΔ     (b + 2 * e * yc) * invΔ   -4 * dreg * yc * invΔ
-        one(T)    xc                               yc              xc2                                xcyc                        yc2
+        zero(T)  -two_f * invΔ     e * invΔ        -4 * freg * xc * invΔ             (c + 2 * e * xc) * invΔ   -(2 * b + 4 * dreg * xc) * invΔ
+        zero(T)   e * invΔ         -two_d * invΔ   -(2 * c + 4 * freg * yc) * invΔ   (b + 2 * e * yc) * invΔ   -4 * dreg * yc * invΔ
+        one(T)    xc               yc              xc2                               xcyc                      yc2
     ]
 
     cov = J * Ninv * transpose(J)
@@ -156,7 +165,24 @@ function _centroid_poly3(image::AbstractMatrix{T}, inv_var::AbstractMatrix{T}) w
     y_err = sqrt(max(zero(T), cov[2,2]))
     peak_err = sqrt(max(zero(T), cov[3,3]))
 
-    return (; x = xc, y = yc, peak, x_err, y_err, peak_err, cov)
+    # Inverse-variance-weighted center-of-mass on the 3×3 patch.
+    invR00 = inv(R00)
+    com_x = R10 * invR00
+    com_y = R01 * invR00
+
+    # Delta-method covariance of the ratio estimator com = R / S00.
+    # Var(R_pq) = S_{2p,2q}, Cov(R_pq, R_rs) = S_{p+r, q+s}.
+    invR00_sq = invR00 * invR00
+    var_com_x = (S20 - 2 * com_x * S10 + com_x * com_x * S00) * invR00_sq
+    var_com_y = (S02 - 2 * com_y * S01 + com_y * com_y * S00) * invR00_sq
+    cov_com_xy = (S11 - com_x * S01 - com_y * S10 + com_x * com_y * S00) * invR00_sq
+    com_cov = @SMatrix [var_com_x cov_com_xy; cov_com_xy var_com_y]
+    com_x_err = sqrt(max(zero(T), var_com_x))
+    com_y_err = sqrt(max(zero(T), var_com_y))
+
+    return (; x = xc, y = yc, peak, x_err, y_err, peak_err, cov,
+             com = (; x = com_x, y = com_y, cov = com_cov,
+                     x_err = com_x_err, y_err = com_y_err))
 end
 
 """
@@ -164,13 +190,11 @@ end
 
 Polynomial centroid of a point source in `image`.
 
-Finds the brightest pixel, extracts the surrounding 3×3 patch, fits a
-2nd-order 2-D polynomial via weighted least squares (see
-[`_centroid_poly3`](@ref)), and returns the centroid in *global* pixel
-coordinates together with the fitted peak and covariance.
-
-If the brightest pixel lies on the image border (no full 3×3
-neighbourhood), all fields are ``NaN``.
+Finds the brightest pixel via `findmax`, extracts the surrounding 3×3
+patch, fits a 2nd-order 2-D polynomial via weighted least squares (see
+[`_centroid_poly3`](@ref)), and returns both the polynomial centroid and
+the inverse-variance-weighted center-of-mass (COM) centroid in *global*
+pixel coordinates.
 
 # Arguments
 - `image::AbstractMatrix`: image cutout containing a point source.
@@ -179,19 +203,41 @@ neighbourhood), all fields are ``NaN``.
   is used (equivalent to ordinary least squares).
 
 # Returns
-`(; x, y, peak, x_err, y_err, peak_err, cov)` — centroid in global pixel
-coordinates, fitted peak, 1-σ uncertainties, and the full 3×3 ``SMatrix``
-covariance of ``(x, y, peak)``.
+``NamedTuple`` `(; x, y, peak, x_err, y_err, peak_err, cov, com)` where
+
+- `x`, `y` — polynomial centroid in global pixel coordinates.
+- `peak` — fitted polynomial value at the centroid.
+- `x_err`, `y_err`, `peak_err` — 1-σ uncertainties propagated from the
+  weighted least-squares parameter covariance.
+- `cov` — 3×3 ``SMatrix`` covariance of ``(x, y, peak)``.
+- `com` — ``NamedTuple`` `(; x, y, x_err, y_err, cov)` with the
+  inverse-variance-weighted center-of-mass centroid, its 1-σ
+  uncertainties, and its 2×2 ``SMatrix`` covariance.  Access as
+  `result.com.x`, `result.com.y`, etc.
+
+If the brightest pixel lies on the image border (no full 3×3
+neighbourhood), every field is ``NaN``:
+
+```julia
+(; x = NaN, y = NaN, peak = NaN,
+   x_err = NaN, y_err = NaN, peak_err = NaN,
+   cov = @SMatrix [NaN NaN NaN; NaN NaN NaN; NaN NaN NaN],
+   com = (; x = NaN, y = NaN, x_err = NaN, y_err = NaN,
+          cov = @SMatrix [NaN NaN; NaN NaN]))
+```
 
 # Examples
 ```jldoctest
-julia> using CrowdPhot
+julia> using CrowdPhot: centroid_poly
 
 julia> img = [0.1 0.3 0.1; 0.3 1.0 0.3; 0.1 0.3 0.1];
 
 julia> result = centroid_poly(img);
 
 julia> round(result.x; digits=1), round(result.y; digits=1)
+(2.0, 2.0)
+
+julia> round(result.com.x; digits=1), round(result.com.y; digits=1)
 (2.0, 2.0)
 ```
 """
@@ -201,19 +247,26 @@ function centroid_poly(image::AbstractMatrix{T}, inv_var::AbstractMatrix = Fill(
     return centroid_poly(image, Int(i0), Int(j0), inv_var)
 end
 """
-    centroid_poly(image::AbstractMatrix{T}, i0::Int, j0::Int, inv_var::AbstractMatrix = Fill(one(T), size(image)))
-This version of `centroid_poly` allows the caller to specify the brightest pixel coordinates `i0, j0` (row, column)
-instead of computing them internally. This can be useful if the caller has already identified the brightest pixel
-(e.g., by running a maximum filter over a detection image) and wants to avoid redundant computations.
+    centroid_poly(image, i0, j0, inv_var) -> NamedTuple
+
+Variant of [`centroid_poly`](@ref) that accepts pre-computed brightest-pixel
+coordinates `i0, j0` (row, column) instead of calling `findmax` internally.
+Useful when the caller has already identified the peak pixel (e.g. from a
+correlation map).
+
+Returns the same ``NamedTuple`` as the two-argument form, including both
+the polynomial centroid and the center-of-mass centroid in `com`.
 """
 function centroid_poly(image::AbstractMatrix{T}, i0::Int, j0::Int, inv_var::AbstractMatrix = Fill(one(T), size(image))) where {T <: Real}
     # check that a full 3×3 neighbourhood exists
     nan = T(NaN)
     nan3 = @SMatrix [nan nan nan; nan nan nan; nan nan nan]
+    nan2 = @SMatrix [nan nan; nan nan]
+    nancom = (; x = nan, y = nan, x_err = nan, y_err = nan, cov = nan2)
     if i0 < 2 || i0 > size(image, 1) - 1 || j0 < 2 || j0 > size(image, 2) - 1
         return (; x = nan, y = nan, peak = nan,
                  x_err = nan, y_err = nan, peak_err = nan,
-                 cov = nan3)
+                 cov = nan3, com = nancom)
     end
 
     # extract 3×3 views
@@ -231,5 +284,10 @@ function centroid_poly(image::AbstractMatrix{T}, i0::Int, j0::Int, inv_var::Abst
              x_err = local_result.x_err,
              y_err = local_result.y_err,
              peak_err = local_result.peak_err,
-             cov = local_result.cov)
+             cov = local_result.cov,
+             com = (; x = j0 + local_result.com.x,
+                     y = i0 + local_result.com.y,
+                     x_err = local_result.com.x_err,
+                     y_err = local_result.com.y_err,
+                     cov = local_result.com.cov))
 end
