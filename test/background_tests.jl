@@ -5,7 +5,6 @@ using StableRNGs: StableRNG
 using Statistics: mean, std
 
 # ─── Shared fixture ────────────────────────────────────────────────────────────
-const _RNG_BG = StableRNG(2024)
 const _FLAT100  = fill(100.0, 32, 32)
 const _FLAT200  = fill(200.0, 64, 64)
 # Realistic mock image used across multiple tests.
@@ -102,7 +101,7 @@ end
         # converging.
 
         # Data with only high-side outliers (5000).
-        data_high = 100.0 .+ randn(_RNG_BG, 20, 20) .* 2.0
+        data_high = 100.0 .+ randn(StableRNG(2024), 20, 20) .* 2.0
         data_high[1, :] .= 5000.0
 
         work_high = float(copy(data_high))
@@ -111,7 +110,7 @@ end
         @test maximum(ret_high) < 4000 # bright outliers removed by tight high side
 
         # Data with only low-side outliers (-10).
-        data_low = 100.0 .+ randn(_RNG_BG, 20, 20) .* 2.0
+        data_low = 100.0 .+ randn(StableRNG(2024), 20, 20) .* 2.0
         data_low[1, :] .= -10.0
 
         work_low = float(copy(data_low))
@@ -120,7 +119,7 @@ end
         @test minimum(ret_low) > -5 # dim outliers removed by tight low side
 
         # Symmetric clipping removes outliers on both sides.
-        data_both = 100.0 .+ randn(_RNG_BG, 20, 20) .* 2.0
+        data_both = 100.0 .+ randn(StableRNG(2024), 20, 20) .* 2.0
         data_both[1, :] .= 5000.0
         data_both[end, :] .= -10.0
 
