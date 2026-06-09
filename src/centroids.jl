@@ -42,12 +42,16 @@ added to its diagonal before computing the centroid.  If the data are
 so noisy that the regularised determinant is still effectively zero,
 the covariance will be large but the centroid estimates remain finite.
 
+
 !!! note
     This function assumes the inputs are valid 3×3 matrices.  Border
     checking (whether a full 3×3 neighbourhood exists around the peak
     pixel) is the caller's responsibility — see [`centroid_poly`](@ref).
     NaN and Inf pixel values are not checked; they should be handled by
     a higher-level function.
+
+# References
+See [`Vakili2016`](@citet) for details.
 """
 function _centroid_poly3(image::AbstractMatrix{T}, inv_var::AbstractMatrix{T}) where {T <: Real}
     # Coordinates:
@@ -240,6 +244,9 @@ julia> round(result.x; digits=1), round(result.y; digits=1)
 julia> round(result.com.x; digits=1), round(result.com.y; digits=1)
 (2.0, 2.0)
 ```
+
+# References
+See [`Vakili2016`](@citet) for details.
 """
 function centroid_poly(image::AbstractMatrix{T}, inv_var::AbstractMatrix = Fill(one(T), size(image))) where {T <: Real}
     _, maxidx = findmax(image)
@@ -250,9 +257,9 @@ end
     centroid_poly(image, i0, j0, inv_var) -> NamedTuple
 
 Variant of [`centroid_poly`](@ref) that accepts pre-computed brightest-pixel
-coordinates `i0, j0` (row, column) instead of calling `findmax` internally.
-Useful when the caller has already identified the peak pixel (e.g. from a
-correlation map).
+coordinates `i0, j0` (corresponding to pixel `image[i0, j0]`) instead of
+calling `findmax` internally. Useful when the caller has already identified
+the peak pixel (e.g. from a correlation map).
 
 Returns the same ``NamedTuple`` as the two-argument form, including both
 the polynomial centroid and the center-of-mass centroid in `com`.
