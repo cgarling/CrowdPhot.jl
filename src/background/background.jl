@@ -96,9 +96,17 @@ end
     sigma_clip(data, sigma_low, sigma_high; maxiters=10)
 
 Return a mutable floating-point copy of `data` after iterative sigma clipping.
-Rejected and non-finite samples are compacted out of the active prefix.
+The returned array has the **same shape and total number of elements** as `data`.
+Non-finite input values are replaced with `NaN`.
 
-Use [`sigma_clip!`](@ref) when the number of retained samples is needed.
+Retained (finite, not clipped) samples are compacted to the front of the
+linear storage (`vec(result)[1:n]`) and are **partially sorted** — their
+original order is not preserved because `median!` rearranges elements during
+clipping.  Elements beyond the active prefix contain displaced values from
+the compaction process and should be ignored.
+
+Use [`sigma_clip!`](@ref) when the number of retained samples (`n`) is needed,
+or when operating in-place on a pre-allocated float array.
 """
 function sigma_clip(
         data::AbstractArray, σ_low::Real, σ_high::Real = σ_low;
@@ -122,6 +130,8 @@ function sigma_clip!(
         data::AbstractArray{T}, σ_low::Real, σ_high::Real = σ_low;
         maxiters::Integer = 10
     ) where {T <: AbstractFloat}
+    # vec shares storage with data (no copy); mutations through flat
+    # affect data in place, and vice versa.
     flat = vec(data)
     n = _compact_finite!(data)
     for _ in 1:maxiters
@@ -591,6 +601,8 @@ function _median_filter2d!(
             k += 1
             buf[k] = src[_clamp_idx(i + di, M), _clamp_idx(j + dj, N)]
         end
+        # For odd fh, fw the integer division fh ÷ 2 rounds down so
+        # -hh:hh spans exactly fh elements and k == fh * fw here.
         dst[i, j] = median(view(buf, 1:k))
     end
     return dst
