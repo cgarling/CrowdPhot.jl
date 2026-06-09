@@ -1,7 +1,7 @@
 using Test
 using CrowdPhot
 using CrowdPhot.Background
-using CrowdPhot.Background: _catmull_rom, _catmull_rom_weights, _bicubic_zoom
+using CrowdPhot.Background: _catmull_rom, _catmull_rom_weights, _bicubic_zoom, _fill_nans!
 using StableRNGs: StableRNG
 using Statistics: mean, std
 
@@ -201,10 +201,15 @@ end
 @testset "Background2D" begin
     @testset "constant image recovers exact background" begin
         b = Background2D(_FLAT200, 16)
-        @test b.background     ≈ _FLAT200
+        @test b.background ≈ _FLAT200
         @test all(iszero, b.background_rms)
-        @test b.box_size       == (16, 16)
+        @test b.box_size == (16, 16)
         @test size(b.mesh_background) == (4, 4)
+        b2 = Background2D(_FLAT200, (16, 32))
+        @test b2.background ≈ _FLAT200
+        @test all(iszero, b2.background_rms)
+        @test b2.box_size == (16, 32)
+        @test size(b2.mesh_background) == (4, 2)
     end
 
     @testset "output size matches input" begin
@@ -314,6 +319,22 @@ end
                           sigma = nothing, filter_size = 1)
         @test all(b2.background[cov] .== -99.0)
         @test all(b2.background_rms[cov] .== -99.0)
+
+        # With larger median filter
+        b3 = Background2D(img, 16; coverage_mask = cov, fill_value = -99.0,
+                          sigma = nothing, filter_size = 3)
+        @test all(b3.background[cov] .== -99.0)
+        @test all(b3.background_rms[cov] .== -99.0)
+    end
+
+    @testset "_fill_nans! propagates across multi-cell holes" begin
+        # 5×5 mesh: 2×2 NaN block in the center
+        mesh = fill(1.0, 5, 5)
+        mesh[2:3, 2:3] .= NaN
+        _fill_nans!(mesh)
+        @test all(isfinite, mesh)
+        # Filled values should be close to 1.0 (neighbour average).
+        @test all(≈(1), mesh)
     end
 end
 
