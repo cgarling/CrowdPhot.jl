@@ -303,3 +303,37 @@ function centroid_poly(image::AbstractMatrix{T}, i0::Int, j0::Int, inv_var::Abst
                      y_err = local_result.com.y_err,
                      cov = local_result.com.cov))
 end
+
+"""
+    choose_centroid(result) -> NamedTuple
+
+Given the `NamedTuple` returned by [`centroid_poly`](@ref) or
+[`_centroid_poly3`](@ref), choose between the polynomial centroid
+(`result.x`, `result.y`) and the center-of-mass centroid
+(`result.com.x`, `result.com.y`).
+
+The polynomial centroid is preferred for well-sampled data where the
+3×3 patch has enough curvature for a reliable quadratic fit.  The COM
+centroid is chosen when the polynomial's curvature matrix is nearly
+singular (e.g. for very broad PSFs), indicated by a polynomial-vs-COM
+variance ratio exceeding 10².
+
+Returns `(; x, y, source)` where `source` is `:poly` or `:com`.
+
+!!! note
+    This heuristic detects curvature degeneracy but cannot detect
+    quadratic model bias on undersampled data.  For undersampled
+    images the matched-filter step in the detection pipeline broadens
+    the PSF enough that the polynomial centroid is usually reliable.
+    If you are centroiding raw (un-convolved) undersampled data,
+    prefer the COM centroid directly.
+"""
+function choose_centroid(result)
+    # If the polynomial covariance is more than 100× the COM covariance,
+    # the curvature matrix is essentially degenerate → use COM.
+    if result.cov[1,1] > 100 * result.com.cov[1,1]
+        return (; x = result.com.x, y = result.com.y, source = :com)
+    else
+        return (; x = result.x, y = result.y, source = :poly)
+    end
+end
