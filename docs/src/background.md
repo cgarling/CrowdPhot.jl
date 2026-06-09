@@ -278,6 +278,97 @@ end
 fig3
 ```
 
+### Example: rotated and padded image
+
+CCD images that have been rotated (e.g., to align with a world-coordinate
+grid) and placed inside a larger frame padded with `NaN` are common in
+multi-extension FITS files and mosaic pipelines.  `Background2D` handles
+such images automatically through the `mask_coverage` keyword, which
+should be a matrix the same size as the input image where `true` values
+indicate a pixel is **out of coverage** and `false` indicate it is
+**in coverage**.
+
+```@example rotated
+using CrowdPhot, CrowdPhot.Background, StableRNGs, CairoMakie
+
+rng = StableRNG(13)
+# 128×128 image with a gradient background (brighter toward the bottom).
+true_bkg = [180.0 + 120.0 * (i - 1) / 127 for i in 1:128, _ in 1:128]
+img = make_gaussians_image(40, (128, 128); rng,
+    background = true_bkg, read_noise = 5.0, gain = 1.5)
+
+# -- Rotate by 25° and embed in a larger NaN-padded frame --
+θ = deg2rad(25)
+cosθ, sinθ = cos(θ), sin(θ)
+H, W = size(img)
+cx, cy = (W + 1) / 2, (H + 1) / 2
+
+# Compute the bounding box of the rotated image.
+corners = [(1, 1), (1, W), (H, 1), (H, W)]
+xs = Float64[]
+ys = Float64[]
+for (i, j) in corners
+    push!(xs, cosθ * (j - cx) - sinθ * (i - cy) + cx)
+    push!(ys, sinθ * (j - cx) + cosθ * (i - cy) + cy)
+end
+xmin, xmax = floor(Int, minimum(xs)), ceil(Int, maximum(xs))
+ymin, ymax = floor(Int, minimum(ys)), ceil(Int, maximum(ys))
+
+H_new = ymax - ymin + 1
+W_new = xmax - xmin + 1
+rotated = fill(0.0, H_new, W_new)
+
+# Fill valid pixels with bilinear interpolation from the original image.
+for j_out in 1:W_new, i_out in 1:H_new
+    x = j_out + xmin - 1
+    y = i_out + ymin - 1
+    # Inverse rotation: where in the original image does (x, y) come from?
+    j_orig = cosθ * (x - cx) + sinθ * (y - cy) + cx
+    i_orig = -sinθ * (x - cx) + cosθ * (y - cy) + cy
+    i0, j0 = floor(Int, i_orig), floor(Int, j_orig)
+    if i0 >= 1 && i0 < H && j0 >= 1 && j0 < W
+        di, dj = i_orig - i0, j_orig - j0
+        rotated[i_out, j_out] =
+            (1 - di) * (1 - dj) * img[i0, j0] +
+            (1 - di) * dj       * img[i0, j0 + 1] +
+            di       * (1 - dj) * img[i0 + 1, j0] +
+            di       * dj       * img[i0 + 1, j0 + 1]
+    end
+end
+
+# -- Mark pixels with values 0 as outside data coverage --
+coverage_mask = iszero.(rotated)
+
+# -- Estimate the spatially varying background --
+b = Background2D(rotated, 16; coverage_mask, sigma = 3.0, filter_size = (5, 5))
+
+# -- Two-panel plot --
+fig = Figure(size = (800, 400))
+
+ax1 = Axis(fig[1, 1]; title = "Rotated image", aspect = DataAspect())
+ax2 = Axis(fig[1, 2]; title = "Background model", aspect = DataAspect())
+
+vmin, vmax = 160.0, 320.0
+heatmap!(ax1, rotated'; colorrange = (vmin, vmax))
+heatmap!(ax2, b.background'; colorrange = (vmin, vmax))
+
+for ax in (ax1, ax2)
+    hidedecorations!(ax)
+end
+
+fig
+```
+
+And now we can look at the background-subtracted image
+
+```@example rotated
+fig = Figure(size = (800, 400))
+ax1 = Axis(fig[1, 1]; title = "Residual", aspect = DataAspect())
+heatmap!(ax1, (rotated .- b.background)'; colorrange=(-40.0, 40.0))
+hidedecorations!(ax1)
+fig
+```
+
 ### Tips
 
 - **Source masks** significantly improve accuracy at high source densities.
@@ -289,7 +380,7 @@ fig3
   but sizes larger than the spatial scale of genuine background variation
   will bias the estimate.
 
-- **`exclude_percentile`** (default 10 %) controls how many pixels per box must
+- **`exclude_percentile`** (default 10%) controls how many pixels per box must
   survive masking and sigma clipping for the box to be used.  Lower values
   allow poorly constrained boxes into the mesh; higher values force more
   interpolation.

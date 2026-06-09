@@ -293,6 +293,28 @@ end
             end
         end
     end
+
+    @testset "coverage_mask pixels are set to fill_value in output maps" begin
+        img = fill(100.0, 64, 64)
+        cov = falses(64, 64)
+        cov[1:20, :] .= true   # left strip: no data coverage
+        cov[:, 50:64] .= true  # right strip: no data coverage
+
+        # Default fill_value = 0.0
+        b = Background2D(img, 16; coverage_mask = cov, sigma = nothing, filter_size = 1)
+        @test all(b.background[cov] .== 0.0)
+        @test all(b.background_rms[cov] .== 0.0)
+
+        # Interior (non-coverage) pixels should still be close to the true background.
+        interior = .!cov
+        @test mean(abs, b.background[interior] .- img[interior]) < 5.0
+
+        # Custom fill_value.
+        b2 = Background2D(img, 16; coverage_mask = cov, fill_value = -99.0,
+                          sigma = nothing, filter_size = 1)
+        @test all(b2.background[cov] .== -99.0)
+        @test all(b2.background_rms[cov] .== -99.0)
+    end
 end
 
 @testset "bicubic zoom internals" begin
