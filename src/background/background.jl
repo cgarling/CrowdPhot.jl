@@ -1,6 +1,7 @@
-# This work is based largely on BackgroundMeshes.jl, which in turn
-# acknowledges their work is partially derived from astropy/photutils
-# and astropy/astropy. The relevant derivations are considered under a BSD 3-clause license.
+# Portions of this file are adapted from BackgroundMeshes.jl and
+# the background-estimation functionality in astropy/photutils and astropy/astropy,
+# which are licensed under a BSD 3-clause license. Full licenses are acknowledged
+# our main license file.
 
 module Background
 
@@ -534,6 +535,19 @@ end
     ) / 2
 end
 
+# Precompute the four Catmull-Rom basis weights for a given t ∈ [0,1].
+# This avoids recomputing the cubic polynomial for every pixel when the
+# interpolation parameter is reused across an entire row or column.
+@inline function _catmull_rom_weights(t::F) where {F <: AbstractFloat}
+    t2 = t * t
+    t3 = t2 * t
+    w1 = (-t + 2 * t2 - t3) / F(2)
+    w2 = (F(2) - 5 * t2 + 3 * t3) / F(2)
+    w3 = (t + 4 * t2 - 3 * t3) / F(2)
+    w4 = (-t2 + t3) / F(2)
+    return (w1, w2, w3, w4)
+end
+
 # Map output pixel k (1-indexed) in a dimension of length K_out to the
 # corresponding mesh coordinate (1-indexed) in a mesh of length K_mesh.
 @inline function _zoom_coord(T::Type, k::Int, K_out::Int, K_mesh::Int)
@@ -557,28 +571,77 @@ function _bicubic_zoom(
     M, N = size(mesh)
     F = float(T)
     out = similar(mesh, F, H, W)
+
+    # Precompute column-dependent indices and y-direction cubic weights.
+    col_jm1 = Vector{Int}(undef, W)
+    col_jm2 = Vector{Int}(undef, W)
+    col_jm3 = Vector{Int}(undef, W)
+    col_jm4 = Vector{Int}(undef, W)
+    col_wy1 = Vector{F}(undef, W)
+    col_wy2 = Vector{F}(undef, W)
+    col_wy3 = Vector{F}(undef, W)
+    col_wy4 = Vector{F}(undef, W)
     for j in 1:W
         yf = _zoom_coord(F, j, coord_W, N)
         jm = floor(Int, yf)
         ty = F(yf - jm)
-        jm1 = _clamp_idx(jm - 1, N)
-        jm2 = _clamp_idx(jm, N)
-        jm3 = _clamp_idx(jm + 1, N)
-        jm4 = _clamp_idx(jm + 2, N)
-        for i in 1:H
-            xf = _zoom_coord(F, i, coord_H, M)
-            im_ = floor(Int, xf)
-            tx = F(xf - im_)
-            r1 = _clamp_idx(im_ - 1, M)
-            r2 = _clamp_idx(im_, M)
-            r3 = _clamp_idx(im_ + 1, M)
-            r4 = _clamp_idx(im_ + 2, M)
-            # Interpolate along the column axis for each of the four rows.
-            q1 = _catmull_rom(mesh[r1, jm1], mesh[r1, jm2], mesh[r1, jm3], mesh[r1, jm4], ty)
-            q2 = _catmull_rom(mesh[r2, jm1], mesh[r2, jm2], mesh[r2, jm3], mesh[r2, jm4], ty)
-            q3 = _catmull_rom(mesh[r3, jm1], mesh[r3, jm2], mesh[r3, jm3], mesh[r3, jm4], ty)
-            q4 = _catmull_rom(mesh[r4, jm1], mesh[r4, jm2], mesh[r4, jm3], mesh[r4, jm4], ty)
-            out[i, j] = _catmull_rom(q1, q2, q3, q4, tx)
+        col_jm1[j] = _clamp_idx(jm - 1, N)
+        col_jm2[j] = _clamp_idx(jm, N)
+        col_jm3[j] = _clamp_idx(jm + 1, N)
+        col_jm4[j] = _clamp_idx(jm + 2, N)
+        wy1, wy2, wy3, wy4 = _catmull_rom_weights(ty)
+        col_wy1[j] = wy1; col_wy2[j] = wy2
+        col_wy3[j] = wy3; col_wy4[j] = wy4
+    end
+
+    # Precompute row-dependent indices and x-direction cubic weights.
+    row_r1 = Vector{Int}(undef, H)
+    row_r2 = Vector{Int}(undef, H)
+    row_r3 = Vector{Int}(undef, H)
+    row_r4 = Vector{Int}(undef, H)
+    row_wx1 = Vector{F}(undef, H)
+    row_wx2 = Vector{F}(undef, H)
+    row_wx3 = Vector{F}(undef, H)
+    row_wx4 = Vector{F}(undef, H)
+    for i in 1:H
+        xf = _zoom_coord(F, i, coord_H, M)
+        im_ = floor(Int, xf)
+        tx = F(xf - im_)
+        row_r1[i] = _clamp_idx(im_ - 1, M)
+        row_r2[i] = _clamp_idx(im_, M)
+        row_r3[i] = _clamp_idx(im_ + 1, M)
+        row_r4[i] = _clamp_idx(im_ + 2, M)
+        wx1, wx2, wx3, wx4 = _catmull_rom_weights(tx)
+        row_wx1[i] = wx1; row_wx2[i] = wx2
+        row_wx3[i] = wx3; row_wx4[i] = wx4
+    end
+
+    # Column-outer, row-inner traversal: writes `out[i, j]` with unit-stride
+    # in `i` (contiguous in column-major storage) and reads the small `mesh`
+    # from L1 cache regardless of access pattern.
+    for j in 1:W
+        jm1 = col_jm1[j]; jm2 = col_jm2[j]
+        jm3 = col_jm3[j]; jm4 = col_jm4[j]
+        wy1 = col_wy1[j]; wy2 = col_wy2[j]
+        wy3 = col_wy3[j]; wy4 = col_wy4[j]
+        @inbounds for i in 1:H
+            r1 = row_r1[i]; r2 = row_r2[i]
+            r3 = row_r3[i]; r4 = row_r4[i]
+            wx1 = row_wx1[i]; wx2 = row_wx2[i]
+            wx3 = row_wx3[i]; wx4 = row_wx4[i]
+
+            # Bicubic interpolation: separable 4×4 kernel.
+            # Interpolate along columns (y) for each of the 4 mesh rows.
+            q1 = wy1 * mesh[r1, jm1] + wy2 * mesh[r1, jm2] +
+                 wy3 * mesh[r1, jm3] + wy4 * mesh[r1, jm4]
+            q2 = wy1 * mesh[r2, jm1] + wy2 * mesh[r2, jm2] +
+                 wy3 * mesh[r2, jm3] + wy4 * mesh[r2, jm4]
+            q3 = wy1 * mesh[r3, jm1] + wy2 * mesh[r3, jm2] +
+                 wy3 * mesh[r3, jm3] + wy4 * mesh[r3, jm4]
+            q4 = wy1 * mesh[r4, jm1] + wy2 * mesh[r4, jm2] +
+                 wy3 * mesh[r4, jm3] + wy4 * mesh[r4, jm4]
+            # Interpolate along rows (x).
+            out[i, j] = wx1 * q1 + wx2 * q2 + wx3 * q3 + wx4 * q4
         end
     end
     return out
