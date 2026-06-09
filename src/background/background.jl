@@ -541,10 +541,10 @@ end
 @inline function _catmull_rom_weights(t::F) where {F <: AbstractFloat}
     t2 = t * t
     t3 = t2 * t
-    w1 = (-t + 2 * t2 - t3) / F(2)
-    w2 = (F(2) - 5 * t2 + 3 * t3) / F(2)
-    w3 = (t + 4 * t2 - 3 * t3) / F(2)
-    w4 = (-t2 + t3) / F(2)
+    w1 = (-t + 2 * t2 - t3) / 2
+    w2 = (2 - 5 * t2 + 3 * t3) / 2
+    w3 = (t + 4 * t2 - 3 * t3) / 2
+    w4 = (-t2 + t3) / 2
     return (w1, w2, w3, w4)
 end
 
@@ -631,17 +631,28 @@ function _bicubic_zoom(
             wx3 = row_wx3[i]; wx4 = row_wx4[i]
 
             # Bicubic interpolation: separable 4×4 kernel.
-            # Interpolate along columns (y) for each of the 4 mesh rows.
-            q1 = wy1 * mesh[r1, jm1] + wy2 * mesh[r1, jm2] +
-                 wy3 * mesh[r1, jm3] + wy4 * mesh[r1, jm4]
-            q2 = wy1 * mesh[r2, jm1] + wy2 * mesh[r2, jm2] +
-                 wy3 * mesh[r2, jm3] + wy4 * mesh[r2, jm4]
-            q3 = wy1 * mesh[r3, jm1] + wy2 * mesh[r3, jm2] +
-                 wy3 * mesh[r3, jm3] + wy4 * mesh[r3, jm4]
-            q4 = wy1 * mesh[r4, jm1] + wy2 * mesh[r4, jm2] +
-                 wy3 * mesh[r4, jm3] + wy4 * mesh[r4, jm4]
-            # Interpolate along rows (x).
-            out[i, j] = wx1 * q1 + wx2 * q2 + wx3 * q3 + wx4 * q4
+            # y-direction interpolation via muladd chains.
+            q1 = muladd(wy4, mesh[r1, jm4],
+                 muladd(wy3, mesh[r1, jm3],
+                 muladd(wy2, mesh[r1, jm2],
+                        wy1 * mesh[r1, jm1])))
+            q2 = muladd(wy4, mesh[r2, jm4],
+                 muladd(wy3, mesh[r2, jm3],
+                 muladd(wy2, mesh[r2, jm2],
+                        wy1 * mesh[r2, jm1])))
+            q3 = muladd(wy4, mesh[r3, jm4],
+                 muladd(wy3, mesh[r3, jm3],
+                 muladd(wy2, mesh[r3, jm2],
+                        wy1 * mesh[r3, jm1])))
+            q4 = muladd(wy4, mesh[r4, jm4],
+                 muladd(wy3, mesh[r4, jm3],
+                 muladd(wy2, mesh[r4, jm2],
+                        wy1 * mesh[r4, jm1])))
+            # x-direction interpolation via muladd chain.
+            out[i, j] = muladd(wx4, q4,
+                         muladd(wx3, q3,
+                         muladd(wx2, q2,
+                                wx1 * q1)))
         end
     end
     return out
