@@ -6,6 +6,7 @@
 module Background
 
 using ..CrowdPhot: mad, mad!
+using FillArrays: Fill
 import Random
 using Statistics: mean, median, median!, std
 
@@ -460,11 +461,11 @@ end
 
 """
     estimate_background(image;
-        estimator        = SExtractorBackground(),
-        rms_estimator    = StdRMS(),
-        mask             = nothing,
-        sigma            = 3.0,
-        maxiters         = 10) -> NamedTuple{(:bkg, :bkg_rms)}
+        estimator = SExtractorBackground(),
+        rms_estimator = StdRMS(),
+        mask = nothing,
+        sigma = 3.0,
+        maxiters = 10) -> NamedTuple{(:bkg, :bkg_rms)}
 
 Estimate a global (scalar) background and background RMS for `image`.
 
@@ -744,13 +745,15 @@ end
 
 """
     Background2D(image, box_size;
-        estimator          = SExtractorBackground(),
-        rms_estimator      = StdRMS(),
-        mask               = nothing,
-        filter_size        = (3, 3),
+        estimator = SExtractorBackground(),
+        rms_estimator = StdRMS(),
+        mask = nothing,
+        coverage_mask = nothing,
+        fill_value = 0,
+        filter_size = (3, 3),
         exclude_percentile = 10.0,
-        sigma              = 3.0,
-        maxiters           = 10)::Background2D
+        sigma = 3.0,
+        maxiters = 10)::Background2D
 
 Estimate a spatially varying background by tiling `image` into boxes,
 estimating the background (and RMS) in each box, optionally median-filtering
@@ -766,12 +769,21 @@ when the fraction of valid (unmasked, finite, not sigma-clipped) pixels falls
 below `exclude_percentile / 100 * box_npixels`.
 
 Non-finite image values are automatically excluded.  A warning is emitted
-when the image contains non-finite values that are not covered by `mask`.
+when the image contains non-finite values that are not covered by `mask` or
+`coverage_mask`.
 
 # Arguments
 - `estimator`: background location estimator (default [`SExtractorBackground`](@ref)).
 - `rms_estimator`: background RMS estimator (default [`StdRMS`](@ref)).
-- `mask`: `AbstractMatrix{Bool}` where `true` marks pixels to exclude.
+- `mask`: `AbstractMatrix{Bool}` where `true` marks pixels to exclude
+  (contaminated pixels — stars, cosmic rays, bad pixels).  Mesh cells excluded
+  due to `mask` are filled by interpolation from neighbouring cells.
+- `coverage_mask`: `AbstractMatrix{Bool}` where `true` marks pixels outside
+  the data region (e.g., blank areas in a mosaic, corners of a rotated image).
+  These pixels are excluded from estimation, and mesh cells with zero
+  non-coverage pixels are set to `fill_value` rather than being interpolated.
+- `fill_value`: value assigned to out-of-coverage regions in the output maps
+  (default `0`, giving `0.0` for floating-point images).
 - `filter_size`: window size of the 2-D median filter applied to the mesh
   (must be odd; default `(3, 3)`; use `1` or `(1,1)` to skip filtering).
 - `exclude_percentile`: boxes with fewer than this percent of valid pixels
@@ -811,6 +823,8 @@ function Background2D(
         estimator::Union{AbstractBackgroundEstimator, Function} = SExtractorBackground(),
         rms_estimator::Union{AbstractBackgroundRMSEstimator, Function} = StdRMS(),
         mask::Union{Nothing, AbstractMatrix{Bool}} = nothing,
+        coverage_mask::Union{Nothing, AbstractMatrix{Bool}} = nothing,
+        fill_value::Real = 0,
         filter_size::Union{Integer, NTuple{2, <:Integer}} = (3, 3),
         exclude_percentile::Real = 10.0,
         sigma = 3.0,
@@ -824,18 +838,30 @@ function Background2D(
     0 ≤ exclude_percentile ≤ 100 ||
         throw(ArgumentError("exclude_percentile must be in [0, 100]"))
 
-    # Validate mask / non-finite check.
-    if !isnothing(mask)
-        size(mask) == (H, W) ||
-            throw(DimensionMismatch("mask must be the same size as image"))
+    # Validate and normalise a user-supplied mask so downstream code always sees a
+    # standard AbstractMatrix{Bool} with OneTo axes. `nothing` becomes a Fill of
+    # `false` (O(1) storage, no copy). Non-standard axes (e.g. OffsetArrays) are
+    # converted to a plain Matrix; this is the only path that allocates.
+    function _normalize_mask(mask::Union{Nothing, AbstractMatrix{Bool}}, H::Int, W::Int,
+                            name::String)
+        if isnothing(mask)
+            return Fill(false, H, W)
+        elseif size(mask) != (H, W)
+            throw(DimensionMismatch("$name must be the same size as image"))
+        elseif axes(mask) != (Base.OneTo(H), Base.OneTo(W))
+            return Matrix(mask)
+        else
+            return mask
+        end
     end
-    # Normalize unusual mask axes so mesh-box indexing can stay one-based.
-    mask_work = isnothing(mask) || axes(mask) == (Base.OneTo(H), Base.OneTo(W)) ? mask : Matrix(mask)
 
-    # Warn about non-finite values not covered by the mask.
+    mask_work = _normalize_mask(mask, H, W, "mask")
+    covmask_work = _normalize_mask(coverage_mask, H, W, "coverage_mask")
+
+    # Warn about non-finite values not covered by either mask.
     for i in eachindex(image)
-        if !isfinite(image[i]) && (isnothing(mask_work) || !mask_work[i])
-            @warn "image contains non-finite values that are not covered by the mask; they will be excluded automatically"
+        if !isfinite(image[i]) && !mask_work[i] && !covmask_work[i]
+            @warn "image contains non-finite values that are not covered by the mask or coverage_mask; they will be excluded automatically"
             break
         end
     end
@@ -859,7 +885,8 @@ function Background2D(
     for mi in 1:nmesh_rows, mj in 1:nmesh_cols
         rows = ((mi - 1) * bh + 1):(mi * bh)
         cols = ((mj - 1) * bw + 1):(mj * bw)
-        _copy_box_data!(box, image, mask_work, rows, cols)
+        n_covered = _copy_box_data!(box, image, mask_work, covmask_work, rows, cols)
+        n_covered == 0 && continue
         n_valid = if !isnothing(sigma)
             # sigma_clip! compacts finite values internally.
             slo, shi = _to_pair(T, sigma)
@@ -894,6 +921,17 @@ function Background2D(
     full_bkg = _bicubic_zoom(fmesh_bkg, H, W, pad_H, pad_W)
     full_rms = _bicubic_zoom(fmesh_rms, H, W, pad_H, pad_W)
 
+    # Overwrite coverage-masked pixels with the requested fill value.
+    # The bicubic upsampling interpolates mesh values across coverage
+    # boundaries, so we must enforce fill_value at the pixel level.
+    fv = T(fill_value)
+    for i in eachindex(full_bkg, full_rms)
+        if covmask_work[i]
+            full_bkg[i] = fv
+            full_rms[i] = fv
+        end
+    end
+
     return Background2D{T, typeof(full_bkg)}(full_bkg, full_rms, mesh_bkg, mesh_rms, (bh, bw))
 end
 
@@ -907,30 +945,25 @@ _to_pair(T::Type, x::NTuple{2, S}) where {S} = (T(x[1]), T(x[2]))
 _to_pair(x::AbstractVector) = length(x) == 2 ? (x[1], x[2]) : throw(ArgumentError("expected a length-2 argument; got length $(length(x))"))
 _to_pair(T::Type, x::AbstractVector) = length(x) == 2 ? (T(x[1]), T(x[2])) : throw(ArgumentError("expected a length-2 argument; got length $(length(x))"))
 
-function _copy_box_data!(box::AbstractMatrix{T}, image, mask::Nothing, rows, cols) where {T}
+function _copy_box_data!(box::AbstractMatrix{T}, image, mask, coverage_mask,
+                         rows, cols) where {T}
     H, W = size(image)
+    n_covered = 0
     @inbounds for (bj, j) in enumerate(cols), (bi, i) in enumerate(rows)
         if i <= H && j <= W
             v = image[i, j]
-            box[bi, bj] = ifelse(isfinite(v), T(v), T(NaN))
+            fin = isfinite(v)
+            # Count pixels with real data (mask==true is irrelevant for coverage).
+            if fin && !coverage_mask[i, j]
+                n_covered += 1
+            end
+            # Exclude from estimation: non-finite, mask==true, or coverage_mask==true.
+            box[bi, bj] = ifelse(fin && !mask[i, j] && !coverage_mask[i, j], T(v), T(NaN))
         else
             box[bi, bj] = T(NaN)
         end
     end
-    return box
-end
-
-function _copy_box_data!(box::AbstractMatrix{T}, image, mask::AbstractMatrix{Bool}, rows, cols) where {T}
-    H, W = size(image)
-    @inbounds for (bj, j) in enumerate(cols), (bi, i) in enumerate(rows)
-        if i <= H && j <= W
-            v = image[i, j]
-            box[bi, bj] = isfinite(v) && !mask[i, j] ? T(v) : T(NaN)
-        else
-            box[bi, bj] = T(NaN)
-        end
-    end
-    return box
+    return n_covered
 end
 
 end # module Background
