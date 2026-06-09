@@ -1,6 +1,6 @@
 # When adding a benchmark suite, update SUITE_NAMES and SUITE_TITLES, then
 # define its BenchmarkGroup under SUITE using the same suite name.
-using CrowdPhot: make_gaussians_image, simulate_image
+using CrowdPhot: make_gaussians_image, simulate_image, centroid_poly, _centroid_poly3
 using CrowdPhot.PSF: GaussianPSF, CircularGaussianPSF, CircularGaussianPRF, evaluate, evaluate_fg, fit_star, fit_psf, TukeyLoss, bicubic_interpolate, fill_grid_holes!, ImagePSF
 using CrowdPhot.Background
 import BackgroundMeshes as BM
@@ -59,12 +59,13 @@ function _flatten_results!(flat, group, prefix)
     end
 end
 
-const SUITE_NAMES = ["parametric", "fitting", "empirical", "background"]
+const SUITE_NAMES = ["parametric", "fitting", "empirical", "background", "centroids"]
 const SUITE_TITLES = Dict(
     "parametric" => "Parametric Suite",
     "fitting" => "Fitting Suite",
     "empirical" => "Empirical Suite",
     "background" => "Background Estimation Suite",
+    "centroids" => "Centroids Suite",
 )
 
 function selected_suite_names(args)
@@ -170,6 +171,36 @@ let img = make_gaussians_image(1000, (1000, 1000); rng = StableRNG(7), backgroun
 end
 # SUITE["background"]["Background2D (1000, 1000), BackgroundMeshes.jl, 64 box"] = @benchmarkable BM.Background2D($img, 64) setup=(img = make_gaussians_image(1000, (1000, 1000); rng = StableRNG(7), background = 200.0, read_noise = 5.0, gain = 1.5))
 # SUITE["background"]["Background2D (1000, 1000), 64 box"] = @benchmarkable Background2D($img, 64) setup=(img = make_gaussians_image(1000, (1000, 1000); rng = StableRNG(7), background = 200.0, read_noise = 5.0, gain = 1.5))
+
+# ---------------------------------------------------------------------------
+# Centroids benchmarks
+# ---------------------------------------------------------------------------
+SUITE["centroids"] = BenchmarkGroup()
+
+# Benchmark _centroid_poly3 directly on a 3×3 patch
+let model = CircularGaussianPSF(x=2.0, y=2.0, fwhm=4.0, flux=10.0, bkg=0.0)
+    inds = (1:3, 1:3)
+    patch = evaluate.(model, inds[1], inds[2]')
+    inv_var = ones(3, 3)
+    SUITE["centroids"]["_centroid_poly3 (3x3)"] = @benchmarkable _centroid_poly3($patch, $inv_var)
+end
+
+# Benchmark centroid_poly on a larger cutout
+for n in (7, 15)
+    let model = CircularGaussianPSF(x=4.0, y=4.0, fwhm=4.0, flux=10.0, bkg=0.0)
+        inds = (1:n, 1:n)
+        img = evaluate.(model, inds[1], inds[2]')
+        SUITE["centroids"]["centroid_poly ($n×$n)"] = @benchmarkable centroid_poly($img)
+    end
+end
+
+# Benchmark centroid_poly on a larger cutout with explicit inverse variance
+let model = CircularGaussianPSF(x=8.0, y=8.0, fwhm=4.0, flux=10.0, bkg=0.0)
+    inds = (1:15, 1:15)
+    img = evaluate.(model, inds[1], inds[2]')
+    ivar = ones(15, 15)
+    SUITE["centroids"]["centroid_poly (15×15), explicit ivar"] = @benchmarkable centroid_poly($img, $ivar)
+end
 
 # If not on CI, we'll show a nice table
 if get(ENV, "CI", "false") == "false"

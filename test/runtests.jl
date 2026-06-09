@@ -7,3 +7,4 @@ using Test
 @safetestset "Empirical PSF models" include("psf/empirical_model_tests.jl")
 include("simulation_test.jl")
 @safetestset "Background estimation" include("background_tests.jl")
+@safetestset "Centroids" include("centroids_tests.jl")
