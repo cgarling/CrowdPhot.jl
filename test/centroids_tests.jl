@@ -22,13 +22,13 @@ end
         result = centroid_poly(img)
         @test result.x ≈ 5.0 atol=1e-12
         @test result.y ≈ 5.0 atol=1e-12
-        # peak should be reasonable (within 20% of true PSF peak)
         @test result.peak ≈ psf_peak(model) rtol=0.2
+        @test result.x_err > 0
+        @test result.y_err > 0
+        @test result.peak_err > 0
     end
 
     @testset "noise-free: sub-pixel centroid" begin
-        # At FWHM=2.8 the quadratic fit should recover sub-pixel centroids
-        # with small intrinsic bias (< 0.15 px as shown in the paper).
         img, model = _make_star(; x0=5.2, y0=5.3)
         result = centroid_poly(img)
         @test abs(result.x - 5.2) < 0.15
@@ -37,7 +37,6 @@ end
     end
 
     @testset "border behaviour" begin
-        # max on edge → no 3×3 neighbourhood → NaN
         img = [1.0 2.0 3.0; 4.0 5.0 6.0; 7.0 8.0 9.0]
         result = centroid_poly(img)
         @test isnan(result.x)
@@ -46,8 +45,8 @@ end
         @test isnan(result.x_err)
         @test isnan(result.y_err)
         @test isnan(result.peak_err)
+        @test all(isnan, result.cov)
 
-        # max at corner
         img2 = [100.0 0.0 0.0; 0.0 0.0 0.0; 0.0 0.0 0.0]
         result2 = centroid_poly(img2)
         @test isnan(result2.x)
@@ -90,8 +89,6 @@ end
     end
 
     @testset "noise tests: SNR regimes" begin
-        # Star centred at a pixel to eliminate quadratic-approximation bias.
-        # SNR defined as peak / σ_noise (per-pixel SNR at the peak).
         img_true, model = _make_star(; x0=5.0, y0=5.0)
         peak_true = psf_peak(model)
         rng = StableRNG(42)
@@ -112,21 +109,14 @@ end
             results[snr] = [rmse_x, rmse_y]
         end
 
-        # RMSE should improve with increasing SNR
         @test results[50][1] < results[10][1]
         @test results[50][2] < results[10][2]
         @test results[100][1] < results[50][1]
         @test results[100][2] < results[50][2]
-
-        # At SNR=100 the RMSE should be sub-0.1 pixel
         @test results[100][1] < 0.1
         @test results[100][2] < 0.1
-
-        # At SNR=50, still sub-0.15 pixel
         @test results[50][1] < 0.2
         @test results[50][2] < 0.2
-
-        # At SNR=10, larger but bounded by ~1 pixel
         @test results[10][1] < 1.5
         @test results[10][2] < 1.5
     end
@@ -142,17 +132,70 @@ end
         @test result.peak_err > 0
     end
 
+    @testset "cov matrix is consistent with error fields" begin
+        img, _ = _make_star(; x0=5.0, y0=5.0)
+        result = centroid_poly(img)
+        cov = result.cov
+        # error fields match sqrt of diagonal
+        @test result.x_err ≈ sqrt(cov[1,1])
+        @test result.y_err ≈ sqrt(cov[2,2])
+        @test result.peak_err ≈ sqrt(cov[3,3])
+        # full matrix is symmetric
+        @test cov[1,2] ≈ cov[2,1]
+        @test cov[1,3] ≈ cov[3,1]
+        @test cov[2,3] ≈ cov[3,2]
+        # off-diagonals are finite (may be non-zero)
+        @test isfinite(cov[1,2])
+        @test isfinite(cov[1,3])
+        @test isfinite(cov[2,3])
+    end
+
     @testset "centroid_poly with Fill inv_var" begin
         img, _ = _make_star(; x0=5.0, y0=5.0)
-        # This uses Fill(1, size(img)) internally
         result = centroid_poly(img)
         @test result.x ≈ 5.0 atol=1e-12
         @test result.y ≈ 5.0 atol=1e-12
         @test result.peak > 0
     end
 
+    @testset "two-arg vs four-arg centroid_poly equality" begin
+        # centroid_poly(image, inv_var) must give identical results to
+        # centroid_poly(image, i0, j0, inv_var) when i0, j0 are the true
+        # brightest pixel.
+        for (x0, y0) in ((5.0, 5.0), (5.2, 5.3), (5.3, 5.7))
+            img, model = _make_star(; x0, y0)
+            r1 = centroid_poly(img)
+            _, maxidx = findmax(img)
+            i0, j0 = Tuple(maxidx)
+            r2 = centroid_poly(img, Int(i0), Int(j0))
+            @test r1.x ≈ r2.x
+            @test r1.y ≈ r2.y
+            @test r1.peak ≈ r2.peak
+            @test r1.x_err ≈ r2.x_err
+            @test r1.y_err ≈ r2.y_err
+            @test r1.peak_err ≈ r2.peak_err
+            @test r1.cov ≈ r2.cov
+        end
+
+        # With explicit inverse variance
+        img, model = _make_star(; x0=5.0, y0=5.0)
+        ivar = Fill(2.0, size(img))
+        _, maxidx = findmax(img)
+        i0, j0 = Tuple(maxidx)
+        r1 = centroid_poly(img, ivar)
+        r2 = centroid_poly(img, Int(i0), Int(j0), ivar)
+        @test r1.x ≈ r2.x
+        @test r1.y ≈ r2.y
+        @test r1.x_err ≈ r2.x_err
+        @test r1.cov ≈ r2.cov
+
+        # Border case: both signatures return NaN when i0, j0 are on edge
+        r3 = centroid_poly(img, 1, 1)
+        @test isnan(r3.x)
+        @test isnan(r3.y)
+    end
+
     @testset "_centroid_poly3 direct call" begin
-        # Symmetric 3×3 → centroid at origin
         patch = [0.1 0.3 0.1;
                  0.3 1.0 0.3;
                  0.1 0.3 0.1]
@@ -169,15 +212,43 @@ end
                   0.1  0.8  0.4;
                   0.05 0.15 0.08]
         result2 = CrowdPhot._centroid_poly3(patch2, ones(3,3))
-        # Brighter on right side → x > 0
         @test result2.x > 0
-        # The y-centroid sign depends on the exact fit; just check it's finite
         @test isfinite(result2.y)
 
         # Zero-weight on one half should pull centroid toward the other half
         w = ones(3, 3)
-        w[:, 1] .= 0  # zero out left column
+        w[:, 1] .= 0
         result3 = CrowdPhot._centroid_poly3(patch, w)
-        @test result3.x > 0  # centroid shifts right since left is ignored
+        @test result3.x > -1e-6
+    end
+
+    @testset "asymmetric GaussianPSF" begin
+        using CrowdPhot.PSF: GaussianPSF
+
+        model = GaussianPSF(x=5.0, y=5.0, x_fwhm=4.0, y_fwhm=2.8,
+                            theta=30.0, flux=10.0, bkg=0.0)
+        inds = (1:11, 1:11)
+        img = evaluate.(model, inds[1], inds[2]')
+        result = centroid_poly(img)
+        @test result.x ≈ 5.0 atol=1e-12
+        @test result.y ≈ 5.0 atol=1e-12
+        @test result.peak > 0
+
+        model2 = GaussianPSF(x=5.3, y=5.7, x_fwhm=4.0, y_fwhm=2.8,
+                             theta=30.0, flux=10.0, bkg=0.0)
+        img2 = evaluate.(model2, inds[1], inds[2]')
+        result2 = centroid_poly(img2)
+        @test isfinite(result2.x)
+        @test isfinite(result2.y)
+        @test result2.peak > 0
+        @test abs(result2.x - 5.0) < 1.5
+        @test abs(result2.y - 5.0) < 1.5
+        @test result2.x_err > 0
+        @test result2.y_err > 0
+        @test result2.peak_err > 0
+
+        img3 = img2[1:3, 1:3]
+        result3 = centroid_poly(img3)
+        @test isnan(result3.x)
     end
 end
