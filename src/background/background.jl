@@ -182,11 +182,11 @@ function _biweight_location(data::AbstractArray{T}, c::Real = 6.0) where {T}
 end
 
 # Biweight scale (square-root of biweight midvariance; Beers et al. 1990).
-function _biweight_scale(data::AbstractArray{T}, c::Real = 9.0) where {T}
+function _biweight_scale(data::AbstractArray{T}, c::Real = 9.0; center = nothing) where {T}
     FT = float(T)
     n = length(data)
     n == 0 && return zero(FT)
-    M = median(data)
+    M = something(center, median(data))
     S = mad(data; center = M, normalize = false)
     S == 0 && return zero(FT)
     inv_cS = inv(FT(c * S))
@@ -441,16 +441,16 @@ _location_estimate!(alg::BiweightLocationBackground, data::AbstractArray) =
     _biweight_location(data, alg.c)
 _location_estimate!(estimator, data::AbstractArray) = estimator(data)
 
-_rms_estimate!(::StdRMS, data::AbstractArray) = std(data; corrected = false)
-_rms_estimate!(::MADStdRMS, data::AbstractArray) = mad!(data; normalize = true)
-_rms_estimate!(alg::BiweightScaleRMS, data::AbstractArray) = _biweight_scale(data, alg.c)
-_rms_estimate!(rms_estimator, data::AbstractArray) = rms_estimator(data)
+_rms_estimate!(::StdRMS, data::AbstractArray, location) = std(data; mean = location, corrected = false)
+_rms_estimate!(::MADStdRMS, data::AbstractArray, location) = mad!(data; center = location, normalize = true)
+_rms_estimate!(alg::BiweightScaleRMS, data::AbstractArray, location) = _biweight_scale(data, alg.c; center = location)
+_rms_estimate!(rms_estimator, data::AbstractArray, location) = rms_estimator(data)
 
 function _estimate_pair!(estimator, rms_estimator, data::AbstractArray, n_valid::Integer)
     active = _active_data(data, n_valid)
-    # Estimate location first, then let RMS estimators consume the same copy.
+    # Estimate location first, then compute RMS around that location.
     bkg = _location_estimate!(estimator, active)
-    bkg_rms = _rms_estimate!(rms_estimator, active)
+    bkg_rms = _rms_estimate!(rms_estimator, active, bkg)
     return (bkg = bkg, bkg_rms = bkg_rms)
 end
 
