@@ -6,7 +6,7 @@ import LossFunctions
 import ConstructionBase
 using Statistics: median, median!, mean, std
 
-export simulate_sources, simulate_image, make_gaussians_image, centroid_poly
+export simulate_sources, simulate_image, make_gaussians_image, centroid_poly, choose_centroid
 
 include("utilities.jl")
 include("levenberg_marquardt.jl")

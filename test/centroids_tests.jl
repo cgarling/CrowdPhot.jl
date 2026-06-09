@@ -1,4 +1,4 @@
-using CrowdPhot: centroid_poly, _centroid_poly3
+using CrowdPhot: centroid_poly, _centroid_poly3, choose_centroid
 using CrowdPhot.PSF: CircularGaussianPSF, GaussianPSF, evaluate, peak as psf_peak
 using FillArrays: Fill
 using LinearAlgebra
@@ -298,5 +298,33 @@ end
         result3 = centroid_poly(img3)
         @test isnan(result3.x)
         @test isnan(centroid_poly(img3, 3, 3).x)
+    end
+
+    @testset "choose_centroid" begin
+        # Well-sampled star: polynomial should be chosen (low curvature
+        # degeneracy; cov ratio < 100).
+        img_w, _ = _make_star(; x0=5.0, y0=5.0, fwhm=3.0)
+        r_w = centroid_poly(img_w)
+        c_w = choose_centroid(r_w)
+        @test c_w.source == :poly
+        @test c_w.x ≈ r_w.x
+        @test c_w.y ≈ r_w.y
+
+        # Very broad PSF: curvature near-singular, COM should be chosen.
+        img_b, _ = _make_star(; x0=5.0, y0=5.0, fwhm=7.0)
+        r_b = centroid_poly(img_b)
+        c_b = choose_centroid(r_b)
+        @test c_b.source == :com
+        @test c_b.x ≈ r_b.com.x
+        @test c_b.y ≈ r_b.com.y
+
+        # Works with _centroid_poly3 output too
+        patch = [0.1 0.3 0.1;
+                 0.3 1.0 0.3;
+                 0.1 0.3 0.1]
+        r3 = _centroid_poly3(patch, ones(3,3))
+        c3 = choose_centroid(r3)
+        @test c3.source == :poly
+        @test c3.x ≈ r3.x
     end
 end
