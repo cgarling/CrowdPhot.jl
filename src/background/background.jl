@@ -203,7 +203,7 @@ function _biweight_scale(data::AbstractArray{T}, c::Real = 9.0; center = nothing
             den_sum += 1 - 5 * u^2
         end
     end
-    den = abs(den_sum)^2
+    den = den_sum^2
     den == 0 && return zero(FT)
     return sqrt(n * num / den)
 end
@@ -486,6 +486,16 @@ Returns a `NamedTuple` `(bkg = …, bkg_rms = …)`.
   e.g. `sigma=(2.0, 5.0)`.  Set to `nothing` to disable clipping.
 - `maxiters`: maximum number of sigma-clipping iterations.
 
+# Notes
+If you have a coverage mask of the type described by [`Background2D`](@ref),
+you should simply combine it with your bad-pixel mask of the interior
+points as this function only accepts a single `mask` keyword argument
+(e.g., `mask .= mask .| coverage_mask`).
+For scalar estimation (as this function performs) the distinction between
+the coverage mask and the user-provided `mask` is moot -- pixels that are
+`true` in either mask are excluded from the estimation, so separating the
+two mask components would be redundant.
+
 # Examples
 ```jldoctest
 julia> using CrowdPhot.Background
@@ -560,10 +570,17 @@ end
 @inline _clamp_idx(i::Int, n::Int) = max(1, min(n, i))
 
 """
-    _bicubic_zoom(mesh, H, W)
+    _bicubic_zoom(mesh, H, W, coord_H = H, coord_W = W)
 
 Upsample `mesh` (size `M × N`) to a `H × W` array using bicubic
 Catmull-Rom interpolation.  Corner samples are preserved exactly.
+
+`coord_H` and `coord_W` specify the coordinate extent used for scaling
+the mesh grid.  When `coord_H > H` (e.g., when the mesh covers a
+virtual padded image larger than the true output), the output is
+sampled from the sub-region `[1, H]` of the full `[1, coord_H]`
+coordinate range.  This is used by `Background2D` when the image
+dimensions are not exact multiples of `box_size`.
 """
 function _bicubic_zoom(
         mesh::AbstractMatrix{T}, H::Integer, W::Integer,
