@@ -13,7 +13,14 @@ function show_benchmarks(results)
     # Collect results — results may be a flat Dict or a nested BenchmarkGroup;
     # flatten first so that every value is a Trial.
     flat = flatten_results(results)
-    sorted  = sort(collect(flat), by=first)
+    # sorted  = sort(collect(flat), by=first)
+    # Sort so that paired CrowdPhot / BackgroundMeshes.jl benchmarks appear
+    # adjacent, with the CrowdPhot entry first in each pair.
+    sorted  = sort(collect(flat), by=pair -> begin
+        key = pair.first
+        base = replace(key, r"\s*,?\s*BackgroundMeshes\.jl" => "")
+        return (base, occursin("BackgroundMeshes.jl", key))
+    end)
     names   = [k for (k,_) in sorted]
     trials  = [v for (_,v) in sorted]
 
@@ -146,8 +153,8 @@ for t in (
     (BiweightScaleRMS(), BM.BiweightScaleRMS()),
 )
     img = make_gaussians_image(100, (100, 100); rng = StableRNG(7), background = 200.0, read_noise = 5.0, gain = 1.5)
-    SUITE["background"]["estimators"]["$(typeof(t[1]))"] = @benchmarkable $t[1]($img)
-    SUITE["background"]["estimators"]["$(typeof(t[1])) BackgroundMeshes.jl"] = @benchmarkable $t[2]($img)
+    SUITE["background"]["estimators"]["$(typeof(t[1])) (100, 100)"] = @benchmarkable $t[1]($img)
+    SUITE["background"]["estimators"]["$(typeof(t[1])) BackgroundMeshes.jl (100, 100)"] = @benchmarkable $t[2]($img)
 end
 # Test estimate_background on a range of image sizes, comparing against BackgroundMeshes.jl
 for s in (30, 500, 2000)
@@ -156,6 +163,13 @@ for s in (30, 500, 2000)
     SUITE["background"]["MMMBackground, size=($s, $s), nclip=5"] = @benchmarkable estimate_background($img; estimator = $MMMBackground(), rms_estimator = $StdRMS(), maxiters=$5) # Test sigma clipping overhead
     SUITE["background"]["MMMBackground, BackgroundMeshes.jl, size=($s, $s)"] = @benchmarkable BM.estimate_background($img; location = $BM.MMMBackground(), rms = $BM.StdRMS())
 end
+
+let img = make_gaussians_image(1000, (1000, 1000); rng = StableRNG(7), background = 200.0, read_noise = 5.0, gain = 1.5)
+    SUITE["background"]["Background2D (1000, 1000), 64 box, no filter"] = @benchmarkable Background2D($img, $64; estimator = MMMBackground(), rms_estimator = StdRMS(), maxiters=0)
+    SUITE["background"]["Background2D BackgroundMeshes.jl (1000, 1000), 64 box, no filter"] = @benchmarkable BM.estimate_background($img, $64; location = $BM.MMMBackground(), rms = $BM.StdRMS())
+end
+# SUITE["background"]["Background2D (1000, 1000), BackgroundMeshes.jl, 64 box"] = @benchmarkable BM.Background2D($img, 64) setup=(img = make_gaussians_image(1000, (1000, 1000); rng = StableRNG(7), background = 200.0, read_noise = 5.0, gain = 1.5))
+# SUITE["background"]["Background2D (1000, 1000), 64 box"] = @benchmarkable Background2D($img, 64) setup=(img = make_gaussians_image(1000, (1000, 1000); rng = StableRNG(7), background = 200.0, read_noise = 5.0, gain = 1.5))
 
 # If not on CI, we'll show a nice table
 if get(ENV, "CI", "false") == "false"
