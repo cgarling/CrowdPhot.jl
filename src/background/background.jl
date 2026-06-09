@@ -785,13 +785,14 @@ function Background2D(
         rows = ((mi - 1) * bh + 1):(mi * bh)
         cols = ((mj - 1) * bw + 1):(mj * bw)
         _copy_box_data!(box, padded, mask_work, rows, cols)
-        n_valid = _compact_finite!(box)
-        n_valid < min_valid && continue
-        if !isnothing(sigma)
+        n_valid = if !isnothing(sigma)
+            # sigma_clip! compacts finite values internally.
             slo, shi = _to_pair(T, sigma)
-            n_valid = sigma_clip!(box, slo, shi; maxiters)
-            iszero(n_valid) && continue
+            sigma_clip!(box, slo, shi; maxiters)
+        else
+            count(isfinite, box)
         end
+        n_valid < min_valid && continue
         pair = _estimate_pair!(estimator, rms_estimator, box, n_valid)
         mesh_bkg[mi, mj] = pair.bkg
         mesh_rms[mi, mj] = pair.bkg_rms
