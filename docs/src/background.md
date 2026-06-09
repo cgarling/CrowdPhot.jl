@@ -56,6 +56,12 @@ source density and you use a mask to cover the brightest stars, or use
 source contamination.  Use `MADStdRMS` or `BiweightScaleRMS` for a more
 independent robustness guarantee.
 
+The RMS is computed **around the estimated background location**, not around
+an independently recomputed mean.  For example, when paired with
+`SExtractorBackground`, the scatter is measured around the mode-like estimate
+`2.5 × median − 1.5 × mean` rather than the sample mean, so source
+contamination does not inflate the RMS through the centering value.
+
 ### Sigma clipping
 
 Both [`estimate_background`](@ref) and [`Background2D`](@ref) support iterative
