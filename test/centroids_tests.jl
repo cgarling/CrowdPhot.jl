@@ -1,5 +1,5 @@
-using CrowdPhot
-using CrowdPhot.PSF: CircularGaussianPSF, evaluate, peak as psf_peak
+using CrowdPhot: centroid_poly, _centroid_poly3
+using CrowdPhot.PSF: CircularGaussianPSF, GaussianPSF, evaluate, peak as psf_peak
 using FillArrays: Fill
 using LinearAlgebra
 using StableRNGs: StableRNG
@@ -46,6 +46,11 @@ end
         @test isnan(result.y_err)
         @test isnan(result.peak_err)
         @test all(isnan, result.cov)
+        @test isnan(result.com.x)
+        @test isnan(result.com.y)
+        @test isnan(result.com.x_err)
+        @test isnan(result.com.y_err)
+        @test all(isnan, result.com.cov)
 
         img2 = [100.0 0.0 0.0; 0.0 0.0 0.0; 0.0 0.0 0.0]
         result2 = centroid_poly(img2)
@@ -175,6 +180,11 @@ end
             @test r1.y_err ≈ r2.y_err
             @test r1.peak_err ≈ r2.peak_err
             @test r1.cov ≈ r2.cov
+            @test r1.com.x ≈ r2.com.x
+            @test r1.com.y ≈ r2.com.y
+            @test r1.com.x_err ≈ r2.com.x_err
+            @test r1.com.y_err ≈ r2.com.y_err
+            @test r1.com.cov ≈ r2.com.cov
         end
 
         # With explicit inverse variance
@@ -188,18 +198,52 @@ end
         @test r1.y ≈ r2.y
         @test r1.x_err ≈ r2.x_err
         @test r1.cov ≈ r2.cov
+        @test r1.com.x ≈ r2.com.x
+        @test r1.com.y ≈ r2.com.y
+        @test r1.com.cov ≈ r2.com.cov
 
         # Border case: both signatures return NaN when i0, j0 are on edge
         r3 = centroid_poly(img, 1, 1)
         @test isnan(r3.x)
         @test isnan(r3.y)
+        @test isnan(r3.com.x)
+        @test isnan(r3.com.x_err)
+    end
+
+    @testset "center-of-mass com field" begin
+        # Symmetric patch: COM and polynomial centroid agree at origin.
+        patch = [0.1 0.3 0.1;
+                 0.3 1.0 0.3;
+                 0.1 0.3 0.1]
+        result = _centroid_poly3(patch, ones(3,3))
+        @test result.com.x ≈ 0.0 atol=1e-12
+        @test result.com.y ≈ 0.0 atol=1e-12
+        @test result.x ≈ result.com.x atol=1e-12
+        @test result.y ≈ result.com.y atol=1e-12
+        @test result.com.x_err > 0
+        @test result.com.y_err > 0
+        @test result.com.cov[1,1] ≈ result.com.x_err^2
+        @test result.com.cov[2,2] ≈ result.com.y_err^2
+        @test result.com.cov[1,2] ≈ result.com.cov[2,1]
+
+        # Asymmetric patch: COM is pulled toward the luminous region.
+        patch2 = [0.05 0.2  0.1;
+                  0.1  0.8  0.4;
+                  0.05 0.15 0.08]
+        result2 = _centroid_poly3(patch2, ones(3,3))
+        @test result2.com.x > 0   # brighter on right
+        @test isfinite(result2.com.y)
+        @test result2.com.x_err > 0
+        @test result2.com.y_err > 0
+        # COM differs from polynomial centroid (different estimators)
+        @test result2.com.x ≠ result2.x || result2.com.y ≠ result2.y
     end
 
     @testset "_centroid_poly3 direct call" begin
         patch = [0.1 0.3 0.1;
                  0.3 1.0 0.3;
                  0.1 0.3 0.1]
-        result = CrowdPhot._centroid_poly3(patch, ones(3,3))
+        result = _centroid_poly3(patch, ones(3,3))
         @test result.x ≈ 0.0 atol=1e-12
         @test result.y ≈ 0.0 atol=1e-12
         @test result.peak > 0
@@ -211,20 +255,18 @@ end
         patch2 = [0.05 0.2  0.1;
                   0.1  0.8  0.4;
                   0.05 0.15 0.08]
-        result2 = CrowdPhot._centroid_poly3(patch2, ones(3,3))
+        result2 = _centroid_poly3(patch2, ones(3,3))
         @test result2.x > 0
         @test isfinite(result2.y)
 
         # Zero-weight on one half should pull centroid toward the other half
         w = ones(3, 3)
         w[:, 1] .= 0
-        result3 = CrowdPhot._centroid_poly3(patch, w)
+        result3 = _centroid_poly3(patch, w)
         @test result3.x > -1e-6
     end
 
     @testset "asymmetric GaussianPSF" begin
-        using CrowdPhot.PSF: GaussianPSF
-
         model = GaussianPSF(x=5.0, y=5.0, x_fwhm=4.0, y_fwhm=2.8,
                             theta=30.0, flux=10.0, bkg=0.0)
         inds = (1:11, 1:11)
@@ -247,8 +289,14 @@ end
         @test result2.y_err > 0
         @test result2.peak_err > 0
 
+        # Crop to a 3×3 corner of the original 11×11 image.  The true
+        # centroid is at (5.3, 5.7) — far from this corner window — so
+        # the brightest pixel in the crop lands on the crop border and
+        # no full 3×3 neighbourhood can be extracted.  Both the two-arg
+        # and four-arg forms must return NaN. Max is index (3, 3).
         img3 = img2[1:3, 1:3]
         result3 = centroid_poly(img3)
         @test isnan(result3.x)
+        @test isnan(centroid_poly(img3, 3, 3).x)
     end
 end
