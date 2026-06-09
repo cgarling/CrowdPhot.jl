@@ -38,6 +38,7 @@ makedocs(;
         "Levenberg-Marquardt Fitter" => "lm_fitter.md",
         "Simulation" => "simulation.md",
         "Background Estimation" => "background.md",
+        "Detection and Centroiding" => "detection.md",
         "Index" => "doc_index.md",
         "References" => "refs.md",
         ],

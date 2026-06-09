@@ -23,21 +23,21 @@ using LinearAlgebra: Symmetric, cholesky
 """
     _centroid_poly3(image, inv_var) -> NamedTuple
 
-Fit a 2nd-order 2-D polynomial ``P(x,y) = a + bx + cy + dx² + exy + fy²``
+Fit a quadratic 2-D polynomial ``P(x,y) = a + bx + cy + dx² + exy + fy²``
 to a 3×3 patch using weighted least squares with inverse-variance weights
 `inv_var`.  Returns `(; x, y, peak, x_err, y_err, peak_err, cov, com)`
 where `x, y` are the sub-pixel polynomial centroid coordinates relative
 to the patch center, `peak` is the polynomial value at the centroid, the
-`_err` fields are 1-σ uncertainties, `cov` is the full 3×3 ``SMatrix``
-covariance of ``(x, y, peak)``, and `com` is a ``NamedTuple``
+`_err` fields are 1-σ uncertainties, `cov` is the full 3×3 `SMatrix`
+covariance of `(x, y, peak)`, and `com` is a `NamedTuple`
 `(; x, y, x_err, y_err, cov)` with the inverse-variance-weighted
 center-of-mass centroid and its 2×2 covariance on the same 3×3 patch.
 
 The design matrix is fixed (local coordinates `{-1,0,1}²`), so the
 only free inputs are the 9 pixel values and 9 inverse-variance weights.
 
-If the curvature matrix ``D = [2d  e;  e  2f]`` is near-singular
-(``|4df - e²| < 10^{-10}``), a small Tikhonov-style regularisation is
+If the curvature matrix `D = [2d  e;  e  2f]` is near-singular
+(`|4df - e²| < 10^{-10}`), a small Tikhonov-style regularisation is
 added to its diagonal before computing the centroid.  If the data are
 so noisy that the regularised determinant is still effectively zero,
 the covariance will be large but the centroid estimates remain finite.
@@ -47,11 +47,11 @@ the covariance will be large but the centroid estimates remain finite.
     This function assumes the inputs are valid 3×3 matrices.  Border
     checking (whether a full 3×3 neighbourhood exists around the peak
     pixel) is the caller's responsibility — see [`centroid_poly`](@ref).
-    NaN and Inf pixel values are not checked; they should be handled by
+    `NaN` and `Inf` pixel values are not checked; they should be handled by
     a higher-level function.
 
 # References
-See [`Vakili2016`](@citet) for details.
+See [Vakili2016](@citet) for details.
 """
 function _centroid_poly3(image::AbstractMatrix{T}, inv_var::AbstractMatrix{T}) where {T <: Real}
     # Coordinates:
@@ -131,6 +131,7 @@ function _centroid_poly3(image::AbstractMatrix{T}, inv_var::AbstractMatrix{T}) w
     two_f = 2 * f
     Δ = two_d * two_f - e * e
 
+    # Tikhonov-style regularisation for near-singular curvature matrix
     if abs(Δ) < T(1e-10)
         ε = T(1e-8)
         two_d += ε
@@ -192,7 +193,9 @@ end
 """
     centroid_poly(image, inv_var = nothing) -> NamedTuple
 
-Polynomial centroid of a point source in `image`.
+Polynomial centroid of a point source in `image`. This version is
+designed to work with image cutouts containing a single point source,
+where the brightest pixel is expected to be near the source centroid.
 
 Finds the brightest pixel via `findmax`, extracts the surrounding 3×3
 patch, fits a 2nd-order 2-D polynomial via weighted least squares (see
@@ -207,20 +210,20 @@ pixel coordinates.
   is used (equivalent to ordinary least squares).
 
 # Returns
-``NamedTuple`` `(; x, y, peak, x_err, y_err, peak_err, cov, com)` where
+A `NamedTuple` with keys `(; x, y, peak, x_err, y_err, peak_err, cov, com)` where
 
 - `x`, `y` — polynomial centroid in global pixel coordinates.
 - `peak` — fitted polynomial value at the centroid.
 - `x_err`, `y_err`, `peak_err` — 1-σ uncertainties propagated from the
   weighted least-squares parameter covariance.
-- `cov` — 3×3 ``SMatrix`` covariance of ``(x, y, peak)``.
-- `com` — ``NamedTuple`` `(; x, y, x_err, y_err, cov)` with the
+- `cov` — 3×3 `SMatrix` covariance of `(x, y, peak)`.
+- `com` — `NamedTuple` `(; x, y, x_err, y_err, cov)` with the
   inverse-variance-weighted center-of-mass centroid, its 1-σ
-  uncertainties, and its 2×2 ``SMatrix`` covariance.  Access as
+  uncertainties, and its 2×2 `SMatrix` covariance.  Access as
   `result.com.x`, `result.com.y`, etc.
 
 If the brightest pixel lies on the image border (no full 3×3
-neighbourhood), every field is ``NaN``:
+neighbourhood), every field is `NaN`:
 
 ```julia
 (; x = NaN, y = NaN, peak = NaN,
@@ -246,7 +249,7 @@ julia> round(result.com.x; digits=1), round(result.com.y; digits=1)
 ```
 
 # References
-See [`Vakili2016`](@citet) for details.
+See [Vakili2016](@citet) for details.
 """
 function centroid_poly(image::AbstractMatrix{T}, inv_var::AbstractMatrix = Fill(one(T), size(image))) where {T <: Real}
     _, maxidx = findmax(image)
@@ -254,14 +257,14 @@ function centroid_poly(image::AbstractMatrix{T}, inv_var::AbstractMatrix = Fill(
     return centroid_poly(image, Int(i0), Int(j0), inv_var)
 end
 """
-    centroid_poly(image, i0, j0, inv_var) -> NamedTuple
+    centroid_poly(image, i0::Int, j0::Int, inv_var) -> NamedTuple
 
 Variant of [`centroid_poly`](@ref) that accepts pre-computed brightest-pixel
 coordinates `i0, j0` (corresponding to pixel `image[i0, j0]`) instead of
 calling `findmax` internally. Useful when the caller has already identified
 the peak pixel (e.g. from a correlation map).
 
-Returns the same ``NamedTuple`` as the two-argument form, including both
+Returns the same `NamedTuple` as the two-argument form, including both
 the polynomial centroid and the center-of-mass centroid in `com`.
 """
 function centroid_poly(image::AbstractMatrix{T}, i0::Int, j0::Int, inv_var::AbstractMatrix = Fill(one(T), size(image))) where {T <: Real}
