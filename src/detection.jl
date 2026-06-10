@@ -18,12 +18,15 @@ Result of [`matched_filter`](@ref) source detection.
 - `smoothed_inv_var::Union{Matrix{T}, Nothing}` — the inverse variance map
   correlated with the squared kernel; used in the denominator of the
   significance calculation when `inv_var` is provided.
-- `significance_map::Matrix{T}` — the detection significance in units of σ
-  (standard deviations).  Each pixel value is the matched-filter SNR under
-  the null hypothesis.
+- `significance_map::Matrix{T}` — the detection statistic used for thresholding.
+  When `inv_var` is provided, each pixel is the matched-filter SNR in standard
+  deviation units.  When `inv_var = nothing`, the map is scaled per unit
+  pixel noise; divide by the pixel-noise estimate to obtain true SNR.
 - `kernel::Matrix{T}` — the normalized kernel used for the correlation.
-- `kernel_norm::T` — the normalisation constant `√(denom)` where
-  `denom = ΣK² - (ΣK)²/N`; used to convert raw correlation to SNR.
+- `kernel_norm::T` — the square root of the template normalization denominator
+  before applying the final flux-normalizing scale: `√(Σ(P - P̄)^2)` for the
+  zero-sum path, or `√(ΣP²)` for the non-zero-sum path.  It converts the raw
+  flux estimate to SNR per unit pixel noise in the uniform-weight path.
 - `peaks_x::Vector{Float64}` — x-coordinates (column indices) of detected peaks.
 - `peaks_y::Vector{Float64}` — y-coordinates (row indices) of detected peaks.
 - `peak_significances::Vector{T}` — significance values at each peak.
@@ -57,16 +60,17 @@ PSF template.
 
 - `image` is the input image on which to perform detection.
 - `kernel` will be correlated with the image using [`CrowdPhot.correlate`](@ref)
-  and must follow that functions requirements (namely, odd dimensions).
+  and must follow that function's requirements (namely, odd dimensions).
   This is typically a rendered PSF model.
 - `normalize_zerosum` controls whether the kernel is renormalized to have
   zero sum, which cancels any uniform background offset in the correlation.
   The default (`true`) is the safe choice and should be used whenever the
   image may contain an un-subtracted background.  Set to `false` when the
-  image has been reliably background-subtracted: the SNR gain is
-  ``\\sqrt{1 - 4/(R/\\sigma)^2}`` where ``R`` is the kernel truncation
-  radius in units of the PSF width ``\\sigma`` (~13% at ``R=4\\sigma``,
-  ~25% at ``R=3\\sigma``).
+  image has been reliably background-subtracted: the zero-sum/non-zero-sum
+  SNR ratio is approximately ``\\sqrt{1 - 4/(R/\\sigma)^2}``, where ``R``
+  is the kernel truncation radius in units of the PSF width ``\\sigma``.
+  Thus the zero-sum penalty is ~13% at ``R=4\\sigma`` and ~25% at
+  ``R=3\\sigma``.
 - `sigma` is the detection threshold in units of the significance map.
 - `border` controls edge handling: `:replicate` (default) or `:zero`.
 
@@ -80,8 +84,11 @@ positions, and flux estimates.
 By default (`normalize_zerosum = true`) the kernel is normalized to zero
 sum, ``\\sum K_i = 0``, so that any uniform background offset cancels
 automatically in the correlation.  This is valid regardless of whether
-the image has been background-subtracted -- on a subtracted image the
-cancellation operates on a zero residual and the result is unchanged.
+the image has been background-subtracted.  On a subtracted image the expected
+flux response for an isolated source matched by ``P`` is unchanged, but the
+particular noisy estimate differs and the zero-sum constraint carries the
+variance penalty described below.
+
 When `normalize_zerosum = false` the kernel is instead normalized by
 ``\\sum P^2``, which yields marginally lower noise variance but requires
 the image to be reliably background-subtracted.
@@ -102,8 +109,11 @@ The detection significance (SNR) at each pixel is
 ```
 
 and the matched-filter flux estimate at a peak is ``\\hat{F} = \\sum K \\cdot D``
-evaluated at the peak position — the kernel normalisation makes this an
-unbiased estimator of the true flux.
+evaluated at the peak position.  With `normalize_zerosum = true`, this is the
+profiled-background flux estimator: it fits the source amplitude after
+removing the best constant offset over the kernel footprint.  It is unbiased
+for an isolated source matching ``P``, but it is not algebraically identical
+to the known-background estimator ``\\sum P(D-B)/\\sum P^2``.
 
 For **spatially varying noise** described by an inverse-variance map
 ``w_i = 1/\\sigma_i^2``, two correlations are required:
@@ -111,22 +121,19 @@ For **spatially varying noise** described by an inverse-variance map
 ```math
 \\mathrm{num}(x,y) = \\sum K_{i,j} \\, w_{x+i,\\,y+j} \\, D_{x+i,\\,y+j}
 ```
+
 ```math
 \\mathrm{den}(x,y) = \\sum K_{i,j}^2 \\, w_{x+i,\\,y+j}
 ```
+
 ```math
 \\mathrm{SNR} = \\frac{\\mathrm{num}}{\\sqrt{\\mathrm{den}}}
 ```
 
 where ``w = \\mathrm{inv\\_var}``.  When `inv_var = nothing`, uniform
-weights ``w = 1`` are assumed and the significance is in units of the
-(unknown) pixel-level noise σ — divide the significance map by your noise
-estimate to get true SNR.
-
-# References
-
-See [`photutils`](https://photutils.readthedocs.io/) for the DAOStarFinder
-implementation that inspired this routine.
+weights ``w = 1`` are assumed and the significance map is in units of the
+unknown pixel-level noise σ.  Divide the significance map by your noise
+estimate, or provide `inv_var`, to get true SNR.
 """
 function matched_filter(image::AbstractMatrix{T}, kernel::AbstractMatrix;
                         inv_var::Union{AbstractMatrix, Nothing}=nothing,
