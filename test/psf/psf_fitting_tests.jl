@@ -86,111 +86,112 @@ end
     @test best3.x ≈ truth.x rtol = 1.0e-3
 end
 
-@testset "fit CircularGaussianPSF specialized parity" begin
-    # Compare the circular-Gaussian dispatch path against the generic fitter so
-    # specialized accumulation does not change LM results.
-    inds = (1:30, 1:30)
-    truth = CircularGaussianPSF(x = 13.5, y = 12.3, fwhm = 4.0, flux = 200.0, bkg = 5.0)
-    img = evaluate.(truth, inds[1], inds[2]')
-    init = CircularGaussianPSF(x = 14.1, y = 11.8, fwhm = 4.3, flux = 190.0, bkg = 5.5)
-    generic_sig = Tuple{AbstractPSFModel{Float64}, AbstractMatrix, Any}
+@testset "parity tests for specialized accumulators" begin
+    @testset "fit CircularGaussianPSF specialized parity" begin
+        # Compare the circular-Gaussian dispatch path against the generic fitter so
+        # specialized accumulation does not change LM results.
+        inds = (1:30, 1:30)
+        truth = CircularGaussianPSF(x = 13.5, y = 12.3, fwhm = 4.0, flux = 200.0, bkg = 5.0)
+        img = evaluate.(truth, inds[1], inds[2]')
+        init = CircularGaussianPSF(x = 14.1, y = 11.8, fwhm = 4.3, flux = 190.0, bkg = 5.5)
+        generic_sig = Tuple{AbstractPSFModel{Float64}, AbstractMatrix, Any}
 
-    best_generic, result_generic = invoke(
-        fit_star, generic_sig, init, img, inds;
-        inv_var = fill(1.0, size(img)),
-        x_tol = 1.0e-6,
-    )
-    best_specialized, result_specialized = fit_star(
-        init, img, inds;
-        inv_var = fill(1.0, size(img)),
-        x_tol = 1.0e-6,
-    )
+        best_generic, result_generic = invoke(
+            fit_star, generic_sig, init, img, inds;
+            inv_var = fill(1.0, size(img)),
+            x_tol = 1.0e-6,
+        )
+        best_specialized, result_specialized = fit_star(
+            init, img, inds;
+            inv_var = fill(1.0, size(img)),
+            x_tol = 1.0e-6,
+        )
 
-    @test result_specialized.converged == result_generic.converged
-    @test result_specialized.minimizer ≈ result_generic.minimizer rtol = 1.0e-12 atol = 1.0e-12
-    @test result_specialized.minimum ≈ result_generic.minimum rtol = 1.0e-12 atol = 1.0e-12
-    @test best_specialized.x ≈ best_generic.x rtol = 1.0e-12 atol = 1.0e-12
-    @test best_specialized.y ≈ best_generic.y rtol = 1.0e-12 atol = 1.0e-12
-    @test best_specialized.fwhm ≈ best_generic.fwhm rtol = 1.0e-12 atol = 1.0e-12
-    @test best_specialized.flux ≈ best_generic.flux rtol = 1.0e-12 atol = 1.0e-12
-    @test best_specialized.bkg ≈ best_generic.bkg rtol = 1.0e-12 atol = 1.0e-12
+        @test result_specialized.converged == result_generic.converged
+        @test result_specialized.minimizer ≈ result_generic.minimizer rtol = 1.0e-12 atol = 1.0e-12
+        @test result_specialized.minimum ≈ result_generic.minimum rtol = 1.0e-12 atol = 1.0e-12
+        @test best_specialized.x ≈ best_generic.x rtol = 1.0e-12 atol = 1.0e-12
+        @test best_specialized.y ≈ best_generic.y rtol = 1.0e-12 atol = 1.0e-12
+        @test best_specialized.fwhm ≈ best_generic.fwhm rtol = 1.0e-12 atol = 1.0e-12
+        @test best_specialized.flux ≈ best_generic.flux rtol = 1.0e-12 atol = 1.0e-12
+        @test best_specialized.bkg ≈ best_generic.bkg rtol = 1.0e-12 atol = 1.0e-12
 
-    # Exercise the projected-parameter accumulator used when one or more
-    # circular-Gaussian fields are fixed by the caller.
-    fixed = (bkg = truth.bkg,)
-    best_fixed_generic, result_fixed_generic = invoke(
-        fit_star, generic_sig, init, img, inds;
-        fixed,
-        x_tol = 1.0e-6,
-    )
-    best_fixed_specialized, result_fixed_specialized = fit_star(
-        init, img, inds;
-        fixed,
-        x_tol = 1.0e-6,
-    )
+        # Exercise the projected-parameter accumulator used when one or more
+        # circular-Gaussian fields are fixed by the caller.
+        fixed = (bkg = truth.bkg,)
+        best_fixed_generic, result_fixed_generic = invoke(
+            fit_star, generic_sig, init, img, inds; fixed,
+            x_tol = 1.0e-6,
+        )
+        best_fixed_specialized, result_fixed_specialized = fit_star(
+            init, img, inds;
+            fixed,
+            x_tol = 1.0e-6,
+        )
 
-    @test result_fixed_specialized.minimizer ≈ result_fixed_generic.minimizer rtol = 1.0e-12 atol = 1.0e-12
-    @test result_fixed_specialized.minimum ≈ result_fixed_generic.minimum rtol = 1.0e-12 atol = 1.0e-12
-    @test best_fixed_specialized.x ≈ best_fixed_generic.x rtol = 1.0e-12 atol = 1.0e-12
-    @test best_fixed_specialized.y ≈ best_fixed_generic.y rtol = 1.0e-12 atol = 1.0e-12
-    @test best_fixed_specialized.fwhm ≈ best_fixed_generic.fwhm rtol = 1.0e-12 atol = 1.0e-12
-    @test best_fixed_specialized.flux ≈ best_fixed_generic.flux rtol = 1.0e-12 atol = 1.0e-12
-    @test best_fixed_specialized.bkg ≈ best_fixed_generic.bkg rtol = 1.0e-12 atol = 1.0e-12
-end
+        @test result_fixed_specialized.minimizer ≈ result_fixed_generic.minimizer rtol = 1.0e-12 atol = 1.0e-12
+        @test result_fixed_specialized.minimum ≈ result_fixed_generic.minimum rtol = 1.0e-12 atol = 1.0e-12
+        @test best_fixed_specialized.x ≈ best_fixed_generic.x rtol = 1.0e-12 atol = 1.0e-12
+        @test best_fixed_specialized.y ≈ best_fixed_generic.y rtol = 1.0e-12 atol = 1.0e-12
+        @test best_fixed_specialized.fwhm ≈ best_fixed_generic.fwhm rtol = 1.0e-12 atol = 1.0e-12
+        @test best_fixed_specialized.flux ≈ best_fixed_generic.flux rtol = 1.0e-12 atol = 1.0e-12
+        @test best_fixed_specialized.bkg ≈ best_fixed_generic.bkg rtol = 1.0e-12 atol = 1.0e-12
+    end
 
-@testset "fit ImagePSF specialized parity" begin
-    # Compare the ImagePSF dispatch path against the generic fitter so
-    # specialized accumulation preserves fixed-parameter semantics.
-    inds = (1:16, 1:16)
-    grid_model = CircularGaussianPRF(x = 8.0, y = 8.0, fwhm = 2.4, flux = 1.0, bkg = 0.0)
-    psf_data = evaluate.(grid_model, inds[1], inds[2]')
-    truth = ImagePSF(psf_data; x = 8.35, y = 7.75, flux = 300.0, bkg = 4.0, origin = (8.0, 8.0), normalize = true)
-    img = evaluate.(truth, inds[1], inds[2]')
-    init = ImagePSF(psf_data; x = 8.0, y = 8.1, flux = 260.0, bkg = 3.5, origin = (8.0, 8.0), normalize = true)
-    generic_sig = Tuple{AbstractPSFModel{Float64}, AbstractMatrix, Any}
+    @testset "fit ImagePSF specialized parity" begin
+        # Compare the ImagePSF dispatch path against the generic fitter so
+        # specialized accumulation preserves fixed-parameter semantics.
+        inds = (1:16, 1:16)
+        grid_model = CircularGaussianPRF(x = 8.0, y = 8.0, fwhm = 2.4, flux = 1.0, bkg = 0.0)
+        psf_data = evaluate.(grid_model, inds[1], inds[2]')
+        truth = ImagePSF(psf_data; x = 8.35, y = 7.75, flux = 300.0, bkg = 4.0, origin = (8.0, 8.0), normalize = true)
+        img = evaluate.(truth, inds[1], inds[2]')
+        init = ImagePSF(psf_data; x = 8.0, y = 8.1, flux = 260.0, bkg = 3.5, origin = (8.0, 8.0), normalize = true)
+        generic_sig = Tuple{AbstractPSFModel{Float64}, AbstractMatrix, Any}
 
-    best_generic, result_generic = invoke(
-        fit_star, generic_sig, init, img, inds;
-        inv_var = fill(1.0, size(img)),
-        x_tol = 1.0e-7,
-        max_iter = 100,
-    )
-    best_specialized, result_specialized = fit_star(
-        init, img, inds;
-        inv_var = fill(1.0, size(img)),
-        x_tol = 1.0e-7,
-        max_iter = 100,
-    )
+        best_generic, result_generic = invoke(
+            fit_star, generic_sig, init, img, inds;
+            inv_var = fill(1.0, size(img)),
+            x_tol = 1.0e-7,
+            max_iter = 100,
+        )
+        best_specialized, result_specialized = fit_star(
+            init, img, inds;
+            inv_var = fill(1.0, size(img)),
+            x_tol = 1.0e-7,
+            max_iter = 100,
+        )
 
-    @test result_specialized.converged == result_generic.converged
-    @test result_specialized.minimizer ≈ result_generic.minimizer rtol = 1.0e-11 atol = 1.0e-11
-    @test result_specialized.minimum ≈ result_generic.minimum rtol = 1.0e-11 atol = 1.0e-11
-    @test best_specialized.x ≈ best_generic.x rtol = 1.0e-11 atol = 1.0e-11
-    @test best_specialized.y ≈ best_generic.y rtol = 1.0e-11 atol = 1.0e-11
-    @test best_specialized.flux ≈ best_generic.flux rtol = 1.0e-11 atol = 1.0e-11
-    @test best_specialized.bkg ≈ best_generic.bkg rtol = 1.0e-11 atol = 1.0e-11
+        @test result_specialized.converged == result_generic.converged
+        @test result_specialized.minimizer ≈ result_generic.minimizer rtol = 1.0e-11 atol = 1.0e-11
+        @test result_specialized.minimum ≈ result_generic.minimum rtol = 1.0e-11 atol = 1.0e-11
+        @test best_specialized.x ≈ best_generic.x rtol = 1.0e-11 atol = 1.0e-11
+        @test best_specialized.y ≈ best_generic.y rtol = 1.0e-11 atol = 1.0e-11
+        @test best_specialized.flux ≈ best_generic.flux rtol = 1.0e-11 atol = 1.0e-11
+        @test best_specialized.bkg ≈ best_generic.bkg rtol = 1.0e-11 atol = 1.0e-11
 
-    # Exercise the projected-parameter accumulator used for fixed ImagePSF fields.
-    fixed = (x = truth.x, y = truth.y, bkg = truth.bkg)
-    best_fixed_generic, result_fixed_generic = invoke(
-        fit_star, generic_sig, init, img, inds;
-        fixed,
-        x_tol = 1.0e-7,
-        max_iter = 100,
-    )
-    best_fixed_specialized, result_fixed_specialized = fit_star(
-        init, img, inds;
-        fixed,
-        x_tol = 1.0e-7,
-        max_iter = 100,
-    )
+        # Exercise the projected-parameter accumulator used for fixed ImagePSF fields.
+        fixed = (x = truth.x, y = truth.y, bkg = truth.bkg)
+        best_fixed_generic, result_fixed_generic = invoke(
+            fit_star, generic_sig, init, img, inds;
+            fixed,
+            x_tol = 1.0e-7,
+            max_iter = 100,
+        )
+        best_fixed_specialized, result_fixed_specialized = fit_star(
+            init, img, inds;
+            fixed,
+            x_tol = 1.0e-7,
+            max_iter = 100,
+        )
 
-    @test result_fixed_specialized.minimizer ≈ result_fixed_generic.minimizer rtol = 1.0e-11 atol = 1.0e-11
-    @test result_fixed_specialized.minimum ≈ result_fixed_generic.minimum rtol = 1.0e-11 atol = 1.0e-11
-    @test best_fixed_specialized.x ≈ best_fixed_generic.x rtol = 1.0e-11 atol = 1.0e-11
-    @test best_fixed_specialized.y ≈ best_fixed_generic.y rtol = 1.0e-11 atol = 1.0e-11
-    @test best_fixed_specialized.flux ≈ best_fixed_generic.flux rtol = 1.0e-11 atol = 1.0e-11
-    @test best_fixed_specialized.bkg ≈ best_fixed_generic.bkg rtol = 1.0e-11 atol = 1.0e-11
+        @test result_fixed_specialized.minimizer ≈ result_fixed_generic.minimizer rtol = 1.0e-11 atol = 1.0e-11
+        @test result_fixed_specialized.minimum ≈ result_fixed_generic.minimum rtol = 1.0e-11 atol = 1.0e-11
+        @test best_fixed_specialized.x ≈ best_fixed_generic.x rtol = 1.0e-11 atol = 1.0e-11
+        @test best_fixed_specialized.y ≈ best_fixed_generic.y rtol = 1.0e-11 atol = 1.0e-11
+        @test best_fixed_specialized.flux ≈ best_fixed_generic.flux rtol = 1.0e-11 atol = 1.0e-11
+        @test best_fixed_specialized.bkg ≈ best_fixed_generic.bkg rtol = 1.0e-11 atol = 1.0e-11
+    end
 end
 
 # ---------------------------------------------------------------------------
