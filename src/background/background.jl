@@ -324,7 +324,7 @@ Estimate the background using the robust biweight location statistic
 (Tukey 1977; Beers, Flynn & Gebhardt 1990).
 
 The tuning constant `c` controls the rejection threshold: pixels whose
-standardised residual (normalised by the median absolute deviation)
+standardised residual (normalized by the median absolute deviation)
 exceeds `c` receive zero weight.  `c = 6` is the conventional default.
 
 # Examples
@@ -370,7 +370,7 @@ struct StdRMS <: AbstractBackgroundRMSEstimator end
 """
     MADStdRMS()
 
-Estimate the background RMS via the normalised median absolute deviation:
+Estimate the background RMS via the normalized median absolute deviation:
 
 ```math
 \\hat{\\sigma} \\approx 1.4826 \\times \\mathrm{MAD}
