@@ -239,14 +239,23 @@ function Base.CartesianIndices(model::AbstractPSFModel, fwhm_factor = 5)
 end
 
 """
-    render(model::AbstractPSFModel) → Matrix
+    render(model::AbstractPSFModel{T})::Matrix{T} where {T}
 
-Return a matrix covering the region returned by `extent(model)`,
-rounding the bounds to the nearest integer.
+Return an **odd-sized** matrix covering the region returned by `extent(model)`.
+The matrix is centered on the rounded model centroid; the half-width in each
+dimension is chosen so that the full extent is covered and the total size is
+odd (required for use as a correlation kernel in [`correlate`](@ref)).
 """
 function render(model::AbstractPSFModel)
     (x_lo, x_hi), (y_lo, y_hi) = extent(model)
-    inds = (round(Int, x_lo):round(Int, x_hi), round(Int, y_lo):round(Int, y_hi))
+    x0, y0 = centroid(model)
+    # Half-width large enough to cover the extent on both sides of the centroid.
+    hx = max(ceil(Int, x0 - x_lo), ceil(Int, x_hi - x0))
+    hy = max(ceil(Int, y0 - y_lo), ceil(Int, y_hi - y0))
+    # Center on the nearest pixel to the true centroid.
+    xc = round(Int, x0)
+    yc = round(Int, y0)
+    inds = ((xc - hx):(xc + hx), (yc - hy):(yc + hy))
     return evaluate.(model, inds[1], inds[2]')
 end
 

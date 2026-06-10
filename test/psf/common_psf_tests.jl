@@ -280,3 +280,71 @@ end
         @test g ≈ [0.03673192475215122, 0.07346384950430244, -0.0785986074131928, 0.00969645697892684, 1.0]
     end
 end
+
+# ---------------------------------------------------------------------------
+# render — odd-size guarantee and centering
+# ---------------------------------------------------------------------------
+@testset "render" begin
+
+    @testset "odd-size guarantee across sub-pixel centroids and FWHMs" begin
+        for x0 in (10.0, 10.1, 10.3, 10.5, 10.7, 10.9)
+            for fwhm in (2.0, 3.0, 5.0, 7.2)
+                m = CircularGaussianPSF(; x=x0, y=20.4, fwhm, flux=100.0, bkg=0.0)
+                kern = render(m)
+                sz = size(kern)
+                @test isodd(sz[1]) && isodd(sz[2])
+                cr, cc = sz[1] ÷ 2 + 1, sz[2] ÷ 2 + 1
+                maxval, maxidx = findmax(kern)
+                @test maxidx == CartesianIndex(cr, cc)
+            end
+        end
+    end
+
+    @testset "symmetry about centre for integer-centroid model" begin
+        # A circular Gaussian centred exactly on a pixel should produce a
+        # rendered kernel that is symmetric about its centre pixel.
+        for fwhm in (3.0, 5.0, 8.0)
+            m = CircularGaussianPSF(; x=15.0, y=25.0, fwhm, flux=50.0, bkg=0.0)
+            kern = render(m)
+            cr, cc = size(kern, 1) ÷ 2 + 1, size(kern, 2) ÷ 2 + 1
+            for r in 1:size(kern, 1), c in 1:size(kern, 2)
+                dr, dc = r - cr, c - cc
+                @test kern[cr + dr, cc + dc] ≈ kern[cr - dr, cc - dc]
+                @test kern[cr + dr, cc + dc] ≈ kern[cr - dr, cc + dc]
+                @test kern[cr + dr, cc + dc] ≈ kern[cr + dr, cc - dc]
+            end
+        end
+    end
+
+    @testset "integral conservation (well-sampled PSF)" begin
+        # For a well-sampled Gaussian (FWHM ≫ 1 px), the sum of the rendered
+        # kernel should approximate the true flux (pixel area = 1.0).
+        for fwhm in (4.0, 6.0, 10.0)
+            # Place centroid at half-pixel offset — worst case for alignment.
+            m = CircularGaussianPSF(; x=15.5, y=25.5, fwhm, flux=100.0, bkg=0.0)
+            kern = render(m)
+            @test sum(kern) ≈ 100.0 rtol = 0.01
+        end
+    end
+
+    @testset "extent is fully covered" begin
+        # The rendered kernel must cover the full floating-point extent
+        # returned by `extent(model)`.
+        for (x0, y0) in ((10.0, 20.0), (10.3, 20.7), (10.6, 20.4))
+            for fwhm in (2.5, 5.0)
+                m = CircularGaussianPSF(; x=x0, y=y0, fwhm, flux=100.0, bkg=0.0)
+                (x_lo, x_hi), (y_lo, y_hi) = extent(m)
+                kern = render(m)
+                cr, cc = size(kern, 1) ÷ 2 + 1, size(kern, 2) ÷ 2 + 1
+                hx = cr - 1
+                hy = cc - 1
+                xc = round(Int, x0)
+                yc = round(Int, y0)
+                @test xc - hx ≤ x_lo
+                @test xc + hx ≥ x_hi
+                @test yc - hy ≤ y_lo
+                @test yc + hy ≥ y_hi
+            end
+        end
+    end
+end
