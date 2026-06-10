@@ -1,3 +1,7 @@
+```@meta
+CurrentModule = CrowdPhot
+```
+
 # Detection and Centroiding
 
 ## Matched Filter Detection
@@ -53,8 +57,11 @@ K_i = \frac{P_i - \bar{P}}{\mathrm{denom}}, \qquad
 This kernel satisfies ``\sum K_i = 0`` and
 ``E[\sum K_i \cdot (F P_i)] = F``.  Consequently the correlation
 ``S = K \star D``, evaluated at a source position, is the matched-filter
-flux estimate — i.e., ``S`` at a peak equals ``\hat{F}`` given above
-without requiring an explicit background subtraction.
+flux estimate after profiling out an unknown constant background over the
+kernel footprint.  This is not algebraically identical to the known-background
+estimator above, but it has the same expected response for an isolated source
+with template ``P``, albeit with a different noise realization and a larger
+variance (see below for additional information).
 
 The **detection statistic** evaluated at every pixel ``(x,y)`` is the
 correlation response divided by its noise standard deviation:
@@ -66,9 +73,14 @@ z(x,y) = \frac{\sum_{i,j} K_{i,j} \, D_{x+i,\,y+j}}
 ```
 
 where ``S = K \star D`` is the correlation of the image with the
-normalized kernel.  This ``z(x,y)`` is the quantity compared against
-the `sigma` threshold argument in [`matched_filter`](@ref): peaks with
-``z \ge \sigma`` are reported as detections.
+normalized kernel.  This ``z(x,y)`` is the true matched-filter SNR when
+the pixel noise ``\sigma`` is known.
+
+In the uniform-weight code path (`inv_var = nothing`), [`matched_filter`](@ref)
+does not take a scalar noise estimate.  It stores and thresholds
+``S\sqrt{\mathrm{denom}}``, which equals ``\sigma z``.  Divide that map by
+your pixel-noise estimate, or provide `inv_var = fill(1/sigma^2, size(image))`,
+to obtain a map in standard-deviation units.
 
 **Why this statistic is meaningful:**  Under the null hypothesis
 ``\mathcal{H}_0`` (no source present), ``D = B + N`` and the
@@ -80,7 +92,7 @@ and the kernel weights are fixed,
 z \mid \mathcal{H}_0 \sim \mathcal{N}(0, 1).
 ```
 
-A threshold of ``z = 5`` therefore corresponds to a false-positive
+A threshold of ``z = 5`` in the true SNR map therefore corresponds to a false-positive
 probability of ``\sim 3\times10^{-7}`` per independent resolution
 element (one-sided Gaussian tail).
 
@@ -105,9 +117,48 @@ For **spatially varying noise** described by an inverse-variance map
                           {\sqrt{\mathrm{den}(x,y)}}
 ```
 
+This is the statistic computed by the current fixed-kernel weighted path.
+It is calibrated under the null hypothesis when the image is already
+background-subtracted.
+
+!!! note "Kernel Reweighting for Spatially-Variable Weights"
+    If an unknown constant background is also being
+    profiled out while the weights vary across
+    the footprint, the background projection should be weighted locally:
+
+    ```math
+    \bar{P}_w(x,y) =
+    \frac{\sum_{i,j} w_{x+i,\,y+j} P_{i,j}}
+        {\sum_{i,j} w_{x+i,\,y+j}},
+    \qquad
+    \mathrm{denom}_w(x,y) =
+    \sum_{i,j} w_{x+i,\,y+j}
+    \left(P_{i,j} - \bar{P}_w(x,y)\right)^2.
+    ```
+
+    The corresponding profiled-background statistic is
+
+    ```math
+    z_w(x,y) =
+    \frac{\sum_{i,j} w_{x+i,\,y+j}
+        \left(P_{i,j} - \bar{P}_w(x,y)\right)
+        D_{x+i,\,y+j}}
+        {\sqrt{\mathrm{denom}_w(x,y)}}.
+    ```
+
+    When the sky background dominates the noise and is approximately constant,
+    ``w`` is approximately constant over the kernel footprint, so this reduces to
+    the zero-sum kernel above.  If ``w`` varies strongly, ``\sum K_i = 0`` alone
+    does not cancel a constant background inside ``\sum K_i w_i D_i``. For
+    simplicity and speed we **do not** apply this kernel reweighting  in the presence
+    of spatially-varying noise -- for this reason we suggest background-subtracting
+    your images before running detection.
+
 The zero-sum kernel is the default and the recommended choice: even on
 a background-subtracted image, ``\sum K_i = 0`` cancels any residual
-uniform offset and the flux estimate is unchanged.  The
+uniform offset.  For an isolated source matched by ``P``, the expected flux
+response remains unbiased, although the particular noisy estimate changes and
+the variance is slightly larger.  The
 `normalize_zerosum` parameter can be set to `false` to skip the
 zero-sum correction, which yields marginally lower noise variance at
 the cost of sensitivity to imperfect background subtraction.
@@ -166,7 +217,7 @@ Instead, the ``\mathrm{rel\_err}`` factor is folded into the
 
 ```math
 \mathtt{significance\_map} = (K \star D) \cdot \sqrt{\mathrm{denom}}
-                            = \frac{K \star D}{\mathrm{rel\\_err}},
+                            = \frac{K \star D}{\mathrm{rel\_err}},
 ```
 
 which equals the matched-filter SNR up to the unknown factor of
@@ -206,15 +257,10 @@ CrowdPhot.correlate!
 CrowdPhot provides a fast polynomial centroiding algorithm based on
 [Vakili2016](@citet).  The method fits a quadratic 2-D
 polynomial to the 3×3 patch surrounding the brightest pixel of a
-PSF-correlated (matched-filtered) image.  The polynomial centroid
-saturates the Cramér-Rao lower bound for well-sampled stars and is
-``\sim\!200`` ns per source.
-
-Both the polynomial centroid and an inverse-variance-weighted
-center-of-mass (COM) centroid are returned, along with their full
-covariance matrices and 1-σ uncertainties.  The COM centroid is
-effectively free -- all required moments are already computed during
-the normal-equation assembly for the polynomial fit.
+PSF-correlated (matched-filtered) image.  Under the well-sampled,
+approximately Gaussian assumptions studied by Vakili & Hogg, the polynomial
+centroid can approach the Cramér-Rao lower bound and is ``\sim\!200`` ns per
+source.
 
 Both the polynomial centroid and an inverse-variance-weighted
 center-of-mass (COM) centroid are returned, along with their full
