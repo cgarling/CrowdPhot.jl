@@ -244,7 +244,7 @@ end
 Return an **odd-sized** matrix covering the region returned by `extent(model)`.
 The matrix is centered on the rounded model centroid; the half-width in each
 dimension is chosen so that the full extent is covered and the total size is
-odd (required for use as a correlation kernel in [`correlate`](@ref)).
+odd (required for use as a correlation kernel in [`CrowdPhot.correlate`](@ref)).
 """
 function render(model::AbstractPSFModel)
     (x_lo, x_hi), (y_lo, y_hi) = extent(model)

@@ -1,11 +1,11 @@
 # When adding a benchmark suite, update SUITE_NAMES and SUITE_TITLES, then
 # define its BenchmarkGroup under SUITE using the same suite name.
-using CrowdPhot: make_gaussians_image, simulate_image, centroid_poly, _centroid_poly3, correlate
+using CrowdPhot: make_gaussians_image, simulate_image, centroid_poly, _centroid_poly3, correlate, findlocalmaxima
 using CrowdPhot.PSF: GaussianPSF, CircularGaussianPSF, CircularGaussianPRF, evaluate, evaluate_fg, fit_star, fit_psf, TukeyLoss, bicubic_interpolate, fill_grid_holes!, ImagePSF
 using CrowdPhot.Background
 import BackgroundMeshes as BM
 using BenchmarkTools
-using ImageFiltering: imfilter
+using ImageFiltering: imfilter, findlocalmaxima as _if_findlocalmaxima
 import LossFunctions
 using OffsetArrays: centered
 using PrettyTables: pretty_table
@@ -61,7 +61,7 @@ function _flatten_results!(flat, group, prefix)
     end
 end
 
-const SUITE_NAMES = ["parametric", "fitting", "empirical", "background", "centroids", "correlation"]
+const SUITE_NAMES = ["parametric", "fitting", "empirical", "background", "centroids", "correlation", "peakfinding"]
 const SUITE_TITLES = Dict(
     "parametric" => "Parametric Suite",
     "fitting" => "Fitting Suite",
@@ -69,6 +69,7 @@ const SUITE_TITLES = Dict(
     "background" => "Background Estimation Suite",
     "centroids" => "Centroids Suite",
     "correlation" => "Correlation Suite",
+    "peakfinding" => "Peak Finding Suite",
 )
 
 function selected_suite_names(args)
@@ -247,6 +248,22 @@ for ksize in ((5, 5), (11, 11), (21, 21))
                 img = rand($sz...); kern = rand($k...); ckern = centered(kern)
             ) samples=3
         end
+    end
+end
+
+# ---------------------------------------------------------------------------
+# Peak-finding benchmarks — CrowdPhot.jl vs ImageFiltering.jl
+# ---------------------------------------------------------------------------
+SUITE["peakfinding"] = BenchmarkGroup()
+
+for (sz, label) in [((100, 100), "100x100"), ((500, 500), "500x500"), ((2000, 2000), "2000x2000")]
+    let s = sz, lbl = label
+        SUITE["peakfinding"]["$lbl, CrowdPhot.jl"] = @benchmarkable findlocalmaxima(img) setup=(
+            img = rand($s...)
+        ) samples=10
+        SUITE["peakfinding"]["$lbl, ImageFiltering.jl"] = @benchmarkable _if_findlocalmaxima(img; edges=true) setup=(
+            img = rand($s...)
+        ) samples=10
     end
 end
 
