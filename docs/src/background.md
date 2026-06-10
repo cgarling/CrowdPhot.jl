@@ -1,4 +1,4 @@
-# Background Estimation
+# [Background Estimation](@id bkg)
 
 NOTICE: Our background estimation module is adapted from
 [BackgroundMeshes.jl](https://juliaastro.org/BackgroundMeshes/stable/).

@@ -86,8 +86,8 @@ sum, ``\\sum K_i = 0``, so that any uniform background offset cancels
 automatically in the correlation.  This is valid regardless of whether
 the image has been background-subtracted.  On a subtracted image the expected
 flux response for an isolated source matched by ``P`` is unchanged, but the
-particular noisy estimate differs and the zero-sum constraint carries the
-variance penalty described below.
+formal estimator differs and the zero-sum constraint carries an additional
+variance penalty.
 
 When `normalize_zerosum = false` the kernel is instead normalized by
 ``\\sum P^2``, which yields marginally lower noise variance but requires
@@ -134,6 +134,13 @@ where ``w = \\mathrm{inv\\_var}``.  When `inv_var = nothing`, uniform
 weights ``w = 1`` are assumed and the significance map is in units of the
 unknown pixel-level noise σ.  Divide the significance map by your noise
 estimate, or provide `inv_var`, to get true SNR.
+
+!!! note "Zero-sum kernel with spatially-varying weights"
+    When `normalize_zerosum = true` and `inv_var` varies significantly
+    across the kernel footprint, ``\\sum K_i = 0`` alone does **not**
+    guarantee ``\\sum K_i w_{x+i,y+j} = 0``, so a constant background
+    can leak into the weighted response.  In this case you should
+    background-subtract the image before calling [`matched_filter`](@ref).
 """
 function matched_filter(image::AbstractMatrix{T}, kernel::AbstractMatrix;
                         inv_var::Union{AbstractMatrix, Nothing}=nothing,
