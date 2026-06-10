@@ -325,12 +325,14 @@ function _correlate_rows!(out::AbstractMatrix{S}, img::AbstractMatrix,
     kr = size(kernel, 1)
     Ho, Wo = size(out)
     z = zero(S)
-    @inbounds for col in 1:Wo, row in 1:Ho
-        acc = z
-        for j in 1:kr
-            acc += img[row + j - 1, col] * kernel[j, 1]
+    Threads.@threads for col in 1:Wo
+        @inbounds for row in 1:Ho
+            acc = z
+            for j in 1:kr
+                acc += img[row + j - 1, col] * kernel[j, 1]
+            end
+            out[row, col] = acc
         end
-        out[row, col] = acc
     end
     out
 end
@@ -340,12 +342,14 @@ function _correlate_cols!(out::AbstractMatrix{S}, img::AbstractMatrix,
     kc = size(kernel, 2)
     Ho, Wo = size(out)
     z = zero(S)
-    @inbounds for col in 1:Wo, row in 1:Ho
-        acc = z
-        for j in 1:kc
-            acc += img[row, col + j - 1] * kernel[1, j]
+    Threads.@threads for col in 1:Wo
+        @inbounds for row in 1:Ho
+            acc = z
+            for j in 1:kc
+                acc += img[row, col + j - 1] * kernel[1, j]
+            end
+            out[row, col] = acc
         end
-        out[row, col] = acc
     end
     out
 end
@@ -355,12 +359,14 @@ function _correlate_2d!(out::AbstractMatrix{S}, img::AbstractMatrix,
     kr, kc = size(kernel)
     Ho, Wo = size(out)
     z = zero(S)
-    @inbounds for col in 1:Wo, row in 1:Ho
-        acc = z
-        for kc_i in 1:kc, kr_i in 1:kr
-            acc += img[row + kr_i - 1, col + kc_i - 1] * kernel[kr_i, kc_i]
+    Threads.@threads for col in 1:Wo
+        @inbounds for row in 1:Ho
+            acc = z
+            for kc_i in 1:kc, kr_i in 1:kr
+                acc += img[row + kr_i - 1, col + kc_i - 1] * kernel[kr_i, kc_i]
+            end
+            out[row, col] = acc
         end
-        out[row, col] = acc
     end
     out
 end
