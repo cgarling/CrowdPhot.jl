@@ -207,6 +207,10 @@ end
 
 # ---------------------------------------------------------------------------
 # Correlation benchmarks — CrowdPhot.jl vs ImageFiltering.jl
+# Note that ImageFiltering.jl has auto-algorithm selection; for small, separable
+# kernels it uses direct, multi-threaded convolution `FIRTiled` with `CPUThreads`,
+# while for large kernels it uses `FFT()`. For kernel sizes 5, 11 the direct convolution
+# is used, while for 21 the FFT is used.
 # ---------------------------------------------------------------------------
 SUITE["correlation"] = BenchmarkGroup()
 
