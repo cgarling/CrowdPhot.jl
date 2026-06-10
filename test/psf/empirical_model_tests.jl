@@ -1,6 +1,6 @@
 import CrowdPhot
 using CrowdPhot: simulate_image
-using CrowdPhot.PSF: _as_oversampling, background, bicubic_interpolate, centroid, CircularGaussianPRF, evaluate, evaluate_fg, extent, integral, fill_grid_holes!, TukeyLoss, ImagePSF, fit_star, fit_psf
+using CrowdPhot.PSF: _as_oversampling, background, bicubic_interpolate, centroid, CircularGaussianPRF, evaluate, evaluate_fg, extent, integral, fill_grid_holes!, TukeyLoss, AbstractPSFModel, ImagePSF, fit_star, fit_psf
 import ConstructionBase
 using StableRNGs: StableRNG
 using Statistics: mean, median
@@ -128,6 +128,45 @@ end
     @test best.y ≈ truth.y atol = 1e-6
     @test best.flux ≈ truth.flux rtol = 1e-6
     @test best.bkg ≈ truth.bkg atol = 1e-6
+end
+
+@testset "ImagePSF specialized fit_star parity" begin
+    # Compare the ImagePSF dispatch path with the generic fitter across fixed
+    # parameter subsets so source-parameter specialization preserves results.
+    grid_model = CircularGaussianPRF(x = 8, y = 8, fwhm = 2.4, flux = 1, bkg = 0)
+    psf_data = evaluate.(grid_model, 1:16, (1:16)')
+    truth = ImagePSF(psf_data; x = 8.35, y = 7.75, flux = 300.0, bkg = 4.0, origin = (8.0, 8.0), normalize = true)
+    image = evaluate.(truth, 1:16, (1:16)')
+    init = ImagePSF(psf_data; x = 8.0, y = 8.1, flux = 260.0, bkg = 3.5, origin = (8.0, 8.0), normalize = true)
+    generic_sig = Tuple{AbstractPSFModel{Float64}, AbstractMatrix, Any}
+
+    for fixed in (
+            (;),
+            (bkg = truth.bkg,),
+            (x = truth.x, y = truth.y),
+            (x = truth.x, y = truth.y, bkg = truth.bkg),
+        )
+        best_generic, result_generic = invoke(
+            fit_star, generic_sig, init, image, (1:16, 1:16);
+            fixed,
+            x_tol = 1.0e-7,
+            max_iter = 100,
+        )
+        best_specialized, result_specialized = fit_star(
+            init, image, (1:16, 1:16);
+            fixed,
+            x_tol = 1.0e-7,
+            max_iter = 100,
+        )
+
+        @test result_specialized.converged == result_generic.converged
+        @test result_specialized.minimizer ≈ result_generic.minimizer rtol = 1.0e-11 atol = 1.0e-11
+        @test result_specialized.minimum ≈ result_generic.minimum rtol = 1.0e-11 atol = 1.0e-11
+        @test best_specialized.x ≈ best_generic.x rtol = 1.0e-11 atol = 1.0e-11
+        @test best_specialized.y ≈ best_generic.y rtol = 1.0e-11 atol = 1.0e-11
+        @test best_specialized.flux ≈ best_generic.flux rtol = 1.0e-11 atol = 1.0e-11
+        @test best_specialized.bkg ≈ best_generic.bkg rtol = 1.0e-11 atol = 1.0e-11
+    end
 end
 
 @testset "Empirical ImagePSF recovery" begin

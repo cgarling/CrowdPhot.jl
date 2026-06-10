@@ -136,6 +136,20 @@ SUITE["empirical"] = BenchmarkGroup()
 SUITE["empirical"]["bicubic_interpolate"] = @benchmarkable bicubic_interpolate(x, $3.5, $3.5) setup=(x=rand(7,7))
 SUITE["empirical"]["fill_grid_holes!"] = @benchmarkable fill_grid_holes!(x) setup=(x=rand(21,21); inds=([9, 4, 15, 13, 1, 1], [6, 15, 17, 1, 17, 1]); x[inds...] .= NaN) evals=1
 
+for n in (5, 11, 21)
+    SUITE["empirical"]["ImagePSF fit_star, size=($n, $n)"] = @benchmarkable fit_star(init, image, inds; max_iter = 100) setup=(begin
+        origin = (($n + 1) / 2, ($n + 1) / 2)
+        grid_model = CircularGaussianPRF(x = origin[1], y = origin[2], fwhm = 2.4, flux = 1, bkg = 0)
+        psf_data = evaluate.(grid_model, 1:$n, (1:$n)')
+        truth = ImagePSF(psf_data; x = origin[1] + 0.35, y = origin[2] - 0.25,
+            flux = 300.0, bkg = 4.0, origin, normalize = true)
+        image = evaluate.(truth, 1:$n, (1:$n)')
+        init = ImagePSF(psf_data; x = origin[1], y = origin[2] + 0.1,
+            flux = 260.0, bkg = 3.5, origin, normalize = true)
+        inds = (1:$n, 1:$n)
+    end)
+end
+
 for n in (50, 100)
     SUITE["empirical"]["ImagePSF fit_psf, n=$n"] = @benchmarkable psf, result =
         fit_psf(ImagePSF, image, sources.x, sources.y;
