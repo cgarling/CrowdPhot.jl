@@ -383,6 +383,319 @@ function _accum_circular_gaussian!(
     return cost
 end
 
+# Specialized method: 5x faster at (5,5), 3.5x at (11,11), and 2.2x at (21,21) over generic method.
+function fit_star(
+        model::CircularMoffatPSF{T},
+        image::AbstractMatrix,
+        inds = axes(image);
+        fixed::NamedTuple = (;),
+        inv_var = nothing,
+        kws...
+    ) where {T}
+
+    # Reuse shared validation and fixed-parameter bookkeeping.
+    prepared = _prepare_fit_star_inputs(model, image, inds, fixed, inv_var)
+    inds, _, free_idx, x0, free_names_val, FT, base_weights = prepared
+
+    # Stream pixels through a CircularMoffat-specific normal-equation kernel.
+    function accum!(A::AbstractMatrix{FT}, b::AbstractVector{FT}, residuals::AbstractVector{FT}, x::AbstractVector{FT}, weights) where {FT}
+        @assert size(A, 1) == size(A, 2) == length(b) == length(free_idx)
+        @assert length(residuals) == length(inds)
+        m = model_from_vector(model, free_names_val, x, fixed)
+        return _accum_circular_moffat!(A, b, residuals, image, inds, m, free_idx, weights)
+    end
+
+    # Delegate iteration details to the shared LM implementation.
+    problem = LMProblem(Vector{FT}(x0), length(inds), accum!, base_weights)
+    result = lm_irls(problem; kws...)
+    best_model = model_from_vector(model, free_names_val, result.minimizer, fixed)
+    return best_model, result
+end
+
+function _accum_circular_moffat!(
+        A::AbstractMatrix{FT},
+        b::AbstractVector{FT},
+        residuals::AbstractVector{FT},
+        image::AbstractMatrix,
+        inds::CartesianIndices,
+        model::CircularMoffatPSF,
+        free_idx,
+        weights
+    ) where {FT}
+
+    # Precompute model constants that are shared across all fit pixels.
+    fill!(A, zero(FT))
+    fill!(b, zero(FT))
+    x0 = FT(model.x)
+    y0 = FT(model.y)
+    α = FT(model.α)
+    β = FT(model.β)
+    flux = FT(model.flux)
+    bkg = FT(model.bkg)
+    α² = α^2
+    norm = FT(π) * α² / (β - one(FT))
+    amp = flux / norm
+
+    # Evaluate analytic derivatives and accumulate only the active parameter block.
+    cost = zero(FT)
+    obs_k = 0
+    nparams = length(free_idx)
+    use_weights = !isnothing(weights)
+    @inbounds for idx in inds
+        obs_k += 1
+        w = use_weights ? FT(weights[obs_k]) : one(FT)
+        dx = FT(idx[1]) - x0
+        dy = FT(idx[2]) - y0
+        r2 = dx^2 + dy^2
+        u = one(FT) + r2 / α²
+        profile = u^(-β)
+        Ag = amp * profile
+        f_val = muladd(amp, profile, bkg)
+        r = f_val - FT(image[idx])
+        residuals[obs_k] = r
+        wr = w * r
+        cost = muladd(wr, r, cost)
+        g_full = (
+            2 * Ag * β * dx / (α² * u),
+            2 * Ag * β * dy / (α² * u),
+            Ag * (-2 / α + 2 * β * r2 / (α^3 * u)),
+            Ag * (1 / (β - one(FT)) - log(u)),
+            profile / norm,
+            one(FT),
+        )
+
+        # Accumulate the projected normal-equation block expected by lm_irls.
+        for j in 1:nparams
+            gj = g_full[free_idx[j]]
+            b[j] = muladd(wr, gj, b[j])
+            for i in 1:nparams
+                A[i, j] = muladd(w * g_full[free_idx[i]], gj, A[i, j])
+            end
+        end
+    end
+    return cost
+end
+
+# Specialized method: 4.9x faster at (5,5), 2.6x at (11,11), and 1.8x at (21,21) over generic method.
+function fit_star(
+        model::MoffatPSF{T},
+        image::AbstractMatrix,
+        inds = axes(image);
+        fixed::NamedTuple = (;),
+        inv_var = nothing,
+        kws...
+    ) where {T}
+
+    # Reuse shared validation and fixed-parameter bookkeeping.
+    prepared = _prepare_fit_star_inputs(model, image, inds, fixed, inv_var)
+    inds, _, free_idx, x0, free_names_val, FT, base_weights = prepared
+
+    # Stream pixels through a scalar Moffat-specific normal-equation kernel.
+    function accum!(A::AbstractMatrix{FT}, b::AbstractVector{FT}, residuals::AbstractVector{FT}, x::AbstractVector{FT}, weights) where {FT}
+        @assert size(A, 1) == size(A, 2) == length(b) == length(free_idx)
+        @assert length(residuals) == length(inds)
+        m = model_from_vector(model, free_names_val, x, fixed)
+        return _accum_moffat!(A, b, residuals, image, inds, m, free_idx, weights)
+    end
+
+    # Delegate iteration details to the shared LM implementation.
+    problem = LMProblem(Vector{FT}(x0), length(inds), accum!, base_weights)
+    result = lm_irls(problem; kws...)
+    best_model = model_from_vector(model, free_names_val, result.minimizer, fixed)
+    return best_model, result
+end
+
+function _accum_moffat!(
+        A::AbstractMatrix{FT},
+        b::AbstractVector{FT},
+        residuals::AbstractVector{FT},
+        image::AbstractMatrix,
+        inds::CartesianIndices,
+        model::MoffatPSF,
+        free_idx,
+        weights
+    ) where {FT}
+
+    # Precompute model constants and rotation terms shared by all pixels.
+    fill!(A, zero(FT))
+    fill!(b, zero(FT))
+    x0 = FT(model.x)
+    y0 = FT(model.y)
+    ax = FT(model.x_α)
+    ay = FT(model.y_α)
+    β = FT(model.β)
+    flux = FT(model.flux)
+    bkg = FT(model.bkg)
+    ax² = ax^2
+    ay² = ay^2
+    θ = deg2rad(FT(model.theta))
+    sn, cs = sincos(θ)
+    norm = FT(π) * ax * ay / (β - one(FT))
+    amp = flux / norm
+    degree = deg2rad(one(FT))
+
+    # Evaluate analytic derivatives and accumulate only the active parameter block.
+    cost = zero(FT)
+    obs_k = 0
+    nparams = length(free_idx)
+    use_weights = !isnothing(weights)
+    @inbounds for idx in inds
+        obs_k += 1
+        w = use_weights ? FT(weights[obs_k]) : one(FT)
+        dx = FT(idx[1]) - x0
+        dy = FT(idx[2]) - y0
+        u = cs * dx + sn * dy
+        v = -sn * dx + cs * dy
+        q = u^2 / ax² + v^2 / ay²
+        h = one(FT) + q
+        profile = h^(-β)
+        Ag = amp * profile
+        f_val = muladd(amp, profile, bkg)
+        r = f_val - FT(image[idx])
+        residuals[obs_k] = r
+        wr = w * r
+        cost = muladd(wr, r, cost)
+
+        # Match evaluate_fg's parameter order: x, y, x_α, y_α, theta, β, flux, bkg.
+        D = one(FT) / ax² - one(FT) / ay²
+        Qx = -2 * (cs * u / ax² - sn * v / ay²)
+        Qy = -2 * (sn * u / ax² + cs * v / ay²)
+        Qax = -2 * u^2 / ax^3
+        Qay = -2 * v^2 / ay^3
+        Qtheta = degree * 2 * u * v * D
+        scale = -β / h
+        g_full = (
+            Ag * scale * Qx,
+            Ag * scale * Qy,
+            Ag * (-one(FT) / ax + scale * Qax),
+            Ag * (-one(FT) / ay + scale * Qay),
+            Ag * scale * Qtheta,
+            Ag * (one(FT) / (β - one(FT)) - log(h)),
+            profile / norm,
+            one(FT),
+        )
+
+        # Accumulate the projected normal-equation block expected by lm_irls.
+        for j in 1:nparams
+            gj = g_full[free_idx[j]]
+            b[j] = muladd(wr, gj, b[j])
+            for i in 1:nparams
+                A[i, j] = muladd(w * g_full[free_idx[i]], gj, A[i, j])
+            end
+        end
+    end
+    return cost
+end
+
+# Specialized method: 4.3x faster at (5,5), 1.7x at (11,11), and 1.3x at (21,21) over generic method.
+function fit_star(
+        model::AiryPSF{T},
+        image::AbstractMatrix,
+        inds = axes(image);
+        fixed::NamedTuple = (;),
+        inv_var = nothing,
+        kws...
+    ) where {T}
+
+    # Reuse shared validation and fixed-parameter bookkeeping.
+    prepared = _prepare_fit_star_inputs(model, image, inds, fixed, inv_var)
+    inds, _, free_idx, x0, free_names_val, FT, base_weights = prepared
+
+    # Stream pixels through an Airy-specific normal-equation kernel.
+    function accum!(A::AbstractMatrix{FT}, b::AbstractVector{FT}, residuals::AbstractVector{FT}, x::AbstractVector{FT}, weights) where {FT}
+        @assert size(A, 1) == size(A, 2) == length(b) == length(free_idx)
+        @assert length(residuals) == length(inds)
+        m = model_from_vector(model, free_names_val, x, fixed)
+        return _accum_airy!(A, b, residuals, image, inds, m, free_idx, weights)
+    end
+
+    # Delegate iteration details to the shared LM implementation.
+    problem = LMProblem(Vector{FT}(x0), length(inds), accum!, base_weights)
+    result = lm_irls(problem; kws...)
+    best_model = model_from_vector(model, free_names_val, result.minimizer, fixed)
+    return best_model, result
+end
+
+function _accum_airy!(
+        A::AbstractMatrix{FT},
+        b::AbstractVector{FT},
+        residuals::AbstractVector{FT},
+        image::AbstractMatrix,
+        inds::CartesianIndices,
+        model::AiryPSF,
+        free_idx,
+        weights
+    ) where {FT}
+
+    # Precompute model constants and Airy radial scale.
+    fill!(A, zero(FT))
+    fill!(b, zero(FT))
+    x0 = FT(model.x)
+    y0 = FT(model.y)
+    radius = FT(model.radius)
+    flux = FT(model.flux)
+    bkg = FT(model.bkg)
+    airy_rz = FT(AIRY_RZ)
+    a = radius / airy_rz
+    norm = a^2 / FT(π) * 4
+    amp = flux / norm
+
+    # Evaluate Airy values, analytic derivatives, and projected normal equations.
+    cost = zero(FT)
+    obs_k = 0
+    nparams = length(free_idx)
+    use_weights = !isnothing(weights)
+    @inbounds for idx in inds
+        obs_k += 1
+        w = use_weights ? FT(weights[obs_k]) : one(FT)
+        dx = FT(idx[1]) - x0
+        dy = FT(idx[2]) - y0
+        r = sqrt(dx^2 + dy^2)
+        u = FT(π) * r / a
+        if abs(u) < eps(FT)
+            A2 = one(FT)
+            dA2_du = zero(FT)
+        else
+            J0 = besselj0(u)
+            J1 = besselj1(u)
+            J2 = besselj(2, u)
+            airy = 2 * J1 / u
+            airy_p = (u * (J0 - J2) - 2 * J1) / (u^2)
+            A2 = airy^2
+            dA2_du = 2 * airy * airy_p
+        end
+
+        # Accumulate residual and derivative columns, matching evaluate_fg's center branch.
+        f_val = muladd(amp, A2, bkg)
+        residual = f_val - FT(image[idx])
+        residuals[obs_k] = residual
+        wr = w * residual
+        cost = muladd(wr, residual, cost)
+        df_dflux = A2 / norm
+        if r == 0
+            g_full = (zero(FT), zero(FT), zero(FT), df_dflux, one(FT))
+        else
+            du_dr = FT(π) / a
+            df_dr = amp * dA2_du * du_dr
+            df_dx = -df_dr * dx / r
+            df_dy = -df_dr * dy / r
+            df_da = amp / a * (-u * dA2_du - 2 * A2)
+            df_dradius = df_da / airy_rz
+            g_full = (df_dx, df_dy, df_dradius, df_dflux, one(FT))
+        end
+
+        # Accumulate only the active parameter block expected by lm_irls.
+        for j in 1:nparams
+            gj = g_full[free_idx[j]]
+            b[j] = muladd(wr, gj, b[j])
+            for i in 1:nparams
+                A[i, j] = muladd(w * g_full[free_idx[i]], gj, A[i, j])
+            end
+        end
+    end
+    return cost
+end
+
 # Specialized method: faster than generic by 4x at (5,5), 2.2x at (11,11), and 1.4x at (21,21).
 function fit_star(
         model::ImagePSF{T},

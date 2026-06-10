@@ -159,7 +159,7 @@ for n in (50, 100)
                 image, sources = simulate_image((128, 128), truth_model, $n;
                     background = 20.0, noise = :none, flux = (600.0, 900.0),
                     min_separation = 7, border = 8, model_radius = 6)
-            end) evals=1
+            end) evals=1 samples=100
 end
 
 SUITE["background"] = BenchmarkGroup()
