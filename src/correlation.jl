@@ -106,6 +106,9 @@ function correlate!(out::AbstractMatrix, img::AbstractMatrix, kernel, border::Sy
     axes(out) == axes(img) || throw(DimensionMismatch(
         "output axes $(axes(out)) must match image axes $(axes(img))"
     ))
+    axes(img, 1) != Base.OneTo(size(img, 1)) &&
+        throw(ArgumentError("img must use 1-based indexing (got axes $(axes(img))); " *
+            "OffsetArrays and other non-standard index ranges are not supported"))
     kern = _canonicalize(kernel)
     pt, pb, pl, pr = _total_padding(kern, border)
     padded = _padarray(img, border, pt, pb, pl, pr)
@@ -136,23 +139,34 @@ For an `m×n` kernel the convention for the correlation center is
 `cr = (m+1)÷2, cc = (n+1)÷2`.  Callers must supply odd-sized kernels
 so the center falls on an integer pixel.
 """
-_canonicalize(kernel::Tuple) = (_check_kernel_odd.(kernel); kernel)
-_canonicalize(kernel::AbstractMatrix) = (_check_kernel_odd(kernel); _tryfactor(kernel))
+_canonicalize(kernel::Tuple) = (_validate_kernel.(kernel); kernel)
+_canonicalize(kernel::AbstractMatrix) = (_validate_kernel(kernel); _tryfactor(kernel))
 
 """
-    _check_kernel_odd(kernel::AbstractMatrix)
+    _validate_kernel(kernel::AbstractMatrix)
 
-Validate that both dimensions of `kernel` are odd, throwing an `ArgumentError`
-if not.  The implementation relies on the centre pixel being at integer index
-`((m+1)÷2, (n+1)÷2)`, which is only well-defined for odd sizes.
+Validate kernel properties required for correct correlation:
+
+- Both dimensions must be odd (centre at integer index `((m+1)÷2, (n+1)÷2)`).
+- Axes must be 1-based (OffsetArrays and other non-standard index ranges are
+  not supported because the inner loops use literal `1:m` ranges).
+
+Throws `ArgumentError` on violation.
 """
-function _check_kernel_odd(kernel::AbstractMatrix)
+function _validate_kernel(kernel::AbstractMatrix)
     m, n = size(kernel)
-    isodd(m) && isodd(n) && return nothing
-    throw(ArgumentError(
-        "kernel dimensions must be odd (got $m×$n); " *
-        "the correlation centre is at ((m+1)÷2, (n+1)÷2), " *
-        "which requires odd-sized kernels"))
+    if !(isodd(m) && isodd(n))
+        throw(ArgumentError(
+            "kernel dimensions must be odd (got $m×$n); " *
+            "the correlation centre is at ((m+1)÷2, (n+1)÷2), " *
+            "which requires odd-sized kernels"))
+    end
+    if axes(kernel, 1) != Base.OneTo(m) || axes(kernel, 2) != Base.OneTo(n)
+        throw(ArgumentError(
+            "kernel must use 1-based indexing (got axes $(axes(kernel))); " *
+            "OffsetArrays and other non-standard index ranges are not supported"))
+    end
+    nothing
 end
 
 function _tryfactor(kernel::AbstractMatrix{T}) where {T}
