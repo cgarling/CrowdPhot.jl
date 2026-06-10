@@ -283,6 +283,10 @@ function fit_star(
     return best_model, result
 end
 
+################################################################################
+# Custom `fit_star` methods for specific PSF models with optimized accumulators.
+################################################################################
+
 # Specialized method: 2--4x faster than generic.
 function fit_star(
         model::CircularGaussianPSF{T},
