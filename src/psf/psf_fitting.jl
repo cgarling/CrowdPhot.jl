@@ -383,6 +383,324 @@ function _accum_circular_gaussian!(
     return cost
 end
 
+# Specialized method: 9.8x faster at (5,5), 5.6x at (11,11), and 3.3x at (21,21) over generic method.
+function fit_star(
+        model::GaussianPSF{T},
+        image::AbstractMatrix,
+        inds = axes(image);
+        fixed::NamedTuple = (;),
+        inv_var = nothing,
+        kws...
+    ) where {T}
+
+    # Reuse shared validation and fixed-parameter bookkeeping.
+    prepared = _prepare_fit_star_inputs(model, image, inds, fixed, inv_var)
+    inds, _, free_idx, x0, free_names_val, FT, base_weights = prepared
+
+    # Stream pixels through a scalar Gaussian-specific normal-equation kernel.
+    function accum!(A::AbstractMatrix{FT}, b::AbstractVector{FT}, residuals::AbstractVector{FT}, x::AbstractVector{FT}, weights) where {FT}
+        @assert size(A, 1) == size(A, 2) == length(b) == length(free_idx)
+        @assert length(residuals) == length(inds)
+        m = model_from_vector(model, free_names_val, x, fixed)
+        return _accum_gaussian!(A, b, residuals, image, inds, m, free_idx, weights)
+    end
+
+    # Delegate iteration details to the shared LM implementation.
+    problem = LMProblem(Vector{FT}(x0), length(inds), accum!, base_weights)
+    result = lm_irls(problem; kws...)
+    best_model = model_from_vector(model, free_names_val, result.minimizer, fixed)
+    return best_model, result
+end
+
+function _accum_gaussian!(
+        A::AbstractMatrix{FT},
+        b::AbstractVector{FT},
+        residuals::AbstractVector{FT},
+        image::AbstractMatrix,
+        inds::CartesianIndices,
+        model::GaussianPSF,
+        free_idx,
+        weights
+    ) where {FT}
+
+    # Precompute model constants and rotation terms shared by all pixels.
+    fill!(A, zero(FT))
+    fill!(b, zero(FT))
+    γ = FT(GAUSS_PRE)
+    x0 = FT(model.x)
+    y0 = FT(model.y)
+    ax = FT(model.x_fwhm)
+    ay = FT(model.y_fwhm)
+    flux = FT(model.flux)
+    bkg = FT(model.bkg)
+    ax² = ax^2
+    ay² = ay^2
+    θ = deg2rad(FT(model.theta))
+    sn, cs = sincos(θ)
+    norm = -(FT(π) * ax * ay / γ)
+    amp = flux / norm
+    degree = deg2rad(one(FT))
+
+    # Evaluate analytic derivatives and accumulate only the active parameter block.
+    cost = zero(FT)
+    obs_k = 0
+    nparams = length(free_idx)
+    use_weights = !isnothing(weights)
+    @inbounds for idx in inds
+        obs_k += 1
+        w = use_weights ? FT(weights[obs_k]) : one(FT)
+        dx = FT(idx[1]) - x0
+        dy = FT(idx[2]) - y0
+        u = cs * dx + sn * dy
+        v = -sn * dx + cs * dy
+        sqmahab = u^2 / ax² + v^2 / ay²
+        profile = exp(γ * sqmahab)
+        Ag = amp * profile
+        f_val = muladd(amp, profile, bkg)
+        r = f_val - FT(image[idx])
+        residuals[obs_k] = r
+        wr = w * r
+        cost = muladd(wr, r, cost)
+
+        # Match evaluate_fg's parameter order: x, y, x_fwhm, y_fwhm, theta, flux, bkg.
+        D = one(FT) / ax² - one(FT) / ay²
+        Qx = -2 * (cs * u / ax² - sn * v / ay²)
+        Qy = -2 * (sn * u / ax² + cs * v / ay²)
+        Qax = -2 * u^2 / ax^3
+        Qay = -2 * v^2 / ay^3
+        Qtheta = degree * 2 * u * v * D
+        g_full = (
+            Ag * γ * Qx,
+            Ag * γ * Qy,
+            Ag * (-one(FT) / ax + γ * Qax),
+            Ag * (-one(FT) / ay + γ * Qay),
+            Ag * γ * Qtheta,
+            profile / norm,
+            one(FT),
+        )
+
+        # Accumulate the projected normal-equation block expected by lm_irls.
+        for j in 1:nparams
+            gj = g_full[free_idx[j]]
+            b[j] = muladd(wr, gj, b[j])
+            for i in 1:nparams
+                A[i, j] = muladd(w * g_full[free_idx[i]], gj, A[i, j])
+            end
+        end
+    end
+    return cost
+end
+
+# Specialized method: 9.7x faster at (5,5), 3.7x at (11,11), and 1.9x at (21,21) over generic method.
+function fit_star(
+        model::CircularGaussianPRF{T},
+        image::AbstractMatrix,
+        inds = axes(image);
+        fixed::NamedTuple = (;),
+        inv_var = nothing,
+        kws...
+    ) where {T}
+
+    # Reuse shared validation and fixed-parameter bookkeeping.
+    prepared = _prepare_fit_star_inputs(model, image, inds, fixed, inv_var)
+    inds, _, free_idx, x0, free_names_val, FT, base_weights = prepared
+
+    # Stream pixels through a scalar circular-PRF normal-equation kernel.
+    function accum!(A::AbstractMatrix{FT}, b::AbstractVector{FT}, residuals::AbstractVector{FT}, x::AbstractVector{FT}, weights) where {FT}
+        @assert size(A, 1) == size(A, 2) == length(b) == length(free_idx)
+        @assert length(residuals) == length(inds)
+        m = model_from_vector(model, free_names_val, x, fixed)
+        return _accum_circular_gaussian_prf!(A, b, residuals, image, inds, m, free_idx, weights)
+    end
+
+    # Delegate iteration details to the shared LM implementation.
+    problem = LMProblem(Vector{FT}(x0), length(inds), accum!, base_weights)
+    result = lm_irls(problem; kws...)
+    best_model = model_from_vector(model, free_names_val, result.minimizer, fixed)
+    return best_model, result
+end
+
+function _accum_circular_gaussian_prf!(
+        A::AbstractMatrix{FT},
+        b::AbstractVector{FT},
+        residuals::AbstractVector{FT},
+        image::AbstractMatrix,
+        inds::CartesianIndices,
+        model::CircularGaussianPRF,
+        free_idx,
+        weights
+    ) where {FT}
+
+    # Precompute model constants used by the integrated Gaussian factors.
+    fill!(A, zero(FT))
+    fill!(b, zero(FT))
+    x0 = FT(model.x)
+    y0 = FT(model.y)
+    fwhm = FT(model.fwhm)
+    flux = FT(model.flux)
+    bkg = FT(model.bkg)
+    α = 2 * sqrt(FT(log(2))) / fwhm
+    two_sqrtpi = 2 / sqrt(FT(π))
+    fl4 = flux / 4
+
+    # Evaluate difference-of-erf derivatives and accumulate the active block.
+    cost = zero(FT)
+    obs_k = 0
+    nparams = length(free_idx)
+    use_weights = !isnothing(weights)
+    @inbounds for idx in inds
+        obs_k += 1
+        w = use_weights ? FT(weights[obs_k]) : one(FT)
+        dx = FT(idx[1]) - x0
+        dy = FT(idx[2]) - y0
+        u_p = α * (dx + FT(0.5))
+        u_m = α * (dx - FT(0.5))
+        v_p = α * (dy + FT(0.5))
+        v_m = α * (dy - FT(0.5))
+        Ex = erf(u_p) - erf(u_m)
+        Ey = erf(v_p) - erf(v_m)
+        f_val = muladd(fl4, Ex * Ey, bkg)
+        r = f_val - FT(image[idx])
+        residuals[obs_k] = r
+        wr = w * r
+        cost = muladd(wr, r, cost)
+
+        # Match evaluate_fg's parameter order: x, y, fwhm, flux, bkg.
+        Gxp = two_sqrtpi * exp(-u_p^2)
+        Gxm = two_sqrtpi * exp(-u_m^2)
+        Gyp = two_sqrtpi * exp(-v_p^2)
+        Gym = two_sqrtpi * exp(-v_m^2)
+        g_full = (
+            fl4 * Ey * α * (Gxm - Gxp),
+            fl4 * Ex * α * (Gym - Gyp),
+            fl4 / fwhm * ((Gxm * u_m - Gxp * u_p) * Ey + Ex * (Gym * v_m - Gyp * v_p)),
+            Ex * Ey / 4,
+            one(FT),
+        )
+
+        # Accumulate the projected normal-equation block expected by lm_irls.
+        for j in 1:nparams
+            gj = g_full[free_idx[j]]
+            b[j] = muladd(wr, gj, b[j])
+            for i in 1:nparams
+                A[i, j] = muladd(w * g_full[free_idx[i]], gj, A[i, j])
+            end
+        end
+    end
+    return cost
+end
+
+# Specialized method: 7.5x faster at (5,5), 3.4x at (11,11), and 1.9x at (21,21) over generic method.
+function fit_star(
+        model::GaussianPRF{T},
+        image::AbstractMatrix,
+        inds = axes(image);
+        fixed::NamedTuple = (;),
+        inv_var = nothing,
+        kws...
+    ) where {T}
+
+    # Reuse shared validation and fixed-parameter bookkeeping.
+    prepared = _prepare_fit_star_inputs(model, image, inds, fixed, inv_var)
+    inds, _, free_idx, x0, free_names_val, FT, base_weights = prepared
+
+    # Stream pixels through a scalar Gaussian-PRF normal-equation kernel.
+    function accum!(A::AbstractMatrix{FT}, b::AbstractVector{FT}, residuals::AbstractVector{FT}, x::AbstractVector{FT}, weights) where {FT}
+        @assert size(A, 1) == size(A, 2) == length(b) == length(free_idx)
+        @assert length(residuals) == length(inds)
+        m = model_from_vector(model, free_names_val, x, fixed)
+        return _accum_gaussian_prf!(A, b, residuals, image, inds, m, free_idx, weights)
+    end
+
+    # Delegate iteration details to the shared LM implementation.
+    problem = LMProblem(Vector{FT}(x0), length(inds), accum!, base_weights)
+    result = lm_irls(problem; kws...)
+    best_model = model_from_vector(model, free_names_val, result.minimizer, fixed)
+    return best_model, result
+end
+
+function _accum_gaussian_prf!(
+        A::AbstractMatrix{FT},
+        b::AbstractVector{FT},
+        residuals::AbstractVector{FT},
+        image::AbstractMatrix,
+        inds::CartesianIndices,
+        model::GaussianPRF,
+        free_idx,
+        weights
+    ) where {FT}
+
+    # Precompute integrated-Gaussian constants and rotation terms.
+    fill!(A, zero(FT))
+    fill!(b, zero(FT))
+    c = sqrt(-FT(GAUSS_PRE))
+    x0 = FT(model.x)
+    y0 = FT(model.y)
+    ax = FT(model.x_fwhm)
+    ay = FT(model.y_fwhm)
+    flux = FT(model.flux)
+    bkg = FT(model.bkg)
+    αx = c / ax
+    αy = c / ay
+    θ = deg2rad(FT(model.theta))
+    sn, cs = sincos(θ)
+    two_sqrtpi = 2 / sqrt(FT(π))
+    fl4 = flux / 4
+    degree = deg2rad(one(FT))
+
+    # Evaluate difference-of-erf derivatives and accumulate the active block.
+    cost = zero(FT)
+    obs_k = 0
+    nparams = length(free_idx)
+    use_weights = !isnothing(weights)
+    @inbounds for idx in inds
+        obs_k += 1
+        w = use_weights ? FT(weights[obs_k]) : one(FT)
+        dx = FT(idx[1]) - x0
+        dy = FT(idx[2]) - y0
+        u = cs * dx + sn * dy
+        v = -sn * dx + cs * dy
+        u_p = αx * (u + FT(0.5))
+        u_m = αx * (u - FT(0.5))
+        v_p = αy * (v + FT(0.5))
+        v_m = αy * (v - FT(0.5))
+        Ex = erf(u_p) - erf(u_m)
+        Ey = erf(v_p) - erf(v_m)
+        f_val = muladd(fl4, Ex * Ey, bkg)
+        r = f_val - FT(image[idx])
+        residuals[obs_k] = r
+        wr = w * r
+        cost = muladd(wr, r, cost)
+
+        # Match evaluate_fg's parameter order: x, y, x_fwhm, y_fwhm, theta, flux, bkg.
+        Gxp = two_sqrtpi * exp(-u_p^2)
+        Gxm = two_sqrtpi * exp(-u_m^2)
+        Gyp = two_sqrtpi * exp(-v_p^2)
+        Gym = two_sqrtpi * exp(-v_m^2)
+        dEx_du = αx * (Gxm - Gxp)
+        dEy_dv = αy * (Gym - Gyp)
+        g_full = (
+            fl4 * (cs * dEx_du * Ey - sn * dEy_dv * Ex),
+            fl4 * (sn * dEx_du * Ey + cs * dEy_dv * Ex),
+            fl4 / ax * (Gxm * u_m - Gxp * u_p) * Ey,
+            fl4 / ay * Ex * (Gym * v_m - Gyp * v_p),
+            fl4 * degree * (dEy_dv * u * Ex - dEx_du * v * Ey),
+            Ex * Ey / 4,
+            one(FT),
+        )
+
+        # Accumulate the projected normal-equation block expected by lm_irls.
+        for j in 1:nparams
+            gj = g_full[free_idx[j]]
+            b[j] = muladd(wr, gj, b[j])
+            for i in 1:nparams
+                A[i, j] = muladd(w * g_full[free_idx[i]], gj, A[i, j])
+            end
+        end
+    end
+    return cost
+end
+
 # Specialized method: 5x faster at (5,5), 3.5x at (11,11), and 2.2x at (21,21) over generic method.
 function fit_star(
         model::CircularMoffatPSF{T},
