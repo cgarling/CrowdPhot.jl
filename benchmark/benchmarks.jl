@@ -1,11 +1,13 @@
 # When adding a benchmark suite, update SUITE_NAMES and SUITE_TITLES, then
 # define its BenchmarkGroup under SUITE using the same suite name.
-using CrowdPhot: make_gaussians_image, simulate_image, centroid_poly, _centroid_poly3
+using CrowdPhot: make_gaussians_image, simulate_image, centroid_poly, _centroid_poly3, correlate
 using CrowdPhot.PSF: GaussianPSF, CircularGaussianPSF, CircularGaussianPRF, evaluate, evaluate_fg, fit_star, fit_psf, TukeyLoss, bicubic_interpolate, fill_grid_holes!, ImagePSF
 using CrowdPhot.Background
 import BackgroundMeshes as BM
 using BenchmarkTools
+using ImageFiltering: imfilter
 import LossFunctions
+using OffsetArrays: centered
 using PrettyTables: pretty_table
 using StableRNGs: StableRNG
 
@@ -13,13 +15,13 @@ function show_benchmarks(results)
     # Collect results — results may be a flat Dict or a nested BenchmarkGroup;
     # flatten first so that every value is a Trial.
     flat = flatten_results(results)
-    # sorted  = sort(collect(flat), by=first)
-    # Sort so that paired CrowdPhot / BackgroundMeshes.jl benchmarks appear
+    # Sort so that paired CrowdPhot / external-package benchmarks appear
     # adjacent, with the CrowdPhot entry first in each pair.
     sorted  = sort(collect(flat), by=pair -> begin
         key = pair.first
-        base = replace(key, r"\s*,?\s*BackgroundMeshes\.jl" => "")
-        return (base, occursin("BackgroundMeshes.jl", key))
+        base = replace(key, r"\s*,?\s*(?:BackgroundMeshes|ImageFiltering)\.jl" => "")
+        ext  = occursin(r"(?:BackgroundMeshes|ImageFiltering)\.jl", key)
+        return (base, ext)
     end)
     names   = [k for (k,_) in sorted]
     trials  = [v for (_,v) in sorted]
@@ -59,13 +61,14 @@ function _flatten_results!(flat, group, prefix)
     end
 end
 
-const SUITE_NAMES = ["parametric", "fitting", "empirical", "background", "centroids"]
+const SUITE_NAMES = ["parametric", "fitting", "empirical", "background", "centroids", "correlation"]
 const SUITE_TITLES = Dict(
     "parametric" => "Parametric Suite",
     "fitting" => "Fitting Suite",
     "empirical" => "Empirical Suite",
     "background" => "Background Estimation Suite",
     "centroids" => "Centroids Suite",
+    "correlation" => "Correlation Suite",
 )
 
 function selected_suite_names(args)
@@ -200,6 +203,47 @@ let model = CircularGaussianPSF(x=8.0, y=8.0, fwhm=4.0, flux=10.0, bkg=0.0)
     img = evaluate.(model, inds[1], inds[2]')
     ivar = ones(15, 15)
     SUITE["centroids"]["centroid_poly (15×15), explicit ivar"] = @benchmarkable centroid_poly($img, $ivar)
+end
+
+# ---------------------------------------------------------------------------
+# Correlation benchmarks — CrowdPhot.jl vs ImageFiltering.jl
+# ---------------------------------------------------------------------------
+SUITE["correlation"] = BenchmarkGroup()
+
+# Separable kernel: 2D Gaussian (always rank-1, SVD detection should fire).
+function _bench_gaussian(σ, k)
+    x = LinRange(-(k ÷ 2), k ÷ 2, k)
+    g = exp.(-0.5 .* (x ./ σ) .^ 2)
+    g ./= sum(g)
+    return g * g'
+end
+
+for ksize in ((5, 5), (11, 11), (21, 21))
+    for imsize in ((500, 500), (1000, 1000), (2000, 2000))
+        # ---- separable (Gaussian) ----
+        let k = ksize, sz = imsize
+            σ = k[1] / 5
+            label = "$sz, k=$k, separable"
+            kern  = _bench_gaussian(σ, k[1])
+            ckern = centered(kern)
+            SUITE["correlation"]["$label, CrowdPhot.jl"] = @benchmarkable correlate(img, $(kern), :replicate) setup=(
+                img = rand($sz...)
+            ) samples=3
+            SUITE["correlation"]["$label, ImageFiltering.jl"] = @benchmarkable imfilter(img, $(ckern), "replicate") setup=(
+                img = rand($sz...)
+            ) samples=3
+        end
+        # ---- non-separable (random full-rank) ----
+        let k = ksize, sz = imsize
+            label = "$sz, k=$k, non-separable"
+            SUITE["correlation"]["$label, CrowdPhot.jl"] = @benchmarkable correlate(img, kern, :replicate) setup=(
+                img = rand($sz...); kern = rand($k...)
+            ) samples=3
+            SUITE["correlation"]["$label, ImageFiltering.jl"] = @benchmarkable imfilter(img, ckern, "replicate") setup=(
+                img = rand($sz...); kern = rand($k...); ckern = centered(kern)
+            ) samples=3
+        end
+    end
 end
 
 # If not on CI, we'll show a nice table

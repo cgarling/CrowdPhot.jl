@@ -8,3 +8,4 @@ using Test
 include("simulation_test.jl")
 @safetestset "Background estimation" include("background_tests.jl")
 @safetestset "Centroids" include("centroids_tests.jl")
+@safetestset "Correlation" include("correlation_tests.jl")
