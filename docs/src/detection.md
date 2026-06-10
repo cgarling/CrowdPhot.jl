@@ -181,6 +181,19 @@ penalty is ~13%; at ``R = 3\sigma`` it is ~25%.  Only for very
 generously padded kernels (``R \gtrsim 10\sigma``) does it drop
 below a few percent.
 
+### Recommended configurations
+
+| Image state | `inv_var` | `normalize_zerosum` | Rationale |
+|---|---|---|---|
+| Not background-subtracted, noise level unknown | `nothing` | `true` (default) | Zero-sum kernel cancels a uniform background automatically.  The significance map is in units of the (unknown) pixel-noise σ (RMS).  To renormalize it after calculation, divide by your σ estimate to obtain true SNR in standard deviations. |
+| Not background-subtracted, uniform noise σ known | `fill(1/σ², size(image))` | `true` (default) | Zero-sum kernel cancels a uniform background automatically.  Significance map is in standard-deviation units (∼N(0,1) under the null). |
+| Not background-subtracted, varying noise | — | — | Background-subtract the image first.  With an un-subtracted background and varying `inv_var`, neither kernel normalization is correct: `true` leaks background through ΣKᵢwᵢ ≠ 0, and `false` leaks through ΣKᵢ ≠ 0.  After subtraction, use the "Background-subtracted, varying noise" row below. |
+| Background-subtracted, uniform noise σ known | `fill(1/σ², size(image))` | `false` | No residual background remains, so the zero-sum correction carries a variance penalty with no benefit.  Significance map is in standard-deviation units (∼N(0,1) under the null).  `true` also works but is noisier. |
+| Background-subtracted, varying noise | `Matrix` | `false` | The known-background estimator (K = P/ΣP²) is correct for any weight map.  `true` also works but carries the zero-sum variance penalty with no benefit.  Significance map is in standard-deviation units (∼N(0,1) under the null). |
+
+Background and RMS error estimates can be measured by tools described in the [`Background`](@ref bkg)
+section.
+
 ### The `rel_err` term
 
 The DAOPHOT family of codes [Stetson1987](@cite) -- and
