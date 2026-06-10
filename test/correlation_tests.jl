@@ -1,5 +1,6 @@
 using CrowdPhot: correlate, correlate!
 using LinearAlgebra
+using OffsetArrays: OffsetArray
 using StableRNGs: StableRNG
 using Test
 
@@ -195,5 +196,20 @@ end
         # odd kernels should still work
         out = correlate(img, rand(rng, 5, 5), :replicate)
         @test size(out) == (9, 9)
+    end
+
+    @testset "error: non-1-based indexing" begin
+        img = rand(rng, 9, 9)
+        # OffsetArray image
+        img_off = OffsetArray(img, 0:8, 0:8)
+        kern_odd = rand(rng, 5, 5)
+        @test_throws ArgumentError correlate(img_off, kern_odd, :replicate)
+        # OffsetArray kernel
+        kern_off = OffsetArray(kern_odd, -2:2, -2:2)
+        @test_throws ArgumentError correlate(img, kern_off, :replicate)
+        # OffsetArray in a tuple factor
+        col_off = OffsetArray(rand(rng, 5, 1), -2:2, 0:0)
+        @test_throws ArgumentError correlate(img, (col_off, rand(rng, 1, 5)),
+                                             :replicate)
     end
 end
