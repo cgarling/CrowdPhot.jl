@@ -1,7 +1,3 @@
-using StaticArrays: SMatrix, @SMatrix, @SVector
-using FillArrays: Fill
-using LinearAlgebra: Symmetric, cholesky
-
 # ---------------------------------------------------------------------------
 # 3x3 polynomial centroiding  —  Vakili & Hogg (2016), arXiv:1610.05873
 #

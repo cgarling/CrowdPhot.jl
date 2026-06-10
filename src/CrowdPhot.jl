@@ -1,13 +1,16 @@
 module CrowdPhot
 
-import Random
-using LinearAlgebra: cholesky!, ldiv!, I, Symmetric, pinv, PosDefException
-import LossFunctions
 import ConstructionBase
+using FillArrays: Fill
+using LinearAlgebra: cholesky, cholesky!, ldiv!, I, Symmetric, pinv, PosDefException, svd
+import LossFunctions
+import Random
+using StaticArrays: SMatrix, @SMatrix, @SVector
 using Statistics: median, median!, mean, std
 
 export simulate_sources, simulate_image, make_gaussians_image, centroid_poly, choose_centroid
 
+include("correlation.jl")
 include("utilities.jl")
 include("levenberg_marquardt.jl")
 include("psf/PSF.jl")
