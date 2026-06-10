@@ -183,4 +183,17 @@ end
         kern = rand(rng, 3, 3)
         @test_throws ArgumentError correlate(img, kern, :circular)
     end
+
+    @testset "error: even-sized kernel" begin
+        img = rand(rng, 9, 9)
+        @test_throws ArgumentError correlate(img, rand(rng, 4, 4), :replicate)
+        @test_throws ArgumentError correlate(img, rand(rng, 3, 4), :replicate)
+        @test_throws ArgumentError correlate(img, rand(rng, 4, 3), :replicate)
+        # tuple with an even factor
+        @test_throws ArgumentError correlate(img, (rand(rng, 4, 1), rand(rng, 1, 3)),
+                                             :replicate)
+        # odd kernels should still work
+        out = correlate(img, rand(rng, 5, 5), :replicate)
+        @test size(out) == (9, 9)
+    end
 end
