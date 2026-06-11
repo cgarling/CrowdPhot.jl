@@ -150,15 +150,15 @@ background-subtracted.
     ``w`` is approximately constant over the kernel footprint, so this reduces to
     the zero-sum kernel above.  If ``w`` varies strongly, ``\sum K_i = 0`` alone
     does not cancel a constant background inside ``\sum K_i w_i D_i``. For
-    simplicity and speed we **do not** apply this kernel reweighting  in the presence
-    of spatially-varying noise -- for this reason we suggest background-subtracting
-    your images before running detection.
+    simplicity and speed we **do not** apply this kernel reweighting, which means
+    that if you have image with significant spatial variation in the noise properties,
+    you should **always** model and subtract the background before running detection.
 
 The zero-sum kernel is the default and the recommended choice: even on
 a background-subtracted image, ``\sum K_i = 0`` cancels any residual
 uniform offset.  For an isolated source matched by ``P``, the expected flux
-response remains unbiased, although the particular noisy estimate changes and
-the variance is slightly larger.  The
+response remains unbiased, although the form of the estimator changes slightly
+and the variance is slightly larger.  The
 `normalize_zerosum` parameter can be set to `false` to skip the
 zero-sum correction, which yields marginally lower noise variance at
 the cost of sensitivity to imperfect background subtraction.
