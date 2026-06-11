@@ -74,7 +74,7 @@ end
 peak(model::CircularGaussianPSF{T}) where {T} = model.flux / (π * model.fwhm^2 / -T(GAUSS_PRE)) + model.bkg
 effective_area(model::CircularGaussianPSF{T}) where {T} = π * model.fwhm^2 / T(2 * log(2))
 
-function evaluate(model::CircularGaussianPSF{T}, px, py) where {T}
+function evaluate(model::CircularGaussianPSF{T}, py, px) where {T}
     dx = px - model.x
     dy = py - model.y
     sqmahab = (dx^2 + dy^2) / model.fwhm^2
@@ -89,7 +89,7 @@ end
 # t = CircularGaussianPSF(x=1.0, y=2.0, fwhm=3.0, flux=6.0, bkg=7.0)
 # _, g = evaluate_fg(t, -1, 1)
 # gradient(x->evaluate(CircularGaussianPSF(x...), -1, 1), collect(getproperties(t))) ≈ collect(g)
-function evaluate_fg(model::CircularGaussianPSF{T}, px, py) where {T}
+function evaluate_fg(model::CircularGaussianPSF{T}, py, px) where {T}
     _gauss_pre = T(GAUSS_PRE)
     dx = px - model.x
     dy = py - model.y
@@ -118,7 +118,7 @@ end
 # t = CircularGaussianPSF(x=1.0, y=2.0, fwhm=3.0, flux=6.0, bkg=7.0)
 # _, _, h = evaluate_fgh(t, -1, 1)
 # hessian(x->evaluate(CircularGaussianPSF(x...), -1, 1), collect(getproperties(t))) ≈ collect(h)
-function evaluate_fgh(model::CircularGaussianPSF{T}, px, py) where {T}
+function evaluate_fgh(model::CircularGaussianPSF{T}, py, px) where {T}
     _gauss_pre = T(GAUSS_PRE)
     dx = px - model.x
     dy = py - model.y
@@ -234,7 +234,7 @@ end
 peak(model::GaussianPSF{T}) where {T} = model.flux / (π * model.x_fwhm * model.y_fwhm / -T(GAUSS_PRE)) + model.bkg
 effective_area(model::GaussianPSF) = π * model.x_fwhm * model.y_fwhm / (2 * log(2))
 
-function evaluate(model::GaussianPSF{T}, px, py) where {T}
+function evaluate(model::GaussianPSF{T}, py, px) where {T}
     θ = deg2rad(model.theta)
     dx = px - model.x
     dy = py - model.y
@@ -255,7 +255,7 @@ end
 # t = GaussianPSF(x=1.0, y=2.0, x_fwhm=3.0, y_fwhm=4.0, theta=35.0, flux=6.0, bkg=7.0)
 # _, g = evaluate_fg(t, -1, 1)
 # gradient(x->evaluate(GaussianPSF(x...), -1, 1), collect(getproperties(t))) ≈ collect(g)
-function evaluate_fg(model::GaussianPSF{T}, px, py) where {T}
+function evaluate_fg(model::GaussianPSF{T}, py, px) where {T}
     _gauss_pre = T(GAUSS_PRE)
     d = deg2rad(one(T))  # factor to convert degrees to radians for theta derivatives
     dx = px - model.x
@@ -300,7 +300,7 @@ end
 # t = GaussianPSF(x=1.0, y=2.0, x_fwhm=3.0, y_fwhm=4.0, theta=35.0, flux=6.0, bkg=7.0)
 # _, _, h = evaluate_fgh(t, -1, 1)
 # hessian(x->evaluate(GaussianPSF(x...), -1, 1), collect(getproperties(t))) ≈ collect(h)
-function evaluate_fgh(model::GaussianPSF{T}, px, py) where {T}
+function evaluate_fgh(model::GaussianPSF{T}, py, px) where {T}
     γ = T(GAUSS_PRE)
     d = deg2rad(one(T))  # factor to convert degrees to radians for theta derivatives
     dx = px - model.x
@@ -461,7 +461,7 @@ peak(model::CircularGaussianPRF{T}) where {T} =
     model.flux * erf(sqrt(T(log(2))) / model.fwhm)^2 + model.bkg
 effective_area(model::CircularGaussianPRF{T}) where {T} = π * model.fwhm^2 / T(2 * log(2))
 
-function evaluate(model::CircularGaussianPRF{T}, px, py) where {T}
+function evaluate(model::CircularGaussianPRF{T}, py, px) where {T}
     α = 2 * sqrt(T(log(2))) / model.fwhm
     dx = px - model.x
     dy = py - model.y
@@ -476,7 +476,7 @@ end
 # t = CircularGaussianPRF(x=0.0, y=0.0, fwhm=10.0, flux=1.0, bkg=10.0)
 # _, g = evaluate_fg(t, 1, 2)
 # gradient(x->evaluate(CircularGaussianPRF(x...), 1, 2), collect(getproperties(t))) ≈ collect(g)
-function evaluate_fg(model::CircularGaussianPRF{T}, px, py) where {T}
+function evaluate_fg(model::CircularGaussianPRF{T}, py, px) where {T}
     α = 2 * sqrt(T(log(2))) / model.fwhm
     dx = px - model.x
     dy = py - model.y
@@ -572,7 +572,7 @@ peak(model::GaussianPRF{T}) where {T} =
     model.flux * erf(sqrt(T(log(2))) / model.x_fwhm) * erf(sqrt(T(log(2))) / model.y_fwhm) + model.bkg
 effective_area(model::GaussianPRF{T}) where {T} = π * model.x_fwhm * model.y_fwhm / T(2 * log(2))
 
-function evaluate(model::GaussianPRF{T}, px, py) where {T}
+function evaluate(model::GaussianPRF{T}, py, px) where {T}
     c = sqrt(-T(GAUSS_PRE)) # 2 * sqrt(T(log(2)))
     αx = c / model.x_fwhm
     αy = c / model.y_fwhm
@@ -594,7 +594,7 @@ end
 # t = GaussianPRF(x=0.0, y=0.0, x_fwhm=10.0, y_fwhm=6.0, theta=45.0, flux=1.0, bkg=10.0)
 # _, g = evaluate_fg(t, 1, 2)
 # gradient(x->evaluate(GaussianPRF(x...), 1, 2), collect(getproperties(t))) ≈ collect(g)
-function evaluate_fg(model::GaussianPRF{T}, px, py) where {T}
+function evaluate_fg(model::GaussianPRF{T}, py, px) where {T}
     c = sqrt(-T(GAUSS_PRE)) # 2 * sqrt(T(log(2)))
     αx = c / model.x_fwhm
     αy = c / model.y_fwhm
@@ -693,7 +693,7 @@ function fwhm(model::CircularMoffatPSF{T}) where {T}
     _f = 2 * model.α * sqrt(exp2(1 / model.β) - 1)
     return (_f, _f)
 end
-function evaluate(model::CircularMoffatPSF{T}, px, py) where {T}
+function evaluate(model::CircularMoffatPSF{T}, py, px) where {T}
     r2 = (px - model.x)^2 + (py - model.y)^2
     amp = model.flux * (model.β - 1) / (π * model.α^2)
     return muladd(amp, (1 + r2 / model.α^2)^(-model.β), model.bkg)
@@ -704,7 +704,7 @@ end
 # t = CircularMoffatPSF(x=0.0, y=0.0, α=5.0, β=3.0, flux=50.0, bkg=10.0)
 # _, g = evaluate_fg(t, 1, 2)
 # gradient(x->evaluate(CircularMoffatPSF(x...), 1, 2), collect(getproperties(t))) ≈ collect(g)
-function evaluate_fg(model::CircularMoffatPSF{T}, px, py) where {T}
+function evaluate_fg(model::CircularMoffatPSF{T}, py, px) where {T}
     α, β = model.α, model.β
     α² = α^2
     dx = px - model.x
@@ -786,9 +786,9 @@ peak(model::MoffatPSF) = amplitude(model) + model.bkg
 effective_area(model::MoffatPSF) = π * model.x_α * model.y_α * (2 * model.β - 1) / (model.β - 1)^2
 function fwhm(model::MoffatPSF)
     f = 2 * sqrt(exp2(1 / model.β) - 1)
-    return (model.x_α * f, model.y_α * f)
+    return (model.y_α * f, model.x_α * f)
 end
-function evaluate(model::MoffatPSF{T}, px, py) where {T}
+function evaluate(model::MoffatPSF{T}, py, px) where {T}
     θ = deg2rad(model.theta)
     dx = px - model.x
     dy = py - model.y
@@ -807,7 +807,7 @@ end
 # t = MoffatPSF(x=1.0, y=2.0, x_α=3.0, y_α=4.0, theta=35.0, β=2.5, flux=6.0, bkg=7.0)
 # _, g = evaluate_fg(t, -1, 1)
 # gradient(x->evaluate(MoffatPSF(x...), -1, 1), collect(getproperties(t))) ≈ collect(g)
-function evaluate_fg(model::MoffatPSF{T}, px, py) where {T}
+function evaluate_fg(model::MoffatPSF{T}, py, px) where {T}
     d = deg2rad(one(T))
     dx = px - model.x
     dy = py - model.y
@@ -910,7 +910,7 @@ function fwhm(model::AiryPSF{T}) where {T}
     return (_f, _f)
 end
 
-function evaluate(model::AiryPSF{T}, px, py) where {T}
+function evaluate(model::AiryPSF{T}, py, px) where {T}
     # r = hypot(px - model.x, py - model.y) # hypot is slow...
     r = sqrt((px - model.x)^2 + (py - model.y)^2)
     a = model.radius / T(AIRY_RZ)
@@ -932,7 +932,7 @@ end
 # t = AiryPSF(x=0.0, y=0.0, radius=10.0, flux=1.0, bkg=10.0)
 # _, g = evaluate_fg(t, 1, 2)
 # gradient(x->evaluate(AiryPSF(x...), 1, 2), collect(getproperties(t))) ≈ collect(g)
-function evaluate_fg(model::AiryPSF{T}, px, py) where {T}
+function evaluate_fg(model::AiryPSF{T}, py, px) where {T}
     dx = px - model.x
     dy = py - model.y
     # r = hypot(dx, dy) # hypot is slow...

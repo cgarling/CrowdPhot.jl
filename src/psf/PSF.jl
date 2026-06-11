@@ -14,17 +14,17 @@ export LMResult, MADScale, FixedScale, MScale, estimate_scale, TukeyLoss, weight
 """AbstractPSFModel{T}: Abstract type for PSF models with element type `T`. All PSF models should be subtypes of this abstract type, and implement the following methods:"""
 abstract type AbstractPSFModel{T} end
 Base.Broadcast.broadcastable(m::AbstractPSFModel) = Ref(m)
-(model::AbstractPSFModel)(x, y) = evaluate(model, x, y)
-(model::AbstractPSFModel)(idx::CartesianIndex) = evaluate(model, Tuple(idx)...)
-evaluate(model::AbstractPSFModel, idx::CartesianIndex) = evaluate(model, Tuple(idx)...)
-evaluate_fg(model::AbstractPSFModel, idx::CartesianIndex) = evaluate_fg(model, Tuple(idx)...)
-evaluate_fgh(model::AbstractPSFModel, idx::CartesianIndex) = evaluate_fgh(model, Tuple(idx)...)
-function evaluate_fg(model::AbstractPSFModel, x, y, free_idx::AbstractVector)
-    f, g = evaluate_fg(model, x, y)
+(model::AbstractPSFModel)(y, x) = evaluate(model, y, x)
+(model::AbstractPSFModel)(idx::CartesianIndex) = evaluate(model, idx)
+evaluate(model::AbstractPSFModel, idx::CartesianIndex) = evaluate(model, idx[1], idx[2])
+evaluate_fg(model::AbstractPSFModel, idx::CartesianIndex) = evaluate_fg(model, idx[1], idx[2])
+evaluate_fgh(model::AbstractPSFModel, idx::CartesianIndex) = evaluate_fgh(model, idx[1], idx[2])
+function evaluate_fg(model::AbstractPSFModel, y, x, free_idx::AbstractVector)
+    f, g = evaluate_fg(model, y, x)
     return f, view(g, free_idx)
 end
-function evaluate_fg(model::AbstractPSFModel, x, y, free_idx::SVector)
-    f, g = evaluate_fg(model, x, y)
+function evaluate_fg(model::AbstractPSFModel, y, x, free_idx::SVector)
+    f, g = evaluate_fg(model, y, x)
     return f, g[free_idx]
 end
 
@@ -43,7 +43,7 @@ default implementation assumes the centroid is given by fields `x` and `y` in th
 """
 function centroid(model::AbstractPSFModel)
     if hasproperty(model, :x) && hasproperty(model, :y)
-        return (model.x, model.y)
+        return (model.y, model.x)
     else
         error("Model does not have `x` and `y` fields; either add them or implement `centroid(model)` for this model type.")
     end
@@ -131,7 +131,7 @@ function fwhm(model::AbstractPSFModel)
     if hasproperty(model, :fwhm)
         return (model.fwhm, model.fwhm)
     elseif hasproperty(model, :x_fwhm) && hasproperty(model, :y_fwhm)
-        return (model.x_fwhm, model.y_fwhm)
+        return (model.y_fwhm, model.x_fwhm)
     else
         error("Model does not have `fwhm` or `x_fwhm` and `y_fwhm` fields; either add them or implement `fwhm(model)` for this model type.")
     end
@@ -223,15 +223,15 @@ julia> extent(Int, GaussianPSF(x=10, y=20, x_fwhm=5, y_fwhm=3, theta=90, flux=30
 """
 function extent(model::AbstractPSFModel, fwhm_factor = 5)
     # default extent is 5x5 fwhm around centroid, but specific models can override this
-    x0, y0 = centroid(model)
+    y0, x0 = centroid(model)
     FWHM = fwhm(model)
-    a, b = fwhm_factor * FWHM[1] / 2, fwhm_factor * FWHM[2] / 2
+    a, b = fwhm_factor * FWHM[2] / 2, fwhm_factor * FWHM[1] / 2
     dx, dy = ellipse_bounds(a, b, theta(model))
-    return (x0 - dx, x0 + dx), (y0 - dy, y0 + dy)
+    return (y0 - dy, y0 + dy), (x0 - dx, x0 + dx)
 end
 @inline function extent(::Type{T}, model::AbstractPSFModel, fwhm_factor = 5) where {T <: Integer}
-    (xmin, xmax), (ymin, ymax) = extent(model, fwhm_factor)
-    return (floor(T, xmin), ceil(T, xmax)), (floor(T, ymin), ceil(T, ymax))
+    (ymin, ymax), (xmin, xmax) = extent(model, fwhm_factor)
+    return (floor(T, ymin), ceil(T, ymax)), (floor(T, xmin), ceil(T, xmax))
 end
 function Base.CartesianIndices(model::AbstractPSFModel, fwhm_factor = 5)
     ex = extent(Int, model, fwhm_factor)
@@ -247,16 +247,17 @@ dimension is chosen so that the full extent is covered and the total size is
 odd (required for use as a correlation kernel in [`CrowdPhot.correlate`](@ref)).
 """
 function render(model::AbstractPSFModel)
-    (x_lo, x_hi), (y_lo, y_hi) = extent(model)
-    x0, y0 = centroid(model)
+    (y_lo, y_hi), (x_lo, x_hi) = extent(model)
+    y0, x0 = centroid(model)
     # Half-width large enough to cover the extent on both sides of the centroid.
     hx = max(ceil(Int, x0 - x_lo), ceil(Int, x_hi - x0))
     hy = max(ceil(Int, y0 - y_lo), ceil(Int, y_hi - y0))
     # Center on the nearest pixel to the true centroid.
     xc = round(Int, x0)
     yc = round(Int, y0)
-    inds = ((xc - hx):(xc + hx), (yc - hy):(yc + hy))
-    return evaluate.(model, inds[1], inds[2]')
+    xinds = (xc - hx):(xc + hx)
+    yinds = (yc - hy):(yc + hy)
+    return evaluate.(model, yinds, xinds')
 end
 
 """
@@ -276,7 +277,7 @@ See also: [`subtract_star!`](@ref) for the subtractive counterpart.
 function add_star!(out::AbstractMatrix, model::AbstractPSFModel, inds::CartesianIndices = CartesianIndices(model))
     for idx in inds
         checkbounds(Bool, out, idx) || continue
-        @inbounds out[idx] += evaluate(model, Tuple(idx)...)
+        @inbounds out[idx] += evaluate(model, idx)
     end
     return out
 end
@@ -294,7 +295,7 @@ See also: [`add_star!`](@ref) for the additive counterpart.
 function subtract_star!(out::AbstractMatrix, model::AbstractPSFModel, inds::CartesianIndices = CartesianIndices(model))
     for idx in inds
         checkbounds(Bool, out, idx) || continue
-        @inbounds out[idx] -= evaluate(model, Tuple(idx)...)
+        @inbounds out[idx] -= evaluate(model, idx)
     end
     return out
 end

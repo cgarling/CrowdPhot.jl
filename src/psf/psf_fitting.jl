@@ -353,8 +353,8 @@ function _accum_circular_gaussian!(
     @inbounds for idx in inds
         obs_k += 1
         w = use_weights ? FT(weights[obs_k]) : one(FT)
-        dx = FT(idx[1]) - x0
-        dy = FT(idx[2]) - y0
+        dx = FT(idx[2]) - x0
+        dy = FT(idx[1]) - y0
         sqmahab = (dx^2 + dy^2) / fwhm²
         g = exp(γ * sqmahab)
         Ag = amp * g
@@ -449,8 +449,8 @@ function _accum_gaussian!(
     @inbounds for idx in inds
         obs_k += 1
         w = use_weights ? FT(weights[obs_k]) : one(FT)
-        dx = FT(idx[1]) - x0
-        dy = FT(idx[2]) - y0
+        dx = FT(idx[2]) - x0
+        dy = FT(idx[1]) - y0
         u = cs * dx + sn * dy
         v = -sn * dx + cs * dy
         sqmahab = u^2 / ax² + v^2 / ay²
@@ -551,8 +551,8 @@ function _accum_circular_gaussian_prf!(
     @inbounds for idx in inds
         obs_k += 1
         w = use_weights ? FT(weights[obs_k]) : one(FT)
-        dx = FT(idx[1]) - x0
-        dy = FT(idx[2]) - y0
+        dx = FT(idx[2]) - x0
+        dy = FT(idx[1]) - y0
         u_p = α * (dx + FT(0.5))
         u_m = α * (dx - FT(0.5))
         v_p = α * (dy + FT(0.5))
@@ -656,8 +656,8 @@ function _accum_gaussian_prf!(
     @inbounds for idx in inds
         obs_k += 1
         w = use_weights ? FT(weights[obs_k]) : one(FT)
-        dx = FT(idx[1]) - x0
-        dy = FT(idx[2]) - y0
+        dx = FT(idx[2]) - x0
+        dy = FT(idx[1]) - y0
         u = cs * dx + sn * dy
         v = -sn * dx + cs * dy
         u_p = αx * (u + FT(0.5))
@@ -762,8 +762,8 @@ function _accum_circular_moffat!(
     @inbounds for idx in inds
         obs_k += 1
         w = use_weights ? FT(weights[obs_k]) : one(FT)
-        dx = FT(idx[1]) - x0
-        dy = FT(idx[2]) - y0
+        dx = FT(idx[2]) - x0
+        dy = FT(idx[1]) - y0
         r2 = dx^2 + dy^2
         u = one(FT) + r2 / α²
         profile = u^(-β)
@@ -860,8 +860,8 @@ function _accum_moffat!(
     @inbounds for idx in inds
         obs_k += 1
         w = use_weights ? FT(weights[obs_k]) : one(FT)
-        dx = FT(idx[1]) - x0
-        dy = FT(idx[2]) - y0
+        dx = FT(idx[2]) - x0
+        dy = FT(idx[1]) - y0
         u = cs * dx + sn * dy
         v = -sn * dx + cs * dy
         q = u^2 / ax² + v^2 / ay²
@@ -966,8 +966,8 @@ function _accum_airy!(
     @inbounds for idx in inds
         obs_k += 1
         w = use_weights ? FT(weights[obs_k]) : one(FT)
-        dx = FT(idx[1]) - x0
-        dy = FT(idx[2]) - y0
+        dx = FT(idx[2]) - x0
+        dy = FT(idx[1]) - y0
         r = sqrt(dx^2 + dy^2)
         u = FT(π) * r / a
         if abs(u) < eps(FT)
@@ -1065,8 +1065,8 @@ function _accum_image_psf!(
     y0 = FT(model.y)
     flux = FT(model.flux)
     bkg = FT(model.bkg)
-    ox = FT(model.origin[1])
-    oy = FT(model.origin[2])
+    ox = FT(model.origin.x)
+    oy = FT(model.origin.y)
     fill_value = FT(model.fill_value)
 
     # Compute all four derivatives, then accumulate only the requested block.
@@ -1077,9 +1077,9 @@ function _accum_image_psf!(
     @inbounds for idx in inds
         obs_k += 1
         w = use_weights ? FT(weights[obs_k]) : one(FT)
-        u = sx * (FT(idx[1]) - x0) + ox
-        v = sy * (FT(idx[2]) - y0) + oy
-        p, dpdu, dpdv = bicubic_interpolate(data, u, v; fill_value)
+        u = sx * (FT(idx[2]) - x0) + ox
+        v = sy * (FT(idx[1]) - y0) + oy
+        p, dpdv, dpdu = bicubic_interpolate(data, v, u; fill_value)
         profile = FT(p)
         r = muladd(flux, profile, bkg) - FT(image[idx])
         residuals[obs_k] = r
