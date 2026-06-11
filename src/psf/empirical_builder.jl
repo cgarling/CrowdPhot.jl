@@ -131,10 +131,10 @@ end
 Use finite edge pixels of a cutout as a simple local sky estimate.
 """
 function estimate_local_sky(image, inds)
-    xs, ys = inds
+    yr, xr = inds
     vals = Float64[]
-    for i in xs, j in ys
-        if i == first(xs) || i == last(xs) || j == first(ys) || j == last(ys)
+    for i in yr, j in xr
+        if i == first(yr) || i == last(yr) || j == first(xr) || j == last(xr)
             v = image[i, j]
             isfinite(v) && push!(vals, float(v))
         end
@@ -176,12 +176,13 @@ function _normalize_cutout_inds(inds)
 end
 
 """
-    extract_stars(image, x, y, psf_rad; drop_edge=false) -> Vector{EmpiricalStar}
+    extract_stars(image, y, x, psf_rad; drop_edge=false) -> Vector{EmpiricalStar}
 
-Build per-star cutouts from an image and initial detector-pixel coordinates.
-The cutout bounding box extends ±`psf_rad` around each star center; all pixels
-within that box are stored for ePSF construction. Each cutout gets initial
-centroid, flux, and background estimates.
+Build per-star cutouts from an image and initial detector-pixel coordinates
+`y` and `x` (row and column, respectively).  The cutout bounding box extends
+±`psf_rad` around each star center; all pixels within that box are stored for
+ePSF construction. Each cutout gets initial centroid, flux, and background
+estimates.
 """
 function extract_stars(image, y, x, psf_rad; drop_edge::Bool)
     ys = collect(y)
@@ -218,7 +219,7 @@ end
     extract_stars(image, inds; x=nothing, y=nothing) -> Vector{EmpiricalStar}
 
 Build per-star cutouts from explicit pixel ranges. `inds` may be one cutout
-`(xrange, yrange)` or an iterable of such cutouts. If `x` and `y` are omitted,
+`(yrange, xrange)` or an iterable of such cutouts. If `x` and `y` are omitted,
 each initial center is the midpoint of its cutout.
 """
 function extract_stars(image, inds; x = nothing, y = nothing)
@@ -772,8 +773,8 @@ function build_result(stars, psf, iterations)
     T = typeof(stars[1].x)
     return ImagePSFBuildResult(
         psf,
-        T[s.x for s in stars],
         T[s.y for s in stars],
+        T[s.x for s in stars],
         T[s.flux for s in stars],
         T[s.bkg for s in stars],
         BitVector(s.used for s in stars),
@@ -881,10 +882,10 @@ end
 # ==============================================================================
 
 """
-    fit_psf(ImagePSF, image, x, y; psf_rad, fit_rad=psf_rad, kwargs...) -> (psf, result)
+    fit_psf(ImagePSF, image, y, x; psf_rad, fit_rad=psf_rad, kwargs...) -> (psf, result)
 
 Build a single empirical ePSF from stars in `image`, starting from initial
-detector-pixel coordinates `x` and `y`.
+detector-pixel coordinates `y` and `x`.
 
 `psf_rad` controls the cutout extent (±`psf_rad` around each star center);
 all pixels in the cutout are used for ePSF construction.  `fit_rad` controls

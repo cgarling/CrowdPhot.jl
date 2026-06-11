@@ -590,48 +590,48 @@ function _bicubic_zoom(
     F = float(T)
     out = similar(mesh, F, H, W)
 
-    # Precompute column-dependent indices and y-direction cubic weights.
+    # Precompute column-dependent indices and column-direction cubic weights.
     col_jm1 = Vector{Int}(undef, W)
     col_jm2 = Vector{Int}(undef, W)
     col_jm3 = Vector{Int}(undef, W)
     col_jm4 = Vector{Int}(undef, W)
-    col_wy1 = Vector{F}(undef, W)
-    col_wy2 = Vector{F}(undef, W)
-    col_wy3 = Vector{F}(undef, W)
-    col_wy4 = Vector{F}(undef, W)
+    col_wc1 = Vector{F}(undef, W)
+    col_wc2 = Vector{F}(undef, W)
+    col_wc3 = Vector{F}(undef, W)
+    col_wc4 = Vector{F}(undef, W)
     for j in 1:W
-        yf = _zoom_coord(F, j, coord_W, N)
-        jm = floor(Int, yf)
-        ty = F(yf - jm)
+        cf = _zoom_coord(F, j, coord_W, N)
+        jm = floor(Int, cf)
+        tc = F(cf - jm)
         col_jm1[j] = _clamp_idx(jm - 1, N)
         col_jm2[j] = _clamp_idx(jm, N)
         col_jm3[j] = _clamp_idx(jm + 1, N)
         col_jm4[j] = _clamp_idx(jm + 2, N)
-        wy1, wy2, wy3, wy4 = _catmull_rom_weights(ty)
-        col_wy1[j] = wy1; col_wy2[j] = wy2
-        col_wy3[j] = wy3; col_wy4[j] = wy4
+        wc1, wc2, wc3, wc4 = _catmull_rom_weights(tc)
+        col_wc1[j] = wc1; col_wc2[j] = wc2
+        col_wc3[j] = wc3; col_wc4[j] = wc4
     end
 
-    # Precompute row-dependent indices and x-direction cubic weights.
+    # Precompute row-dependent indices and row-direction cubic weights.
     row_r1 = Vector{Int}(undef, H)
     row_r2 = Vector{Int}(undef, H)
     row_r3 = Vector{Int}(undef, H)
     row_r4 = Vector{Int}(undef, H)
-    row_wx1 = Vector{F}(undef, H)
-    row_wx2 = Vector{F}(undef, H)
-    row_wx3 = Vector{F}(undef, H)
-    row_wx4 = Vector{F}(undef, H)
+    row_wr1 = Vector{F}(undef, H)
+    row_wr2 = Vector{F}(undef, H)
+    row_wr3 = Vector{F}(undef, H)
+    row_wr4 = Vector{F}(undef, H)
     for i in 1:H
-        xf = _zoom_coord(F, i, coord_H, M)
-        im_ = floor(Int, xf)
-        tx = F(xf - im_)
+        rf = _zoom_coord(F, i, coord_H, M)
+        im_ = floor(Int, rf)
+        tr = F(rf - im_)
         row_r1[i] = _clamp_idx(im_ - 1, M)
         row_r2[i] = _clamp_idx(im_, M)
         row_r3[i] = _clamp_idx(im_ + 1, M)
         row_r4[i] = _clamp_idx(im_ + 2, M)
-        wx1, wx2, wx3, wx4 = _catmull_rom_weights(tx)
-        row_wx1[i] = wx1; row_wx2[i] = wx2
-        row_wx3[i] = wx3; row_wx4[i] = wx4
+        wr1, wr2, wr3, wr4 = _catmull_rom_weights(tr)
+        row_wr1[i] = wr1; row_wr2[i] = wr2
+        row_wr3[i] = wr3; row_wr4[i] = wr4
     end
 
     # Column-outer, row-inner traversal: writes `out[i, j]` with unit-stride
@@ -640,37 +640,37 @@ function _bicubic_zoom(
     for j in 1:W
         jm1 = col_jm1[j]; jm2 = col_jm2[j]
         jm3 = col_jm3[j]; jm4 = col_jm4[j]
-        wy1 = col_wy1[j]; wy2 = col_wy2[j]
-        wy3 = col_wy3[j]; wy4 = col_wy4[j]
+        wc1 = col_wc1[j]; wc2 = col_wc2[j]
+        wc3 = col_wc3[j]; wc4 = col_wc4[j]
         @inbounds for i in 1:H
             r1 = row_r1[i]; r2 = row_r2[i]
             r3 = row_r3[i]; r4 = row_r4[i]
-            wx1 = row_wx1[i]; wx2 = row_wx2[i]
-            wx3 = row_wx3[i]; wx4 = row_wx4[i]
+            wr1 = row_wr1[i]; wr2 = row_wr2[i]
+            wr3 = row_wr3[i]; wr4 = row_wr4[i]
 
             # Bicubic interpolation: separable 4×4 kernel.
-            # y-direction interpolation via muladd chains.
-            q1 = muladd(wy4, mesh[r1, jm4],
-                 muladd(wy3, mesh[r1, jm3],
-                 muladd(wy2, mesh[r1, jm2],
-                        wy1 * mesh[r1, jm1])))
-            q2 = muladd(wy4, mesh[r2, jm4],
-                 muladd(wy3, mesh[r2, jm3],
-                 muladd(wy2, mesh[r2, jm2],
-                        wy1 * mesh[r2, jm1])))
-            q3 = muladd(wy4, mesh[r3, jm4],
-                 muladd(wy3, mesh[r3, jm3],
-                 muladd(wy2, mesh[r3, jm2],
-                        wy1 * mesh[r3, jm1])))
-            q4 = muladd(wy4, mesh[r4, jm4],
-                 muladd(wy3, mesh[r4, jm3],
-                 muladd(wy2, mesh[r4, jm2],
-                        wy1 * mesh[r4, jm1])))
-            # x-direction interpolation via muladd chain.
-            out[i, j] = muladd(wx4, q4,
-                         muladd(wx3, q3,
-                         muladd(wx2, q2,
-                                wx1 * q1)))
+            # Column-direction interpolation via muladd chains.
+            q1 = muladd(wc4, mesh[r1, jm4],
+                 muladd(wc3, mesh[r1, jm3],
+                 muladd(wc2, mesh[r1, jm2],
+                        wc1 * mesh[r1, jm1])))
+            q2 = muladd(wc4, mesh[r2, jm4],
+                 muladd(wc3, mesh[r2, jm3],
+                 muladd(wc2, mesh[r2, jm2],
+                        wc1 * mesh[r2, jm1])))
+            q3 = muladd(wc4, mesh[r3, jm4],
+                 muladd(wc3, mesh[r3, jm3],
+                 muladd(wc2, mesh[r3, jm2],
+                        wc1 * mesh[r3, jm1])))
+            q4 = muladd(wc4, mesh[r4, jm4],
+                 muladd(wc3, mesh[r4, jm3],
+                 muladd(wc2, mesh[r4, jm2],
+                        wc1 * mesh[r4, jm1])))
+            # Row-direction interpolation via muladd chain.
+            out[i, j] = muladd(wr4, q4,
+                         muladd(wr3, q3,
+                         muladd(wr2, q2,
+                                wr1 * q1)))
         end
     end
     return out

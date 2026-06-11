@@ -141,9 +141,9 @@ end
         img, _ = _make_star(; x0=5.0, y0=5.0)
         result = centroid_poly(img)
         cov = result.cov
-        # error fields match sqrt of diagonal
-        @test result.x_err ≈ sqrt(cov[1,1])
-        @test result.y_err ≈ sqrt(cov[2,2])
+        # error fields match sqrt of diagonal; cov order is (y, x, peak)
+        @test result.y_err ≈ sqrt(cov[1,1])
+        @test result.x_err ≈ sqrt(cov[2,2])
         @test result.peak_err ≈ sqrt(cov[3,3])
         # full matrix is symmetric
         @test cov[1,2] ≈ cov[2,1]
@@ -222,8 +222,8 @@ end
         @test result.y ≈ result.com.y atol=1e-12
         @test result.com.x_err > 0
         @test result.com.y_err > 0
-        @test result.com.cov[1,1] ≈ result.com.x_err^2
-        @test result.com.cov[2,2] ≈ result.com.y_err^2
+        @test result.com.cov[1,1] ≈ result.com.y_err^2
+        @test result.com.cov[2,2] ≈ result.com.x_err^2
         @test result.com.cov[1,2] ≈ result.com.cov[2,1]
 
         # Asymmetric patch: COM is pulled toward the luminous region.

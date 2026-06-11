@@ -27,6 +27,9 @@ makedocs(;
     # repo = GitHub("cgarling/CrowdPhot.jl"),
     pages = [
         "Home" => "index.md",
+        "Getting Started" => [
+            "Pixel Coordinate Conventions" => "pixel_conventions.md",
+        ],
         "Tutorials" => [
             "HST ACS DRZ" => "tutorials/HST-DRZ.md",
         ],

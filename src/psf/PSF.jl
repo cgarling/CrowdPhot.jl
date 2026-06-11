@@ -29,16 +29,18 @@ function evaluate_fg(model::AbstractPSFModel, y, x, free_idx::SVector)
 end
 
 """
-    evaluate(model::AbstractPSFModel{T}, x::Real, y::Real)::T
+    evaluate(model::AbstractPSFModel{T}, y::Real, x::Real)::T
 
-Evaluate the PSF model at position `(x, y)`.
+Evaluate the PSF model at position `(y, x)`, where `y` is the row
+(first array index) and `x` is the column (second array index).
 """
 function evaluate end
 
 """
-    centroid(model::AbstractPSFModel{T}) → (x::T, y::T)
+    centroid(model::AbstractPSFModel{T}) → (y::T, x::T)
 
-Return the centroid of the PSF model as a tuple `(x, y)`;
+Return the centroid of the PSF model as a tuple `(y, x)`, where `y` is the
+row coordinate and `x` is the column coordinate;
 default implementation assumes the centroid is given by fields `x` and `y` in the model struct.
 """
 function centroid(model::AbstractPSFModel)
@@ -123,9 +125,9 @@ value at pixel `i`. The variance of the flux measurement is `var(\hat{F}) = σ²
 function effective_area(model::AbstractPSFModel) end
 
 """
-    fwhm(model::AbstractPSFModel{T}) → (x_fwhm::T, y_fwhm::T)
+    fwhm(model::AbstractPSFModel{T}) → (y_fwhm::T, x_fwhm::T)
 
-Return the full width at half maximum (FWHM) of the PSF model as a tuple `(x_fwhm, y_fwhm)` in the x and y directions. By default, this function checks for a single `fwhm` field and returns it for both axes, or separate `x_fwhm` and `y_fwhm` fields if they exist. Models with more complex definitions of FWHM should implement their own version of this function.
+Return the full width at half maximum (FWHM) of the PSF model as a tuple `(y_fwhm, x_fwhm)` in the y (row) and x (column) directions. By default, this function checks for a single `fwhm` field and returns it for both axes, or separate `x_fwhm` and `y_fwhm` fields if they exist. Models with more complex definitions of FWHM should implement their own version of this function.
 """
 function fwhm(model::AbstractPSFModel)
     if hasproperty(model, :fwhm)
@@ -151,17 +153,19 @@ function theta(model::AbstractPSFModel{T}) where {T}
 end
 
 """
-    evaluate_fg(model::AbstractPSFModel{T}, x::Real, y::Real) → (f::T, G::SVector{T})
+    evaluate_fg(model::AbstractPSFModel{T}, y::Real, x::Real) → (f::T, G::SVector{T})
 
 Returns the model value `f` and partial derivatives of the `model`
-with respect to the parameters `G` at position `(x, y)`.
+with respect to the parameters `G` at position `(y, x)`, where `y` is the
+row coordinate and `x` is the column coordinate.
 """
 function evaluate_fg end
 
 """
-    evaluate_fgh(model::AbstractPSFModel{T}, x::Real, y::Real) → (f::T, G::SVector{T}, H::SMatrix{T})
+    evaluate_fgh(model::AbstractPSFModel{T}, y::Real, x::Real) → (f::T, G::SVector{T}, H::SMatrix{T})
 Returns the model value `f`, partial derivatives `G`, and Hessian matrix `H` of the `model`
-with respect to the parameters at position `(x, y)`.
+with respect to the parameters at position `(y, x)`, where `y` is the row coordinate and
+`x` is the column coordinate.
 """
 function evaluate_fgh end
 
@@ -196,10 +200,11 @@ end
 
 """
     extent([T::Integer], model::AbstractPSFModel, 
-        fwhm_factor=5; roundint::Bool=false) → (x_range::Tuple, y_range::Tuple)
+        fwhm_factor=5; roundint::Bool=false) → (y_range::Tuple, x_range::Tuple)
 
 Returns the extent of the PSF model which is typically useful for fitting, plotting, etc., 
-`((x_min, x_max), (y_min, y_max))`. By default, the extent is the smallest axis-aligned
+`((y_min, y_max), (x_min, x_max))`, where the first tuple is the row (y) range and the
+second is the column (x) range. By default, the extent is the smallest axis-aligned
 rectangle enclosing an ellipse centered on the model centroid whose major and minor axis
 lengths are `fwhm_factor` times the model FWHM values. Models with more
 complex shapes can override this function to provide a more appropriate extent.
@@ -212,13 +217,13 @@ for determining pixel indices for rendering and fitting.
 julia> using CrowdPhot.PSF: extent, CircularGaussianPSF, GaussianPSF
 
 julia> extent(CircularGaussianPSF(x=10, y=20, fwhm=5, flux=30, bkg=1), 5)
-((-2.5, 22.5), (7.5, 32.5))
+((7.5, 32.5), (-2.5, 22.5))
 
 julia> extent(GaussianPSF(x=10, y=20, x_fwhm=5, y_fwhm=3, theta=90, flux=30, bkg=1), 5)
-((2.5, 17.5), (7.5, 32.5))
+((7.5, 32.5), (2.5, 17.5))
 
 julia> extent(Int, GaussianPSF(x=10, y=20, x_fwhm=5, y_fwhm=3, theta=90, flux=30, bkg=1), 5)
-((2, 18), (7, 33))
+((7, 33), (2, 18))
 ```
 """
 function extent(model::AbstractPSFModel, fwhm_factor = 5)
@@ -233,6 +238,14 @@ end
     (ymin, ymax), (xmin, xmax) = extent(model, fwhm_factor)
     return (floor(T, ymin), ceil(T, ymax)), (floor(T, xmin), ceil(T, xmax))
 end
+
+"""
+    CartesianIndices(model::AbstractPSFModel, [fwhm_factor]) -> CartesianIndices{2}
+
+Return the `CartesianIndices` covering the integer-rounded `extent` of `model`.
+Each `CartesianIndex` `idx` satisfies `idx[1] = y` (row) and `idx[2] = x`
+(column), consistent with `image[y, x]` indexing.
+"""
 function Base.CartesianIndices(model::AbstractPSFModel, fwhm_factor = 5)
     ex = extent(Int, model, fwhm_factor)
     return CartesianIndices((ex[1][1]:ex[1][2], ex[2][1]:ex[2][2]))
@@ -245,6 +258,8 @@ Return an **odd-sized** matrix covering the region returned by `extent(model)`.
 The matrix is centered on the rounded model centroid; the half-width in each
 dimension is chosen so that the full extent is covered and the total size is
 odd (required for use as a correlation kernel in [`CrowdPhot.correlate`](@ref)).
+Dimension 1 (rows) corresponds to the y (row) coordinate and dimension 2 (columns)
+corresponds to the x (column) coordinate, consistent with `image[y, x]` indexing.
 """
 function render(model::AbstractPSFModel)
     (y_lo, y_hi), (x_lo, x_hi) = extent(model)
@@ -268,9 +283,10 @@ Mutate `out` by evaluating `model` at each pixel index in `inds` and adding
 the result to `out`, skipping indices that fall outside the bounds of `out`.
 This is designed for rendering a PSF model into a larger image frame,
 requiring that the `centroid` of the `model` be in the pixel space of the
-image (i.e., a star with a center of `(10.5, 20.5)` would be centered on the
-pixel at row 20, column 10 of the image). Pixels that lie off the edge of
-`out` are quietly skipped.
+image (i.e., a star with a center of `(y=20.5, x=10.5)` would be centered on
+the pixel at row 20, column 10 of the image). Pixels that lie off the edge of
+`out` are quietly skipped. Each `CartesianIndex` `idx` satisfies `idx[1] = y`
+(row) and `idx[2] = x` (column).
 
 See also: [`subtract_star!`](@ref) for the subtractive counterpart.
 """

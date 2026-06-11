@@ -126,9 +126,9 @@ end
     simulate_sources(shape, n_sources; kwargs...) -> NamedTuple
 
 Generate random source positions and fluxes for an image
-with dimensions `shape == (nx, ny)`. Result is a `NamedTuple` with keys
-`(id, x, y, flux)` where `id` is a 1-based source index, `x` and `y`
-are source positions in pixel coordinates, and
+with dimensions `shape == (ny, nx)`. Result is a `NamedTuple` with keys
+`(id, y, x, flux)` where `id` is a 1-based source index, `y` and `x`
+are source positions in pixel coordinates (y = row, x = column), and
 `flux` is the source brightness in data units (e.g., ADU). See keyword
 arguments below for controlling the source properties and placement.
 
@@ -162,7 +162,7 @@ ignored in this branch.
 **Common keywords (used in both branches):**
 
 - `min_separation`: minimum source-center separation in pixels.
-- `border`: scalar or `(xborder, yborder)` excluded image border.
+- `border`: scalar or `(yborder, xborder)` excluded image border.
 """
 function simulate_sources(
         shape::Tuple{<:Integer, <:Integer},
@@ -233,24 +233,24 @@ function simulate_sources(
     resize!(xs, n_generated)
     resize!(ys, n_generated)
     resize!(fs, n_generated)
-    return (id = 1:n_generated, x = xs, y = ys, flux = fs)
+    return (id = 1:n_generated, y = ys, x = xs, flux = fs)
 end
 
 function _source_vectors(sources)
     # NamedTuple/table-like inputs expose x, y, and flux directly.
     if hasproperty(sources, :x) && hasproperty(sources, :y) && hasproperty(sources, :flux)
-        return sources.x, sources.y, sources.flux
+        return sources.y, sources.x, sources.flux
     end
     # Fall back to iterating row-like objects with x/y/flux properties.
-    xs = Float64[]
     ys = Float64[]
+    xs = Float64[]
     fs = Float64[]
     for src in sources
-        push!(xs, getproperty(src, :x))
         push!(ys, getproperty(src, :y))
+        push!(xs, getproperty(src, :x))
         push!(fs, getproperty(src, :flux))
     end
-    return xs, ys, fs
+    return ys, xs, fs
 end
 
 function _source_ranges(model, y, x, model_radius, image)
@@ -270,7 +270,7 @@ end
 """
     render_sources!(image, model, sources; model_radius=nothing)
 
-Add sources to `image` in place using `model`. `sources` must provide `x`, `y`,
+Add sources to `image` in place using `model`. `sources` must provide `y`, `x`,
 and `flux` fields or columns. The model background is set to zero while each
 source is rendered.
 """
@@ -281,9 +281,9 @@ function render_sources!(
         model_radius = nothing
     )
     # Normalize source containers to coordinate and flux vectors.
-    xs, ys, fs = _source_vectors(sources)
-    length(xs) == length(ys) == length(fs) || throw(ArgumentError("source x/y/flux lengths must match"))
-    for k in eachindex(xs, ys, fs)
+    ys, xs, fs = _source_vectors(sources)
+    length(ys) == length(xs) == length(fs) || throw(ArgumentError("source x/y/flux lengths must match"))
+    for k in eachindex(ys, xs, fs)
         # Render each source with zero model background; image background is added separately.
         m = ConstructionBase.setproperties(model, (x = xs[k], y = ys[k], flux = fs[k], bkg = zero(float(eltype(image)))))
         yr, xr = _source_ranges(m, ys[k], xs[k], model_radius, image)
@@ -470,7 +470,7 @@ with fluxes drawn log-uniformly from `flux_range`.  The pixel model is:
 expected[i,j] = background[i,j] + Σ_k  flux_k / (2π σ²) · exp(−r²_k / 2σ²)
 ```
 
-where `r²_k = (i − x_k)² + (j − y_k)²` and `σ = sigma_psf`.
+where `r²_k = (i − y_k)² + (j − x_k)²` and `σ = sigma_psf`.
 
 Noise is applied as: shot noise on `expected * gain` electrons, then a
 Gaussian read-noise draw with standard deviation `read_noise` (in ADU).
