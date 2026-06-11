@@ -1,15 +1,17 @@
 # ---------------------------------------------------------------------------
 # 3x3 polynomial centroiding  —  Vakili & Hogg (2016), arXiv:1610.05873
 #
-# The 3x3 patch is indexed in row-major order with local coordinates
-# (x, y) where x is the column offset and y is the row offset, each
-# in {-1, 0, 1} relative to the centre pixel:
+# The 3x3 patch is indexed in row-major order.  Local coordinates (y, x)
+# follow the global convention: y is the row offset (first index), x is the
+# column offset (second index), each in {-1, 0, 1} relative to the centre pixel:
 #
-#   (-1,-1)  (0,-1)  (1,-1)
-#   (-1, 0)  (0, 0)  (1, 0)
-#   (-1, 1)  (0, 1)  (1, 1)
+#   (-1,-1)  (-1, 0)  (-1, 1)
+#   ( 0,-1)  ( 0, 0)  ( 0, 1)
+#   ( 1,-1)  ( 1, 0)  ( 1, 1)
 #
 # Design-matrix row for pixel i: [1, x_i, y_i, x_i², x_i*y_i, y_i²]
+# (the polynomial is P(x,y) = a + bx + cy + dx² + exy + fy² where x tracks
+# column offset and y tracks row offset).
 #
 # The normal-equation matrix N = Aᵀ W A and right-hand side Aᵀ W z are built
 # in closed form from weighted geometric moments S_pq = Σ w_i x_i^p y_i^q,
@@ -21,12 +23,12 @@
 
 Fit a quadratic 2-D polynomial ``P(x,y) = a + bx + cy + dx² + exy + fy²``
 to a 3×3 patch using weighted least squares with inverse-variance weights
-`inv_var`.  Returns `(; x, y, peak, x_err, y_err, peak_err, cov, com)`
-where `x, y` are the sub-pixel polynomial centroid coordinates relative
-to the patch center, `peak` is the polynomial value at the centroid, the
-`_err` fields are 1-σ uncertainties, `cov` is the full 3×3 `SMatrix`
-covariance of `(x, y, peak)`, and `com` is a `NamedTuple`
-`(; x, y, x_err, y_err, cov)` with the inverse-variance-weighted
+`inv_var`.  Returns `(; y, x, peak, y_err, x_err, peak_err, cov, com)`
+where `y, x` are the sub-pixel polynomial centroid coordinates (row, column)
+relative to the patch center, `peak` is the polynomial value at the centroid,
+the `_err` fields are 1-σ uncertainties, `cov` is the full 3×3 `SMatrix`
+covariance of `(y, x, peak)`, and `com` is a `NamedTuple`
+`(; y, x, y_err, x_err, cov)` with the inverse-variance-weighted
 center-of-mass centroid and its 2×2 covariance on the same 3×3 patch.
 
 The design matrix is fixed (local coordinates `{-1,0,1}²`), so the
@@ -152,19 +154,19 @@ function _centroid_poly3(image::AbstractMatrix{T}, inv_var::AbstractMatrix{T}) w
     dreg = two_d / 2
     freg = two_f / 2
 
-    # Jacobian of (xc, yc, peak) w.r.t. (a, b, c, d, e, f).
+    # Jacobian of (yc, xc, peak) w.r.t. (a, b, c, d, e, f).
     # At the stationary point ∂P/∂x = ∂P/∂y = 0, so d(peak)/dθ simplifies
     # to the basis vector evaluated at the centroid.
     J = @SMatrix [
-        zero(T)  -two_f * invΔ     e * invΔ        -4 * freg * xc * invΔ             (c + 2 * e * xc) * invΔ   -(2 * b + 4 * dreg * xc) * invΔ
         zero(T)   e * invΔ         -two_d * invΔ   -(2 * c + 4 * freg * yc) * invΔ   (b + 2 * e * yc) * invΔ   -4 * dreg * yc * invΔ
+        zero(T)  -two_f * invΔ     e * invΔ        -4 * freg * xc * invΔ             (c + 2 * e * xc) * invΔ   -(2 * b + 4 * dreg * xc) * invΔ
         one(T)    xc               yc              xc2                               xcyc                      yc2
     ]
 
     cov = J * Ninv * transpose(J)
 
-    x_err = sqrt(max(zero(T), cov[1,1]))
-    y_err = sqrt(max(zero(T), cov[2,2]))
+    y_err = sqrt(max(zero(T), cov[1,1]))
+    x_err = sqrt(max(zero(T), cov[2,2]))
     peak_err = sqrt(max(zero(T), cov[3,3]))
 
     # Inverse-variance-weighted center-of-mass on the 3×3 patch.
@@ -178,13 +180,15 @@ function _centroid_poly3(image::AbstractMatrix{T}, inv_var::AbstractMatrix{T}) w
     var_com_x = (S20 - 2 * com_x * S10 + com_x * com_x * S00) * invR00_sq
     var_com_y = (S02 - 2 * com_y * S01 + com_y * com_y * S00) * invR00_sq
     cov_com_xy = (S11 - com_x * S01 - com_y * S10 + com_x * com_y * S00) * invR00_sq
-    com_cov = @SMatrix [var_com_x cov_com_xy; cov_com_xy var_com_y]
-    com_x_err = sqrt(max(zero(T), var_com_x))
+    com_cov = @SMatrix [var_com_y cov_com_xy; cov_com_xy var_com_x]
     com_y_err = sqrt(max(zero(T), var_com_y))
+    com_x_err = sqrt(max(zero(T), var_com_x))
 
-    return (; x = xc, y = yc, peak, x_err, y_err, peak_err, cov,
-             com = (; x = com_x, y = com_y, cov = com_cov,
-                     x_err = com_x_err, y_err = com_y_err))
+    return (; y = yc, x = xc, peak,
+             y_err, x_err, peak_err, cov,
+             com = (; y = com_y, x = com_x,
+                     cov = com_cov,
+                     y_err = com_y_err, x_err = com_x_err))
 end
 
 """
@@ -208,26 +212,26 @@ pixel coordinates.
   mask bad or saturated pixels.
 
 # Returns
-A `NamedTuple` with keys `(; x, y, peak, x_err, y_err, peak_err, cov, com)` where
+A `NamedTuple` with keys `(; y, x, peak, y_err, x_err, peak_err, cov, com)` where
 
-- `x`, `y` — polynomial centroid in global pixel coordinates.
+- `y`, `x` — polynomial centroid in global pixel coordinates (row, column).
 - `peak` — fitted polynomial value at the centroid.
-- `x_err`, `y_err`, `peak_err` — 1-σ uncertainties propagated from the
+- `y_err`, `x_err`, `peak_err` — 1-σ uncertainties propagated from the
   weighted least-squares parameter covariance.
-- `cov` — 3×3 `SMatrix` covariance of `(x, y, peak)`.
-- `com` — `NamedTuple` `(; x, y, x_err, y_err, cov)` with the
+- `cov` — 3×3 `SMatrix` covariance of `(y, x, peak)`.
+- `com` — `NamedTuple` `(; y, x, y_err, x_err, cov)` with the
   inverse-variance-weighted center-of-mass centroid, its 1-σ
   uncertainties, and its 2×2 `SMatrix` covariance.  Access as
-  `result.com.x`, `result.com.y`, etc.
+  `result.com.y`, `result.com.x`, etc.
 
 If the brightest pixel lies on the image border (no full 3×3
 neighbourhood), every field is `NaN`:
 
 ```julia
-(; x = NaN, y = NaN, peak = NaN,
-   x_err = NaN, y_err = NaN, peak_err = NaN,
+(; y = NaN, x = NaN, peak = NaN,
+   y_err = NaN, x_err = NaN, peak_err = NaN,
    cov = @SMatrix [NaN NaN NaN; NaN NaN NaN; NaN NaN NaN],
-   com = (; x = NaN, y = NaN, x_err = NaN, y_err = NaN,
+   com = (; y = NaN, x = NaN, y_err = NaN, x_err = NaN,
           cov = @SMatrix [NaN NaN; NaN NaN]))
 ```
 
@@ -260,20 +264,24 @@ end
 Variant of [`centroid_poly`](@ref) that accepts pre-computed brightest-pixel
 coordinates `i0, j0` (corresponding to pixel `image[i0, j0]`) instead of
 calling `findmax` internally. Useful when the caller has already identified
-the peak pixel (e.g. from a correlation map).
+the peak pixel (e.g. from a correlation map). `i0` is the row index
+(y-coordinate) and `j0` is the column index (x-coordinate).
 
-Returns the same `NamedTuple` as the two-argument form, including both
-the polynomial centroid and the center-of-mass centroid in `com`.
+Returns the same `NamedTuple` as the two-argument form (fields `y`, `x`,
+`peak`, `y_err`, `x_err`, `peak_err`, `cov`, `com`), including both
+the polynomial centroid and the center-of-mass centroid in `com`. In the
+returned `NamedTuple`, `.y` is the row coordinate and `.x` is the
+column coordinate.
 """
 function centroid_poly(image::AbstractMatrix{T}, i0::Int, j0::Int, inv_var::AbstractMatrix = Fill(one(T), size(image))) where {T <: Real}
     # check that a full 3×3 neighbourhood exists
     nan = T(NaN)
     nan3 = @SMatrix [nan nan nan; nan nan nan; nan nan nan]
     nan2 = @SMatrix [nan nan; nan nan]
-    nancom = (; x = nan, y = nan, x_err = nan, y_err = nan, cov = nan2)
+    nancom = (; y = nan, x = nan, y_err = nan, x_err = nan, cov = nan2)
     if i0 < 2 || i0 > size(image, 1) - 1 || j0 < 2 || j0 > size(image, 2) - 1
-        return (; x = nan, y = nan, peak = nan,
-                 x_err = nan, y_err = nan, peak_err = nan,
+        return (; y = nan, x = nan, peak = nan,
+                 y_err = nan, x_err = nan, peak_err = nan,
                  cov = nan3, com = nancom)
     end
 
@@ -285,18 +293,18 @@ function centroid_poly(image::AbstractMatrix{T}, i0::Int, j0::Int, inv_var::Abst
     local_result = _centroid_poly3(patch, wpatch)
 
     # convert local → global coordinates
-    # local x is column offset, local y is row offset
-    return (; x = j0 + local_result.x,
-             y = i0 + local_result.y,
+    # i0 is row (y), j0 is column (x)
+    return (; y = i0 + local_result.y,
+             x = j0 + local_result.x,
              peak = local_result.peak,
-             x_err = local_result.x_err,
              y_err = local_result.y_err,
+             x_err = local_result.x_err,
              peak_err = local_result.peak_err,
              cov = local_result.cov,
-             com = (; x = j0 + local_result.com.x,
-                     y = i0 + local_result.com.y,
-                     x_err = local_result.com.x_err,
+             com = (; y = i0 + local_result.com.y,
+                     x = j0 + local_result.com.x,
                      y_err = local_result.com.y_err,
+                     x_err = local_result.com.x_err,
                      cov = local_result.com.cov))
 end
 
@@ -305,8 +313,8 @@ end
 
 Given the `NamedTuple` returned by [`centroid_poly`](@ref) or
 [`_centroid_poly3`](@ref), choose between the polynomial centroid
-(`result.x`, `result.y`) and the center-of-mass centroid
-(`result.com.x`, `result.com.y`).
+(`result.y`, `result.x`) and the center-of-mass centroid
+(`result.com.y`, `result.com.x`).
 
 The polynomial centroid is preferred for well-sampled data where the
 3×3 patch has enough curvature for a reliable quadratic fit.  The COM
@@ -314,7 +322,7 @@ centroid is chosen when the polynomial's curvature matrix is nearly
 singular (e.g. for very broad PSFs), indicated by a polynomial-vs-COM
 variance ratio exceeding 10².
 
-Returns `(; x, y, source)` where `source` is `:poly` or `:com`.
+Returns `(; y, x, source)` where `source` is `:poly` or `:com`.
 
 !!! note
     This heuristic detects curvature degeneracy but cannot detect
@@ -327,9 +335,9 @@ Returns `(; x, y, source)` where `source` is `:poly` or `:com`.
 function choose_centroid(result)
     # If the polynomial covariance is more than 100× the COM covariance,
     # the curvature matrix is essentially degenerate → use COM.
-    if result.cov[1,1] > 100 * result.com.cov[1,1]
-        return (; x = result.com.x, y = result.com.y, source = :com)
+    if result.cov[2,2] > 100 * result.com.cov[2,2]
+        return (; y = result.com.y, x = result.com.x, source = :com)
     else
-        return (; x = result.x, y = result.y, source = :poly)
+        return (; y = result.y, x = result.x, source = :poly)
     end
 end

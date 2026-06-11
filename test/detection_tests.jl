@@ -17,8 +17,8 @@ function _gaussian_kernel(k::Int, σ::Real)
     return g .* g'
 end
 
-"Place a Gaussian source with flux `F` at sub-pixel position `(x, y)`."
-function _place_source!(img, x::Real, y::Real, flux::Real, σ::Real)
+"Place a Gaussian source with flux `F` at sub-pixel position `(y, x)`."
+function _place_source!(img, y::Real, x::Real, flux::Real, σ::Real)
     Y, X = size(img)
     k = ceil(Int, 8σ) |> x -> isodd(x) ? x : x + 1
     xr = max(1, round(Int, x - k÷2)):min(X, round(Int, x + k÷2))
@@ -36,9 +36,9 @@ _peak_xs(result::MatchedFilterResult) = Float64[p[2] for p in result.peaks]
 "Return detected peak y-coordinates in matrix-index convention."
 _peak_ys(result::MatchedFilterResult) = Float64[p[1] for p in result.peaks]
 
-"Return the index of the detected peak nearest the supplied x/y coordinates."
-function _nearest_peak(result::MatchedFilterResult, x::Real, y::Real)
-    return argmin([(p[2] - x)^2 + (p[1] - y)^2 for p in result.peaks])
+"Return the index of the detected peak nearest the supplied y/x coordinates."
+function _nearest_peak(result::MatchedFilterResult, y::Real, x::Real)
+    return argmin([(p[1] - y)^2 + (p[2] - x)^2 for p in result.peaks])
 end
 
 # ---------------------------------------------------------------------------
@@ -53,8 +53,8 @@ end
         kern = _gaussian_kernel(9, σ_psf)
         # Place three well-separated sources
         _place_source!(img, 20.0, 20.0, 40.0, σ_psf)
-        _place_source!(img, 50.0, 60.0, 25.0, σ_psf)
-        _place_source!(img, 65.0, 30.0, 15.0, σ_psf)
+        _place_source!(img, 60.0, 50.0, 25.0, σ_psf)
+        _place_source!(img, 30.0, 65.0, 15.0, σ_psf)
 
         inv_var = fill(4.0, size(img))  # σ=0.5 → w=4
         result = matched_filter(img, kern; inv_var, sigma=5.0)

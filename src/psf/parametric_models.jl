@@ -417,13 +417,13 @@ PSF integrated analytically over each pixel. The `flux` is the total flux
 (sum of PRF values over all pixels equals `flux`), and `bkg` is a scalar
 background level added to the PRF.
 
-The PRF value at pixel center ``(x, y)`` is the integral of the Gaussian PSF
-over the pixel area ``[x-0.5, x+0.5] \times [y-0.5, y+0.5]``. The model is
+The PRF value at detector pixel ``(y, x)`` (row, column) is the integral of the Gaussian PSF
+over the pixel area ``[y-0.5, y+0.5] \times [x-0.5, x+0.5]``. The model is
 evaluated as
 
 ```math
 \begin{aligned}
-I(x, y) ={}& \frac{F}{4}
+I(y, x) ={}& \frac{F}{4}
 \left[\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(x + 0.5 - x_0)}{\mathrm{FWHM}}\right)
       -\mathrm{erf}\!\left(\frac{2\sqrt{\ln 2}\,(x - 0.5 - x_0)}{\mathrm{FWHM}}\right)\right] \\
 &\times
@@ -653,7 +653,7 @@ The model is evaluated by sampling the Moffat PSF at the given position and
 adding the background:
 
 ```math
-I(x, y) =
+I(y, x) =
 F\,\frac{\beta - 1}{\pi\,\alpha^2}
 \left(
 1 + \frac{(x-x_0)^2 + (y-y_0)^2}{\alpha^2}
@@ -738,7 +738,7 @@ The model is evaluated by sampling the Moffat PSF
 at the given position and adding the background:
 
 ```math
-I(x, y) =
+I(y, x) =
 F\,\frac{\beta - 1}{\pi\,\alpha_x\,\alpha_y}
 \left(
 1 + \frac{u^2}{\alpha_x^2} + \frac{v^2}{\alpha_y^2}

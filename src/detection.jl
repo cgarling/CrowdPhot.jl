@@ -28,7 +28,8 @@ Result of [`matched_filter`](@ref) source detection.
   zero-sum path, or `√(ΣP²)` for the non-zero-sum path.  It converts the raw
   flux estimate to SNR per unit pixel noise in the uniform-weight path.
 - `peaks::Vector{CartesianIndex{2}}` — detected peak pixels as `(row, column)`
-  Cartesian indices.
+  Cartesian indices; for a peak `p`, `p[1]` is the row (y coordinate) and
+  `p[2]` is the column (x coordinate).
 - `peak_significances::Vector{T}` — significance values at each peak.
 - `peak_fluxes::Vector{T}` — matched-filter flux estimate at each peak.
 """
@@ -103,7 +104,7 @@ K_i = \\frac{P_i - \\bar{P}}{\\mathrm{denom}}, \\qquad
 The detection significance (SNR) at each pixel is
 
 ```math
-\\mathrm{SNR}(x,y) = \\frac{\\sum_{i,j} K_{i,j} \\, D_{x+i,\\,y+j}}
+\\mathrm{SNR}(y,x) = \\frac{\\sum_{dy,dx} K_{dy,dx} \\, D[y+dy,\\,x+dx]}
                           {\\sigma \\; / \\sqrt{\\mathrm{denom}}}
 ```
 
@@ -118,11 +119,11 @@ For **spatially varying noise** described by an inverse-variance map
 ``w_i = 1/\\sigma_i^2``, two correlations are required:
 
 ```math
-\\mathrm{num}(x,y) = \\sum K_{i,j} \\, w_{x+i,\\,y+j} \\, D_{x+i,\\,y+j}
+\\mathrm{num}(y,x) = \\sum K_{dy,dx} \\, w[y+dy,\\,x+dx] \\, D[y+dy,\\,x+dx]
 ```
 
 ```math
-\\mathrm{den}(x,y) = \\sum K_{i,j}^2 \\, w_{x+i,\\,y+j}
+\\mathrm{den}(y,x) = \\sum K_{dy,dx}^2 \\, w[y+dy,\\,x+dx]
 ```
 
 ```math
@@ -136,8 +137,8 @@ estimate, or provide `inv_var`, to get true SNR.
 
 !!! note "Zero-sum kernel with spatially-varying weights"
     When `normalize_zerosum = true` and `inv_var` varies significantly
-    across the kernel footprint, ``\\sum K_i = 0`` alone does **not**
-    guarantee ``\\sum K_i w_{x+i,y+j} = 0``, so a constant background
+    across the kernel footprint, ``\\sum K_{dy,dx} = 0`` alone does **not**
+    guarantee ``\\sum K_{dy,dx} w[y+dy,x+dx] = 0``, so a constant background
     can leak into the weighted response.  In this case you should
     background-subtract the image before calling [`matched_filter`](@ref).
 """
@@ -259,11 +260,12 @@ matched_filter(image::AbstractMatrix, fwhm::Int; kws...) =
     matched_filter(image::AbstractMatrix, fwhm::Tuple{Int, Int}; kws...)
 
 Convenience method for matched-filter detection using a
-[`GaussianPRF`](@ref) with x- and y-FWHM specified by the `fwhm` tuple.
+[`GaussianPRF`](@ref) with y- and x-FWHM specified by the `fwhm` tuple as
+`(y_fwhm, x_fwhm)`.
 """
 matched_filter(image::AbstractMatrix, fwhm::Tuple{Int, Int}; kws...) = 
-    matched_filter(image, GaussianPRF(; x=0, y=0, bkg=0, flux=1, x_fwhm=fwhm[1],
-        y_fwhm=fwhm[2], theta=0); kws...)
+    matched_filter(image, GaussianPRF(; x=0, y=0, bkg=0, flux=1, x_fwhm=fwhm[2],
+        y_fwhm=fwhm[1], theta=0); kws...)
 
 # ---------------------------------------------------------------------------
 # Local maximum finding
@@ -275,7 +277,9 @@ matched_filter(image::AbstractMatrix, fwhm::Tuple{Int, Int}; kws...) =
 Return the coordinates of all local maxima in `img`.  A pixel is a local
 maximum if its value is strictly greater than all 8 of its immediate
 neighbours (3×3 window).  If `edges=false`, pixels on the image boundary
-are excluded from consideration.
+are excluded from consideration.  Each returned `CartesianIndex(row, col)`
+has `row` corresponding to the y (first array dimension) coordinate and
+`col` corresponding to the x (second array dimension) coordinate.
 
 See also: [`matched_filter`](@ref).
 """

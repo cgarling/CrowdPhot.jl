@@ -20,7 +20,7 @@ $\psi_I$ with the pixel response function $\mathcal{R}$, so that a
 background-subtracted stellar pixel value can be written directly as
 
 ```math
-P_{ij} - s_\ast = f_\ast \, \psi_E(i - x_\ast,\, j - y_\ast)
+P_{ij} - s_\ast = f_\ast \, \psi_E(i - y_\ast,\, j - x_\ast)
 ```
 
 without performing a pixel integral at every evaluation. This is the convention
@@ -56,8 +56,8 @@ identically for `ImagePSF` as for analytic models:
 
 | Method | Description |
 |---|---|
-| `evaluate(model, x, y)` | Evaluate the ePSF at detector-pixel coordinates |
-| `centroid(model)` | Return `(model.x, model.y)` |
+| `evaluate(model, y, x)` | Evaluate the ePSF at detector-pixel coordinates |
+| `centroid(model)` | Return `(model.y, model.x)` |
 | `integral(model)` | Return `model.flux` |
 | `background(model)` | Return `model.bkg` |
 | `extent(model)` | Bounding box in detector-pixel coordinates |
@@ -82,7 +82,7 @@ The builder iterates between two phases — stacking the ePSF grid and fitting
 individual stars — until the largest centroid shift falls below `centroid_tol`:
 
 ```
-1. EXTRACT  → extract_stars(image, x, y, psf_rad)
+1. EXTRACT  → extract_stars(image, y, x, psf_rad)
 2. STACK    → stack_epsf_grid(image, stars, state)
 3. FIT      → fit_all_stars(stars, psf, image; fit_rad)
 4. ANCHOR   → remove_centroid_drift(stars, old_centroids)
@@ -93,7 +93,7 @@ individual stars — until the largest centroid shift falls below `centroid_tol`
 ### Step 1 — Star extraction
 
 [`extract_stars`](@ref) takes an image and initial detector-pixel coordinates
-`(x, y)`, creates a square cutout of radius `psf_rad` around each position, and
+`(y, x)`, creates a square cutout of radius `psf_rad` around each position, and
 stores all pixels in the cutout for ePSF construction.  For each star
 an [`EmpiricalStar`](@ref) record is created with:
 
@@ -134,7 +134,7 @@ valid, finite detector pixel into a normalized ePSF sample
 and maps it to the oversampled grid via
 
 ```math
-g_x = \mathrm{round}\bigl(\mathrm{origin}_x + \mathrm{os}_x \cdot (i - x_\ast)\bigr)
+g_x = \mathrm{round}\bigl(\mathrm{origin}_x + \mathrm{os}_x \cdot (j - x_\ast)\bigr)
 ```
 
 using "round half away from zero" to avoid half-grid bias. Samples with
@@ -217,7 +217,7 @@ normalize_grid_to_oversampling_area!
 
 ### Step 3 — Per-star fitting
 
-[`fit_star_against_epsf`](@ref) fits each star's centroid $(x, y)$, flux, and
+[`fit_star_against_epsf`](@ref) fits each star's centroid $(y, x)$, flux, and
 optionally background against the current ePSF. It uses Levenberg-Marquardt
 optimization ([`lm_irls`](@ref)) with analytic derivatives provided by
 [`evaluate_fg`](@ref). When `reweight` is a robust loss (e.g.,

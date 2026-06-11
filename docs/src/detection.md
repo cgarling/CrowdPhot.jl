@@ -11,13 +11,13 @@ detection under stationary (uncorrelated) Gaussian noise.
 
 ### Mathematical Derivation
 
-Consider an image ``D(x,y)`` consisting of a uniform background ``B``, a
-point source with flux ``F`` and PSF shape ``P(x,y)`` (normalized such that
-``\sum P = 1``), and independent Gaussian noise
-``N(x,y) \sim \mathcal{N}(0, \sigma^2)``:
+Consider an image ``D(y,x)`` (indexed as ``D[\mathrm{row}, \mathrm{col}]``)
+consisting of a uniform background ``B``, a point source with flux ``F`` and
+PSF shape ``P(y,x)`` (normalized such that ``\sum P = 1``), and independent
+Gaussian noise ``N(y,x) \sim \mathcal{N}(0, \sigma^2)``:
 
 ```math
-D(x,y) = B + F \cdot P(x - x_0, y - y_0) + N(x,y)
+D(y,x) = B + F \cdot P(y - y_0, x - x_0) + N(y,x)
 ```
 
 At each position we test the hypothesis ``\mathcal{H}_1`` (source present
@@ -63,17 +63,17 @@ estimator above, but it has the same expected response for an isolated source
 with template ``P``, albeit with a different noise realization and a larger
 variance (see below for additional information).
 
-The **detection statistic** evaluated at every pixel ``(x,y)`` is the
+The **detection statistic** evaluated at every pixel ``(y,x)`` is the
 correlation response divided by its noise standard deviation:
 
 ```math
-z(x,y) = \frac{\sum_{i,j} K_{i,j} \, D_{x+i,\,y+j}}
+z(y,x) = \frac{\sum_{i,j} K_{i,j} \, D_{y+i,\,x+j}}
                {\sigma \;/\; \sqrt{\mathrm{denom}}}
-       = \frac{S(x,y) \, \sqrt{\mathrm{denom}}}{\sigma},
+       = \frac{S(y,x) \, \sqrt{\mathrm{denom}}}{\sigma},
 ```
 
 where ``S = K \star D`` is the correlation of the image with the
-normalized kernel.  This ``z(x,y)`` is the true matched-filter SNR when
+normalized kernel.  This ``z(y,x)`` is the true matched-filter SNR when
 the pixel noise ``\sigma`` is known.
 
 In the uniform-weight code path (`inv_var = nothing`), [`matched_filter`](@ref)
@@ -85,7 +85,7 @@ to obtain a map in standard-deviation units.
 **Why this statistic is meaningful:**  Under the null hypothesis
 ``\mathcal{H}_0`` (no source present), ``D = B + N`` and the
 zero-sum kernel cancels the background, leaving only the noise term
-``\sum K_{i,j} N_{x+i,y+j}``.  Since each ``N \sim \mathcal{N}(0,\sigma^2)``
+``\sum K_{i,j} N_{y+i,x+j}``.  Since each ``N \sim \mathcal{N}(0,\sigma^2)``
 and the kernel weights are fixed,
 
 ```math
@@ -107,14 +107,14 @@ For **spatially varying noise** described by an inverse-variance map
 ``w_i = 1/\sigma_i^2``, two correlations are required:
 
 ```math
-\mathrm{num}(x,y) = \sum_{i,j} K_{i,j} \, w_{x+i,\,y+j} \, D_{x+i,\,y+j}
+\mathrm{num}(y,x) = \sum_{i,j} K_{i,j} \, w_{y+i,\,x+j} \, D_{y+i,\,x+j}
 ```
 ```math
-\mathrm{den}(x,y) = \sum_{i,j} K_{i,j}^2 \, w_{x+i,\,y+j}
+\mathrm{den}(y,x) = \sum_{i,j} K_{i,j}^2 \, w_{y+i,\,x+j}
 ```
 ```math
-\mathrm{SNR}(x,y) = \frac{\mathrm{num}(x,y)}
-                          {\sqrt{\mathrm{den}(x,y)}}
+\mathrm{SNR}(y,x) = \frac{\mathrm{num}(y,x)}
+                          {\sqrt{\mathrm{den}(y,x)}}
 ```
 
 This is the statistic computed by the current fixed-kernel weighted path.
@@ -127,23 +127,23 @@ background-subtracted.
     the footprint, the background projection should be weighted locally:
 
     ```math
-    \bar{P}_w(x,y) =
-    \frac{\sum_{i,j} w_{x+i,\,y+j} P_{i,j}}
-        {\sum_{i,j} w_{x+i,\,y+j}},
+    \bar{P}_w(y,x) =
+    \frac{\sum_{i,j} w_{y+i,\,x+j} P_{i,j}}
+        {\sum_{i,j} w_{y+i,\,x+j}},
     \qquad
-    \mathrm{denom}_w(x,y) =
-    \sum_{i,j} w_{x+i,\,y+j}
-    \left(P_{i,j} - \bar{P}_w(x,y)\right)^2.
+    \mathrm{denom}_w(y,x) =
+    \sum_{i,j} w_{y+i,\,x+j}
+    \left(P_{i,j} - \bar{P}_w(y,x)\right)^2.
     ```
 
     The corresponding profiled-background statistic is
 
     ```math
-    z_w(x,y) =
-    \frac{\sum_{i,j} w_{x+i,\,y+j}
-        \left(P_{i,j} - \bar{P}_w(x,y)\right)
-        D_{x+i,\,y+j}}
-        {\sqrt{\mathrm{denom}_w(x,y)}}.
+    z_w(y,x) =
+    \frac{\sum_{i,j} w_{y+i,\,x+j}
+        \left(P_{i,j} - \bar{P}_w(y,x)\right)
+        D_{y+i,\,x+j}}
+        {\sqrt{\mathrm{denom}_w(y,x)}}.
     ```
 
     When the sky background dominates the noise and is approximately constant,
@@ -254,8 +254,8 @@ detection. The input for the `kernel` argument can be
   resulting matrix will be used as the kernel.
 - an `Int` giving the FWHM of a [`CircularGaussianPRF`](@ref) model to use for the
   correlation;
-- a `Tuple{Int, Int}` giving the x- and y-direction FWHMs of a general [`GaussianPRF`](@ref)
-  model to use for the correlation.
+- a `Tuple{Int, Int}` giving the ``(y_\mathrm{FWHM}, x_\mathrm{FWHM})`` of a
+  general [`GaussianPRF`](@ref) model to use for the correlation.
 
 ```@docs
 matched_filter

@@ -14,7 +14,7 @@ estimation, and synthetic-image simulation.
     `(x, y)` maps to `image[y, x]`: `y` is the first matrix dimension and
     `x` is the second matrix dimension. This convention applies to source
     positions, peaks, centroids, PSF model centers, fitting, simulation, and
-    internal calculations.
+    internal calculations. See [here](@ref pixel_coords) for more information.
 
 The package is organized around a few composable pieces:
 

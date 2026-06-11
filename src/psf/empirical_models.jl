@@ -33,18 +33,24 @@ Values outside the tabulated image are `flux * fill_value + bkg`.
 ## Centroid and origin
 `x` and `y` give the center of the star *in the image being modeled*. `origin` locates the
 stellar centroid inside the tabulated PSF image, in 1-based array coordinates.
-When evaluating at detector-pixel coordinates `(px, py)` for a star whose putative
-center is at `(x, y)`, the tabulated PSF is sampled at
+When evaluating at detector-pixel coordinates `(py, px)` for a star whose putative
+center is at `(y, x)`, the tabulated PSF is sampled at
 
 ```julia
-u = oversampling[1] * (px - x) + origin[1]
-v = oversampling[2] * (py - y) + origin[2]
+u = oversampling[1] * (px - x) + origin.x
+v = oversampling[2] * (py - y) + origin.y
 ```
 
-Thus changing `x` and `y` moves the source through the detector image, while
+Here `oversampling[1]` is the x (column) oversampling factor and
+`oversampling[2]` is the y (row) oversampling factor. `origin.x` and `origin.y`
+are the 1-based column and row coordinates of the PSF center within `data`.
+The tabulated grid stores `data[row, col]`, i.e. dimension 1 is y (rows) and
+dimension 2 is x (columns).
+
+Thus changing `y` and `x` moves the source through the detector image, while
 changing `origin` changes which point in `data` is interpreted as the PSF
 center. For ordinary fitted sources, `origin` should remain fixed and only
-`x`, `y`, `flux`, and optionally `bkg` should vary.
+`y`, `x`, `flux`, and optionally `bkg` should vary.
 
 ## Oversampling
 Oversampling is useful when many stars sample different subpixel phases of the
@@ -179,18 +185,19 @@ end
 end
 
 @doc raw"""
-    bicubic_interpolate(data, x, y; fill_value=0)
+    bicubic_interpolate(data, y, x; fill_value=0)
 
-Evaluate `data` at 1-based fractional array coordinates `(x, y)` with a
-separable 4x4 cubic-convolution interpolant. Returns `(value, dfdx, dfdy)`,
-where `dfdx` and `dfdy` are derivatives with respect to the input grid
-coordinates.
+Evaluate `data` at 1-based fractional array coordinates `(y, x)`, where `y`
+is the row (first array index) and `x` is the column (second array index),
+using a separable 4x4 cubic-convolution interpolant. Returns `(value, dfdy, dfdx)`,
+where `dfdy` and `dfdx` are derivatives with respect to the row and column
+grid coordinates, respectively.
 
-For a coordinate inside the array, let `lx = floor(x)`, `ly = floor(y)`,
-`dx = x - lx`, and `dy = y - ly`. The interpolation point is treated as lying
-between grid columns `lx` and `lx + 1`, and between rows `ly` and `ly + 1`.
+For a coordinate inside the array, let `ly = floor(y)`, `lx = floor(x)`,
+`dy = y - ly`, and `dx = x - lx`. The interpolation point is treated as lying
+between rows `ly` and `ly + 1`, and between grid columns `lx` and `lx + 1`.
 For each of the four neighboring rows `ly-1:ly+2`, the four samples
-`data[lx-1:lx+2, row]` define a cubic polynomial in `dx`:
+`data[row, lx-1:lx+2]` define a cubic polynomial in `dx`:
 
 ```math
 p(t) = a_0 + a_1 t + a_2 t^2 + a_3 t^3,\qquad 0 \le t \le 1.
@@ -215,7 +222,7 @@ Boundary conditions and assumptions:
 - Coordinates outside the closed array bounds return `(fill_value, 0, 0)`.
 - Inside the array, the 4x4 stencil is clamped at the nearest array edge. This
   is equivalent to constant extrapolation of edge samples for the stencil only.
-- The interpolant is intended for regularly spaced grid samples. `x` and `y`
+- The interpolant is intended for regularly spaced grid samples. `y` and `x`
   are array coordinates, not detector-pixel coordinates.
 """
 function bicubic_interpolate(data::AbstractMatrix, y, x; fill_value = zero(eltype(data)))
@@ -304,8 +311,8 @@ Metadata returned by `fit_psf(ImagePSF, ...)`.
 """
 struct ImagePSFBuildResult{T}
     psf::ImagePSF{T}
-    x::Vector{T}
     y::Vector{T}
+    x::Vector{T}
     flux::Vector{T}
     bkg::Vector{T}
     used::BitVector
