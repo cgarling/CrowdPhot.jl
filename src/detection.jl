@@ -27,8 +27,8 @@ Result of [`matched_filter`](@ref) source detection.
   before applying the final flux-normalizing scale: `√(Σ(P - P̄)^2)` for the
   zero-sum path, or `√(ΣP²)` for the non-zero-sum path.  It converts the raw
   flux estimate to SNR per unit pixel noise in the uniform-weight path.
-- `peaks_x::Vector{Float64}` — x-coordinates (column indices) of detected peaks.
-- `peaks_y::Vector{Float64}` — y-coordinates (row indices) of detected peaks.
+- `peaks::Vector{CartesianIndex{2}}` — detected peak pixels as `(row, column)`
+  Cartesian indices.
 - `peak_significances::Vector{T}` — significance values at each peak.
 - `peak_fluxes::Vector{T}` — matched-filter flux estimate at each peak.
 """
@@ -40,8 +40,7 @@ struct MatchedFilterResult{T}
     significance_map::Matrix{T}
     kernel::Matrix{T}
     kernel_norm::T
-    peaks_x::Vector{Float64}
-    peaks_y::Vector{Float64}
+    peaks::Vector{CartesianIndex{2}}
     peak_significances::Vector{T}
     peak_fluxes::Vector{T}
 end
@@ -219,8 +218,6 @@ function matched_filter(image::AbstractMatrix{T}, kernel::AbstractMatrix;
     sig_peaks = threshold_peaks(peaks, significance, sigma)
 
     # ----- 4. Extract peak information -----
-    peaks_x = Float64[p[2] for p in sig_peaks]
-    peaks_y = Float64[p[1] for p in sig_peaks]
     peak_sigs = T[significance[p] for p in sig_peaks]
     # Flux estimate: for both kernel normalisations, smoothed[p] gives the
     # matched-filter flux estimate directly (kernel scaled so E[corr] = F).
@@ -234,8 +231,7 @@ function matched_filter(image::AbstractMatrix{T}, kernel::AbstractMatrix;
         significance,
         K,
         T(kernel_norm),
-        peaks_x,
-        peaks_y,
+        sig_peaks,
         peak_sigs,
         peak_fluxes,
     )
