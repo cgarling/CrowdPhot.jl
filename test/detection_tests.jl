@@ -17,17 +17,28 @@ function _gaussian_kernel(k::Int, σ::Real)
     return g .* g'
 end
 
-"Place a Gaussian source with flux `F` at sub-pixel position (sx, sy) in `img`."
-function _place_source!(img, sx::Real, sy::Real, flux::Real, σ::Real)
-    H, W = size(img)
+"Place a Gaussian source with flux `F` at sub-pixel matrix position `(x, y)`."
+function _place_source!(img, x::Real, y::Real, flux::Real, σ::Real)
+    X, Y = size(img)
     k = ceil(Int, 8σ) |> x -> isodd(x) ? x : x + 1
-    r0 = max(1, round(Int, sy - k÷2)):min(H, round(Int, sy + k÷2))
-    c0 = max(1, round(Int, sx - k÷2)):min(W, round(Int, sx + k÷2))
-    for r in r0, c in c0
-        dr, dc = r - sy, c - sx
-        img[r, c] += flux * exp(-(dr^2 + dc^2) / (2σ^2)) / (2π * σ^2)
+    xr = max(1, round(Int, x - k÷2)):min(X, round(Int, x + k÷2))
+    yr = max(1, round(Int, y - k÷2)):min(Y, round(Int, y + k÷2))
+    for i in xr, j in yr
+        dx, dy = i - x, j - y
+        img[i, j] += flux * exp(-(dx^2 + dy^2) / (2σ^2)) / (2π * σ^2)
     end
     return img
+end
+
+"Return detected peak x-coordinates in matrix-index convention."
+_peak_xs(result::MatchedFilterResult) = Float64[p[1] for p in result.peaks]
+
+"Return detected peak y-coordinates in matrix-index convention."
+_peak_ys(result::MatchedFilterResult) = Float64[p[2] for p in result.peaks]
+
+"Return the index of the detected peak nearest the supplied x/y coordinates."
+function _nearest_peak(result::MatchedFilterResult, x::Real, y::Real)
+    return argmin([(p[1] - x)^2 + (p[2] - y)^2 for p in result.peaks])
 end
 
 # ---------------------------------------------------------------------------
@@ -49,11 +60,11 @@ end
         result = matched_filter(img, kern; inv_var, sigma=5.0)
 
         # Should find the two brightest sources
-        @test length(result.peaks_x) >= 2
+        @test length(result.peaks) >= 2
         # Brightest source should be near (20, 20)
         brightest = argmax(result.peak_significances)
-        @test abs(result.peaks_x[brightest] - 20) ≤ 2
-        @test abs(result.peaks_y[brightest] - 20) ≤ 2
+        @test abs(_peak_xs(result)[brightest] - 20) ≤ 2
+        @test abs(_peak_ys(result)[brightest] - 20) ≤ 2
     end
 
     @testset "pure noise image yields few or no detections at high sigma" begin
@@ -62,7 +73,7 @@ end
         inv_var = fill(1.0, size(img))  # σ=1
         result = matched_filter(img, kern; inv_var, sigma=5.0)
         # At 5σ, expect ≪ 1 false positive in 10^4 pixels
-        @test length(result.peaks_x) ≤ 3
+        @test length(result.peaks) ≤ 3
     end
 
     @testset "sigma threshold controls detection count" begin
@@ -73,7 +84,7 @@ end
 
         r_high = matched_filter(img, kern; inv_var, sigma=8.0)
         r_low  = matched_filter(img, kern; inv_var, sigma=3.0)
-        @test length(r_low.peaks_x) >= length(r_high.peaks_x)
+        @test length(r_low.peaks) >= length(r_high.peaks)
     end
 end
 
@@ -107,7 +118,7 @@ end
         # Zero-sum should cancel the background automatically
         result = matched_filter(img, kern; normalize_zerosum=true)
         # Find the peak nearest the true position
-        peak_idx = argmin(@. (result.peaks_x - 20)^2 + (result.peaks_y - 20)^2)
+        peak_idx = _nearest_peak(result, 20, 20)
         @test result.peak_fluxes[peak_idx] ≈ 50.0 rtol = 0.05
     end
 
@@ -120,8 +131,8 @@ end
             img = fill(5.0, 40, 40) .+ randn(rng, 40, 40) .* 0.5
             _place_source!(img, 20.0, 20.0, 50.0, σ_psf)
             result = matched_filter(img, kern; normalize_zerosum=true)
-            if !isempty(result.peaks_x)
-                peak_idx = argmin(@. (result.peaks_x - 20)^2 + (result.peaks_y - 20)^2)
+            if !isempty(result.peaks)
+                peak_idx = _nearest_peak(result, 20, 20)
                 push!(fluxes, result.peak_fluxes[peak_idx])
             end
         end
@@ -155,16 +166,16 @@ end
         r_nzs = matched_filter(img_sub, kern; inv_var, normalize_zerosum=false)
 
         # Both should detect the source
-        @test length(r_zs.peaks_x) >= 1
-        @test length(r_nzs.peaks_x) >= 1
+        @test length(r_zs.peaks) >= 1
+        @test length(r_nzs.peaks) >= 1
 
         # The zero-sum significance should be lower by the SNR penalty
         # factor √(1 - (∑P)²/(N·∑P²)).  Compute it from the kernel.
         P = kern
         N = length(P)
         penalty = sqrt(1 - sum(P)^2 / (N * sum(abs2, P)))
-        idx_zs  = argmin(@. (r_zs.peaks_x - 20)^2 + (r_zs.peaks_y - 20)^2)
-        idx_nzs = argmin(@. (r_nzs.peaks_x - 20)^2 + (r_nzs.peaks_y - 20)^2)
+        idx_zs  = _nearest_peak(r_zs, 20, 20)
+        idx_nzs = _nearest_peak(r_nzs, 20, 20)
         ratio = r_zs.peak_significances[idx_zs] / r_nzs.peak_significances[idx_nzs]
         @test ratio ≈ penalty rtol = 0.10
     end
@@ -204,7 +215,7 @@ end
             _place_source!(img, 30.0, 30.0, 30.0, σ_psf)
             inv_var = fill(1 / σ_noise^2, size(img))
             result = matched_filter(img, kern; inv_var, sigma=0.0)
-            peak_idx = argmin(@. (result.peaks_x - 30)^2 + (result.peaks_y - 30)^2)
+            peak_idx = _nearest_peak(result, 30, 30)
             push!(sig_vals, result.peak_significances[peak_idx])
         end
         # Peak significance should be roughly inversely proportional to noise
@@ -228,8 +239,8 @@ end
         r_none = matched_filter(img, kern; sigma=0.0)
 
         # Significances should be related by the noise scaling
-        peak_ivar = argmin(@. (r_ivar.peaks_x - 25)^2 + (r_ivar.peaks_y - 25)^2)
-        peak_none = argmin(@. (r_none.peaks_x - 25)^2 + (r_none.peaks_y - 25)^2)
+        peak_ivar = _nearest_peak(r_ivar, 25, 25)
+        peak_none = _nearest_peak(r_none, 25, 25)
         ratio = r_ivar.peak_significances[peak_ivar] / r_none.peak_significances[peak_none]
         # Without inv_var, significance is in units of σ⁻¹; divide by σ to compare
         @test ratio ≈ 1 / σ rtol = 0.3
@@ -266,14 +277,14 @@ end
         img = randn(rng, 50, 50)
         _place_source!(img, 20.0, 20.0, 20.0, 1.5)
         _place_source!(img, 40.0, 40.0, 20.0, 1.5)
-        # Make the right half of the image very noisy
+        # Make the high-x half of the image very noisy.
         inv_var = ones(50, 50)
-        inv_var[:, 26:end] .= 0.01  # very low weight = very noisy
+        inv_var[26:end, :] .= 0.01  # very low weight = very noisy
         result = matched_filter(img, kern; inv_var, sigma=3.0)
         # Source in quiet region should be detected; source in noisy region may not
-        n_left = count(x -> x < 25, result.peaks_x)
-        n_right = count(x -> x > 25, result.peaks_x)
-        @test n_left ≥ n_right
+        n_low_x = count(p -> p[1] < 25, result.peaks)
+        n_high_x = count(p -> p[1] > 25, result.peaks)
+        @test n_low_x ≥ n_high_x
     end
 
     @testset "inv_var size mismatch throws" begin
@@ -289,8 +300,8 @@ end
         # sep.extract(data, 3.0, err=error, filter_type='conv')    → 0
         # sep.extract(data, 3.0, err=error, filter_type='matched') → 1
         #
-        # Image has spatially varying noise: σ=4 in the upper-left triangle
-        # (row > col) and σ=1 elsewhere.  A source at the center sits at the
+        # Image has spatially varying noise: σ=4 where the first index is
+        # greater than the second and σ=1 elsewhere. A source at the center sits at the
         # boundary between quiet and noisy regions.  Uniform-weight correlation
         # (CrowdPhot's default, analogous to SEP filter_type='conv') gives
         # full weight to the σ=4 pixels and buries the source.  Inverse-variance
@@ -300,7 +311,7 @@ end
         rng_sep = StableRNG(21)
         n = 16
 
-        # σ map: 4 where row > col, 1 elsewhere
+        # σ map: 4 where x > y, 1 elsewhere
         err = ones(n, n)
         for i in 1:n, j in 1:n
             if i > j
@@ -331,13 +342,13 @@ end
         r_weighted = matched_filter(data, kernel; inv_var,
                                     normalize_zerosum=false, sigma=thresh)
 
-        cy, cx = 9, 9  # source center in 1-indexed
+        x0, y0 = 9, 9  # source center in matrix-index convention
 
         # Uniform-weight (SEP conv): source is not detected
-        @test r_uniform.significance_map[cy, cx] < thresh
+        @test r_uniform.significance_map[x0, y0] < thresh
 
         # Inverse-variance weighted (SEP matched): source is detected
-        @test r_weighted.significance_map[cy, cx] >= thresh
+        @test r_weighted.significance_map[x0, y0] >= thresh
     end
 end
 
@@ -445,7 +456,7 @@ end
         result = matched_filter(img, 5; sigma=4.0)
         @test result isa MatchedFilterResult
         @test isodd(size(result.kernel, 1))
-        @test length(result.peaks_x) >= 1
+        @test length(result.peaks) >= 1
     end
 
     @testset "Tuple{Int,Int} FWHM dispatch" begin
@@ -476,9 +487,9 @@ end
         @test size(result.smoothed_image) == (40, 40)
         @test size(result.inv_var) == (40, 40)
         @test size(result.smoothed_inv_var) == (40, 40)
-        @test length(result.peaks_x) == length(result.peaks_y)
-        @test length(result.peaks_x) == length(result.peak_significances)
-        @test length(result.peaks_x) == length(result.peak_fluxes)
+        @test length(result.peaks) == length(result.peak_significances)
+        @test length(result.peaks) == length(result.peak_fluxes)
+        @test eltype(result.peaks) == CartesianIndex{2}
         @test result.kernel_norm > 0
     end
 
@@ -495,9 +506,9 @@ end
         img = randn(rng, 30, 30) .* 0.3
         _place_source!(img, 15.0, 15.0, 25.0, 1.5)
         result = matched_filter(img, kern; sigma=3.0)
-        for i in eachindex(result.peaks_x)
-            @test 1 ≤ result.peaks_x[i] ≤ 30
-            @test 1 ≤ result.peaks_y[i] ≤ 30
+        for p in result.peaks
+            @test 1 ≤ p[1] ≤ 30
+            @test 1 ≤ p[2] ≤ 30
         end
     end
 end
@@ -513,7 +524,7 @@ end
         img = randn(rng, 40, 40)  # pure noise
         inv_var = fill(1.0, size(img))
         result = matched_filter(img, kern; inv_var, sigma=10.0)
-        @test isempty(result.peaks_x)
+        @test isempty(result.peaks)
         @test isempty(result.peak_significances)
     end
 
@@ -554,7 +565,7 @@ end
         inv_var = fill(4.0, size(img))
         result_all = matched_filter(img, kern; inv_var, sigma=0.0)
         result_5   = matched_filter(img, kern; inv_var, sigma=5.0)
-        @test length(result_all.peaks_x) ≥ length(result_5.peaks_x)
+        @test length(result_all.peaks) ≥ length(result_5.peaks)
     end
 
     @testset "sources near image border are detected" begin
@@ -564,6 +575,6 @@ end
         _place_source!(img, 57.0, 57.0, 50.0, 2.0)  # bottom-right corner
         inv_var = fill(25.0, size(img))
         result = matched_filter(img, kern; inv_var, sigma=5.0)
-        @test length(result.peaks_x) ≥ 1  # at least one should be found
+        @test length(result.peaks) ≥ 1  # at least one should be found
     end
 end
