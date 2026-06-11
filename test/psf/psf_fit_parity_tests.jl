@@ -397,9 +397,9 @@ end
     inds = (1:16, 1:16)
     grid_model = CircularGaussianPRF(x = 8.0, y = 8.0, fwhm = 2.4, flux = 1.0, bkg = 0.0)
     psf_data = evaluate.(grid_model, inds[1], inds[2]')
-    truth = ImagePSF(psf_data; x = 8.35, y = 7.75, flux = 300.0, bkg = 4.0, origin = (8.0, 8.0), normalize = true)
+    truth = ImagePSF(psf_data; x = 8.35, y = 7.75, flux = 300.0, bkg = 4.0, origin = (y = 8.0, x = 8.0), normalize = true)
     img = evaluate.(truth, inds[1], inds[2]')
-    init = ImagePSF(psf_data; x = 8.0, y = 8.1, flux = 260.0, bkg = 3.5, origin = (8.0, 8.0), normalize = true)
+    init = ImagePSF(psf_data; x = 8.0, y = 8.1, flux = 260.0, bkg = 3.5, origin = (y = 8.0, x = 8.0), normalize = true)
     generic_sig = Tuple{AbstractPSFModel{Float64}, AbstractMatrix, Any}
 
     best_generic, result_generic = invoke(

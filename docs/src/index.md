@@ -9,6 +9,13 @@ tools for point-spread-function (PSF) modeling and fitting, robust
 Levenberg-Marquardt optimization, source detection and centroiding, background
 estimation, and synthetic-image simulation.
 
+!!! note "Coordinate convention"
+    CrowdPhot uses matrix-index coordinates throughout the package. A position
+    `(x, y)` maps to `image[y, x]`: `y` is the first matrix dimension and
+    `x` is the second matrix dimension. This convention applies to source
+    positions, peaks, centroids, PSF model centers, fitting, simulation, and
+    internal calculations.
+
 The package is organized around a few composable pieces:
 
 - **PSF models and fitting:** analytic PSF/PRF models, image-backed empirical

@@ -17,28 +17,28 @@ function _gaussian_kernel(k::Int, σ::Real)
     return g .* g'
 end
 
-"Place a Gaussian source with flux `F` at sub-pixel matrix position `(x, y)`."
+"Place a Gaussian source with flux `F` at sub-pixel position `(x, y)`."
 function _place_source!(img, x::Real, y::Real, flux::Real, σ::Real)
-    X, Y = size(img)
+    Y, X = size(img)
     k = ceil(Int, 8σ) |> x -> isodd(x) ? x : x + 1
     xr = max(1, round(Int, x - k÷2)):min(X, round(Int, x + k÷2))
     yr = max(1, round(Int, y - k÷2)):min(Y, round(Int, y + k÷2))
-    for i in xr, j in yr
-        dx, dy = i - x, j - y
+    for j in xr, i in yr
+        dx, dy = j - x, i - y
         img[i, j] += flux * exp(-(dx^2 + dy^2) / (2σ^2)) / (2π * σ^2)
     end
     return img
 end
 
 "Return detected peak x-coordinates in matrix-index convention."
-_peak_xs(result::MatchedFilterResult) = Float64[p[1] for p in result.peaks]
+_peak_xs(result::MatchedFilterResult) = Float64[p[2] for p in result.peaks]
 
 "Return detected peak y-coordinates in matrix-index convention."
-_peak_ys(result::MatchedFilterResult) = Float64[p[2] for p in result.peaks]
+_peak_ys(result::MatchedFilterResult) = Float64[p[1] for p in result.peaks]
 
 "Return the index of the detected peak nearest the supplied x/y coordinates."
 function _nearest_peak(result::MatchedFilterResult, x::Real, y::Real)
-    return argmin([(p[1] - x)^2 + (p[2] - y)^2 for p in result.peaks])
+    return argmin([(p[2] - x)^2 + (p[1] - y)^2 for p in result.peaks])
 end
 
 # ---------------------------------------------------------------------------
@@ -279,11 +279,11 @@ end
         _place_source!(img, 40.0, 40.0, 20.0, 1.5)
         # Make the high-x half of the image very noisy.
         inv_var = ones(50, 50)
-        inv_var[26:end, :] .= 0.01  # very low weight = very noisy
+        inv_var[:, 26:end] .= 0.01  # very low weight = very noisy
         result = matched_filter(img, kern; inv_var, sigma=3.0)
         # Source in quiet region should be detected; source in noisy region may not
-        n_low_x = count(p -> p[1] < 25, result.peaks)
-        n_high_x = count(p -> p[1] > 25, result.peaks)
+        n_low_x = count(p -> p[2] < 25, result.peaks)
+        n_high_x = count(p -> p[2] > 25, result.peaks)
         @test n_low_x ≥ n_high_x
     end
 
@@ -311,7 +311,7 @@ end
         rng_sep = StableRNG(21)
         n = 16
 
-        # σ map: 4 where x > y, 1 elsewhere
+        # σ map: 4 where y > x, 1 elsewhere
         err = ones(n, n)
         for i in 1:n, j in 1:n
             if i > j
@@ -342,13 +342,13 @@ end
         r_weighted = matched_filter(data, kernel; inv_var,
                                     normalize_zerosum=false, sigma=thresh)
 
-        x0, y0 = 9, 9  # source center in matrix-index convention
+        x0, y0 = 9, 9  # source center
 
         # Uniform-weight (SEP conv): source is not detected
-        @test r_uniform.significance_map[x0, y0] < thresh
+        @test r_uniform.significance_map[y0, x0] < thresh
 
         # Inverse-variance weighted (SEP matched): source is detected
-        @test r_weighted.significance_map[x0, y0] >= thresh
+        @test r_weighted.significance_map[y0, x0] >= thresh
     end
 end
 

@@ -138,13 +138,13 @@ SUITE["empirical"]["fill_grid_holes!"] = @benchmarkable fill_grid_holes!(x) setu
 
 for n in (5, 11, 21)
     SUITE["empirical"]["ImagePSF fit_star, size=($n, $n)"] = @benchmarkable fit_star(init, image, inds; max_iter = 100) setup=(begin
-        origin = (($n + 1) / 2, ($n + 1) / 2)
-        grid_model = CircularGaussianPRF(x = origin[1], y = origin[2], fwhm = 2.4, flux = 1, bkg = 0)
+        origin = (y = ($n + 1) / 2, x = ($n + 1) / 2)
+        grid_model = CircularGaussianPRF(x = origin.x, y = origin.y, fwhm = 2.4, flux = 1, bkg = 0)
         psf_data = evaluate.(grid_model, 1:$n, (1:$n)')
-        truth = ImagePSF(psf_data; x = origin[1] + 0.35, y = origin[2] - 0.25,
+        truth = ImagePSF(psf_data; x = origin.x + 0.35, y = origin.y - 0.25,
             flux = 300.0, bkg = 4.0, origin, normalize = true)
         image = evaluate.(truth, 1:$n, (1:$n)')
-        init = ImagePSF(psf_data; x = origin[1], y = origin[2] + 0.1,
+        init = ImagePSF(psf_data; x = origin.x, y = origin.y + 0.1,
             flux = 260.0, bkg = 3.5, origin, normalize = true)
         inds = (1:$n, 1:$n)
     end)
@@ -152,7 +152,7 @@ end
 
 for n in (50, 100)
     SUITE["empirical"]["ImagePSF fit_psf, n=$n"] = @benchmarkable psf, result =
-        fit_psf(ImagePSF, image, sources.x, sources.y;
+        fit_psf(ImagePSF, image, sources.y, sources.x;
             psf_rad = 5.0, oversampling = 2, smooth = true, recenter = false,
             reweight = nothing) setup=(begin
                 truth_model = CircularGaussianPRF(x = 0, y = 0, fwhm = 1.8, flux = 1, bkg = 0)

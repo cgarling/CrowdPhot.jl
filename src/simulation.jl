@@ -94,18 +94,18 @@ end
 
 ### Source placement utilities with grid-based acceleration for large `min_separation` ###
 
-function _source_grid_cell(x, y, xmin, ymin, inv_cell_size)
+function _source_grid_cell(y, x, ymin, xmin, inv_cell_size)
     # Anchor grid coordinates to the valid placement region.
-    return (floor(Int, (x - xmin) * inv_cell_size), floor(Int, (y - ymin) * inv_cell_size))
+    return (floor(Int, (y - ymin) * inv_cell_size), floor(Int, (x - xmin) * inv_cell_size))
 end
 
-function _candidate_is_separated(x, y, xs, ys, grid, next_source, minsep2, xmin, ymin, inv_cell_size)
+function _candidate_is_separated(y, x, ys, xs, grid, next_source, minsep2, ymin, xmin, inv_cell_size)
     # Limit exact separation checks to sources in nearby grid cells.
-    cx, cy = _source_grid_cell(x, y, xmin, ymin, inv_cell_size)
-    for ix in (cx - 1):(cx + 1), iy in (cy - 1):(cy + 1)
-        k = get(grid, (ix, iy), 0)
+    cy, cx = _source_grid_cell(y, x, ymin, xmin, inv_cell_size)
+    for iy in (cy - 1):(cy + 1), ix in (cx - 1):(cx + 1)
+        k = get(grid, (iy, ix), 0)
         while k != 0
-            if (x - xs[k])^2 + (y - ys[k])^2 < minsep2
+            if (y - ys[k])^2 + (x - xs[k])^2 < minsep2
                 return false
             end
             k = next_source[k]
@@ -114,9 +114,9 @@ function _candidate_is_separated(x, y, xs, ys, grid, next_source, minsep2, xmin,
     return true
 end
 
-function _insert_source!(grid, next_source, source_index, x, y, xmin, ymin, inv_cell_size)
+function _insert_source!(grid, next_source, source_index, y, x, ymin, xmin, inv_cell_size)
     # Link the source into its grid cell without allocating a per-cell vector.
-    cell = _source_grid_cell(x, y, xmin, ymin, inv_cell_size)
+    cell = _source_grid_cell(y, x, ymin, xmin, inv_cell_size)
     next_source[source_index] = get(grid, cell, 0)
     grid[cell] = source_index
     return grid
@@ -183,15 +183,15 @@ function simulate_sources(
     # Define the valid placement region after excluding the image border.
     n_sources ≥ 0 || throw(ArgumentError("`n_sources` must be non-negative"))
     # Treat scalar inputs as identical values on both axes.
-    bx, by = if length(border) == 1
+    by, bx = if length(border) == 1
         (border, border)
     elseif length(border) == 2
         (border[1], border[2])
     else
         throw(ArgumentError("`border` must be a scalar or length-2 tuple/vector"))
     end
-    xmin, xmax = 1 + float(bx), float(shape[1]) - float(bx)
-    ymin, ymax = 1 + float(by), float(shape[2]) - float(by)
+    xmin, xmax = 1 + float(bx), float(shape[2]) - float(bx)
+    ymin, ymax = 1 + float(by), float(shape[1]) - float(by)
     xmin ≤ xmax && ymin ≤ ymax || throw(ArgumentError("border leaves no valid source-placement area"))
     minsep = float(min_separation)
     minsep ≥ 0 || throw(ArgumentError("`min_separation` must be non-negative"))
@@ -212,7 +212,7 @@ function simulate_sources(
         attempts += 1
         x = xmin + rand(rng) * (xmax - xmin)
         y = ymin + rand(rng) * (ymax - ymin)
-        !use_grid || _candidate_is_separated(x, y, xs, ys, grid, next_source, minsep2, xmin, ymin, inv_cell_size) || continue
+        !use_grid || _candidate_is_separated(y, x, ys, xs, grid, next_source, minsep2, ymin, xmin, inv_cell_size) || continue
         # Draw either flux directly or infer it from a requested SNR.
         f = if isnothing(snr)
             _sample_flux(rng, flux, flux_distribution, flux_power)
@@ -225,7 +225,7 @@ function simulate_sources(
         ys[n_generated] = y
         fs[n_generated] = f
         # Log the source in the grid for efficient separation checks of future candidates.
-        !use_grid || _insert_source!(grid, next_source, n_generated, x, y, xmin, ymin, inv_cell_size)
+        !use_grid || _insert_source!(grid, next_source, n_generated, y, x, ymin, xmin, inv_cell_size)
     end
     if attempts >= max_attempts
         @warn "Reached maximum attempts ($max_attempts) with only $(n_generated) sources generated; consider reducing `min_separation` or increasing `max_attempts`. Returning the $(n_generated) sources that were generated."
@@ -253,18 +253,18 @@ function _source_vectors(sources)
     return xs, ys, fs
 end
 
-function _source_ranges(model, x, y, model_radius, image)
+function _source_ranges(model, y, x, model_radius, image)
     # Use the model extent unless the caller supplies a fixed render radius.
     if isnothing(model_radius)
-        (xlo, xhi), (ylo, yhi) = extent(model)
+        (ylo, yhi), (xlo, xhi) = extent(model)
     else
-        xlo, xhi = x - model_radius, x + model_radius
         ylo, yhi = y - model_radius, y + model_radius
+        xlo, xhi = x - model_radius, x + model_radius
     end
-    # Clip the render footprint to the output image.
-    xr = max(first(axes(image, 1)), floor(Int, xlo)):min(last(axes(image, 1)), ceil(Int, xhi))
-    yr = max(first(axes(image, 2)), floor(Int, ylo)):min(last(axes(image, 2)), ceil(Int, yhi))
-    return xr, yr
+    # Clip the render footprint to the output image in matrix order.
+    yr = max(first(axes(image, 1)), floor(Int, ylo)):min(last(axes(image, 1)), ceil(Int, yhi))
+    xr = max(first(axes(image, 2)), floor(Int, xlo)):min(last(axes(image, 2)), ceil(Int, xhi))
+    return yr, xr
 end
 
 """
@@ -286,8 +286,8 @@ function render_sources!(
     for k in eachindex(xs, ys, fs)
         # Render each source with zero model background; image background is added separately.
         m = ConstructionBase.setproperties(model, (x = xs[k], y = ys[k], flux = fs[k], bkg = zero(float(eltype(image)))))
-        xr, yr = _source_ranges(m, xs[k], ys[k], model_radius, image)
-        for i in xr, j in yr
+        yr, xr = _source_ranges(m, ys[k], xs[k], model_radius, image)
+        for j in xr, i in yr
             image[i, j] += evaluate(m, i, j)
         end
     end
@@ -522,8 +522,8 @@ function make_gaussians_image(
     end
 
     # Draw source positions and fluxes.
-    xmin, xmax = 1 + border, H - border
-    ymin, ymax = 1 + border, W - border
+    xmin, xmax = 1 + border, W - border
+    ymin, ymax = 1 + border, H - border
     lo, hi = float(flux_range[1]), float(flux_range[2])
     lo > 0 && hi ≥ lo || throw(ArgumentError("`flux_range` must be positive and ordered"))
 
@@ -538,10 +538,10 @@ function make_gaussians_image(
         # Log-uniform flux.
         f   = exp(log(lo) + rand(rng) * (log(hi) - log(lo)))
         fval = f * norm
-        ilo, ihi = max(1, floor(Int, x0) - half), min(H, ceil(Int, x0) + half)
-        jlo, jhi = max(1, floor(Int, y0) - half), min(W, ceil(Int, y0) + half)
-        for i in ilo:ihi, j in jlo:jhi
-            img[i, j] += fval * exp(-((i - x0)^2 + (j - y0)^2) * inv2σ2)
+        ilo, ihi = max(1, floor(Int, y0) - half), min(H, ceil(Int, y0) + half)
+        jlo, jhi = max(1, floor(Int, x0) - half), min(W, ceil(Int, x0) + half)
+        for j in jlo:jhi, i in ilo:ihi
+            img[i, j] += fval * exp(-((j - x0)^2 + (i - y0)^2) * inv2σ2)
         end
     end
 

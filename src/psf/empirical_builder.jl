@@ -29,8 +29,8 @@ const _QUARTIC_SMOOTHING_KERNEL = (
     return x ≥ zero(x) ? floor(Int, x + oftype(x, 0.5)) : ceil(Int, x - oftype(x, 0.5))
 end
 
-@inline function _pixel_wholly_inside(i, j, x, y, r)
-    return (abs(i - x) + 0.5)^2 + (abs(j - y) + 0.5)^2 ≤ r^2
+@inline function _pixel_wholly_inside(i, j, y, x, r)
+    return (abs(j - x) + 0.5)^2 + (abs(i - y) + 0.5)^2 ≤ r^2
 end
 
 # ------------------------------------------------------------------------------
@@ -82,7 +82,7 @@ all algorithm toggles for one `build_epsf` run.
 """
 struct BuilderState{T}
     shape::Tuple{Int, Int}
-    origin::Tuple{T, T}
+    origin::NamedTuple{(:y, :x), Tuple{T, T}}
     oversampling::Tuple{Int, Int}
     sigma_clip::T
     sample_clip::T
@@ -102,18 +102,18 @@ function BuilderState(
     # Choose an odd supersampled PSF grid with a central origin.
     radius = if isnothing(psf_radius)
         maximum(stars) do star
-            maximum(max(abs(idx[1] - star.x), abs(idx[2] - star.y)) for idx in star.pixels)
+            maximum(max(abs(idx[2] - star.x), abs(idx[1] - star.y)) for idx in star.pixels)
         end
     else
         T(psf_radius)
     end
     nx = 2 * ceil(Int, radius * os[1]) + 1
     ny = 2 * ceil(Int, radius * os[2]) + 1
-    shape = (max(nx, 5), max(ny, 5))
+    shape = (max(ny, 5), max(nx, 5))
     isodd(shape[1]) || (shape = (shape[1] + 1, shape[2]))
     isodd(shape[2]) || (shape = (shape[1], shape[2] + 1))
     # Central pixel is the geometric origin so (shape+1)/2 is exact.
-    origin = (T((shape[1] + 1) / 2), T((shape[2] + 1) / 2))
+    origin = (y = T((shape[1] + 1) / 2), x = T((shape[2] + 1) / 2))
     return BuilderState{T}(
         shape, origin, os,
         T(sigma_clip), T(sample_clip), smooth, recenter,
@@ -168,7 +168,7 @@ function estimate_initial_star_params(star::EmpiricalStar{T}, image) where {T}
 end
 
 function _normalize_cutout_inds(inds)
-    # Treat one `(xrange, yrange)` tuple as a single cutout, not two cutouts.
+    # Treat one `(yrange, xrange)` tuple as a single cutout, not two cutouts.
     if inds isa Tuple && length(inds) == 2 && inds[1] isa AbstractUnitRange && inds[2] isa AbstractUnitRange
         return (inds,)
     end
@@ -183,13 +183,13 @@ The cutout bounding box extends ±`psf_rad` around each star center; all pixels
 within that box are stored for ePSF construction. Each cutout gets initial
 centroid, flux, and background estimates.
 """
-function extract_stars(image, x, y, psf_rad; drop_edge::Bool)
-    xs = collect(x)
+function extract_stars(image, y, x, psf_rad; drop_edge::Bool)
     ys = collect(y)
+    xs = collect(x)
     length(xs) == length(ys) || throw(ArgumentError("`x` and `y` must have the same length"))
     T = promote_type(eltype(image), eltype(xs), eltype(ys), typeof(psf_rad))
     T = T <: Integer ? Float64 : float(T)
-    ax, ay = axes(image)
+    ay, ax = axes(image)
     stars = EmpiricalStar{T}[]
     for k in eachindex(xs, ys)
         xk, yk = T(xs[k]), T(ys[k])
@@ -204,9 +204,9 @@ function extract_stars(image, x, y, psf_rad; drop_edge::Bool)
         end
 
         # Include all pixels in the cutout for ePSF construction.
-        pix = vec(collect(CartesianIndices((xlo:xhi, ylo:yhi))))
+        pix = vec(collect(CartesianIndices((ylo:yhi, xlo:xhi))))
         isempty(pix) && throw(ArgumentError("`psf_rad` leaves no usable pixels for star $k"))
-        star = EmpiricalStar((xlo:xhi, ylo:yhi), pix, xk, yk, one(T), zero(T), true, false, T(Inf))
+        star = EmpiricalStar((ylo:yhi, xlo:xhi), pix, xk, yk, one(T), zero(T), true, false, T(Inf))
         star = estimate_initial_star_params(star, image)
         push!(stars, star)
     end
@@ -234,16 +234,16 @@ function extract_stars(image, inds; x = nothing, y = nothing)
     for k in 1:n
         c = cutouts[k]
         length(c) == 2 || throw(ArgumentError("each cutout must be a tuple of two ranges"))
-        xr = Int(first(c[1])):Int(last(c[1]))
-        yr = Int(first(c[2])):Int(last(c[2]))
-        first(axes(image, 1)) ≤ first(xr) && last(xr) ≤ last(axes(image, 1)) ||
-            throw(ArgumentError("x range for cutout $k is outside the image"))
-        first(axes(image, 2)) ≤ first(yr) && last(yr) ≤ last(axes(image, 2)) ||
-            throw(ArgumentError("y range for cutout $k is outside the image"))
+        yr = Int(first(c[1])):Int(last(c[1]))
+        xr = Int(first(c[2])):Int(last(c[2]))
+        first(axes(image, 1)) ≤ first(yr) && last(yr) ≤ last(axes(image, 1)) ||
+            throw(ArgumentError("first range for cutout $k is outside the image"))
+        first(axes(image, 2)) ≤ first(xr) && last(xr) ≤ last(axes(image, 2)) ||
+            throw(ArgumentError("second range for cutout $k is outside the image"))
         xk = isnothing(x) ? T((first(xr) + last(xr)) / 2) : T(x[k])
         yk = isnothing(y) ? T((first(yr) + last(yr)) / 2) : T(y[k])
-        pix = vec(collect(CartesianIndices((xr, yr))))
-        star = EmpiricalStar((xr, yr), pix, xk, yk, one(T), zero(T), true, false, T(Inf))
+        pix = vec(collect(CartesianIndices((yr, xr))))
+        star = EmpiricalStar((yr, xr), pix, xk, yk, one(T), zero(T), true, false, T(Inf))
         star = estimate_initial_star_params(star, image)
         push!(stars, star)
     end
@@ -280,8 +280,8 @@ end
 Search outward from `(i, j)` along one axis until four finite samples are found.
 """
 function nearest_finite_samples(data, i, j; along_x::Bool)
-    n = along_x ? size(data, 1) : size(data, 2)
-    center = along_x ? i : j
+    n = along_x ? size(data, 2) : size(data, 1)
+    center = along_x ? j : i
     candidates = Int[]
     for r in 0:n
         for sgn in (-1, 1)
@@ -290,7 +290,7 @@ function nearest_finite_samples(data, i, j; along_x::Bool)
             if r == 0 && sgn == 1
                 continue
             end
-            v = along_x ? data[idx, j] : data[i, idx]
+            v = along_x ? data[i, idx] : data[idx, j]
             if isfinite(v)
                 push!(candidates, idx)
                 length(candidates) == 4 && return candidates
@@ -307,13 +307,13 @@ Check whether `data` has finite samples on both sides of `(i, j)` along one
 axis, so infill can interpolate rather than extrapolate.
 """
 function has_finite_support_on_both_sides(data, i, j; along_x::Bool)
-    n = along_x ? size(data, 1) : size(data, 2)
-    center = along_x ? i : j
+    n = along_x ? size(data, 2) : size(data, 1)
+    center = along_x ? j : i
     has_lo = false
     has_hi = false
     for idx in 1:n
         idx == center && continue
-        v = along_x ? data[idx, j] : data[i, idx]
+        v = along_x ? data[i, idx] : data[idx, j]
         isfinite(v) || continue
         has_lo |= idx < center
         has_hi |= idx > center
@@ -363,15 +363,15 @@ default to allow infill growth without risking infinite loops.
 """
 function fill_grid_holes!(data; maxiter::Int = 6)
     T = eltype(data)
-    nx, ny = size(data)
+    ny, nx = size(data)
     n_holes = count(!isfinite, data)
     n_holes == 0 && return data
     if n_holes / (nx * ny) > 0.1
         @warn "more than 10% of the ePSF grid is missing; infill may be unreliable"
     end
 
-    fillable = falses(nx, ny)
-    for j in 1:ny, i in 1:nx
+    fillable = falses(ny, nx)
+    for j in 1:nx, i in 1:ny
         if !isfinite(data[i, j])
             fillable[i, j] = has_finite_support_on_both_sides(data, i, j; along_x = true) &&
                 has_finite_support_on_both_sides(data, i, j; along_x = false)
@@ -382,25 +382,25 @@ function fill_grid_holes!(data; maxiter::Int = 6)
     for _ in 1:maxiter
         changed = false
         old = copy(data)
-        for j in 1:ny, i in 1:nx
+        for j in 1:nx, i in 1:ny
             isfinite(old[i, j]) && continue
             fillable[i, j] || continue
             yinds = nearest_finite_samples(old, i, j; along_x = false)
             length(yinds) == 4 || continue
-            any(yy -> yy < j, yinds) && any(yy -> yy > j, yinds) || continue
+            any(yy -> yy < i, yinds) && any(yy -> yy > i, yinds) || continue
             row_vals = T[]
             good_y = Int[]
             for yy in yinds
-                has_finite_support_on_both_sides(old, i, yy; along_x = true) || continue
-                xinds = nearest_finite_samples(old, i, yy; along_x = true)
+                has_finite_support_on_both_sides(old, yy, j; along_x = true) || continue
+                xinds = nearest_finite_samples(old, yy, j; along_x = true)
                 length(xinds) == 4 || continue
-                any(xx -> xx < i, xinds) && any(xx -> xx > i, xinds) || continue
-                vals = T[old[xx, yy] for xx in xinds]
-                push!(row_vals, cubic_lagrange_interpolate(xinds, vals, i))
+                any(xx -> xx < j, xinds) && any(xx -> xx > j, xinds) || continue
+                vals = T[old[yy, xx] for xx in xinds]
+                push!(row_vals, cubic_lagrange_interpolate(xinds, vals, j))
                 push!(good_y, yy)
             end
             if length(row_vals) == 4
-                data[i, j] = cubic_lagrange_interpolate(good_y, row_vals, j)
+                data[i, j] = cubic_lagrange_interpolate(good_y, row_vals, i)
                 changed = true
             end
         end
@@ -411,16 +411,16 @@ function fill_grid_holes!(data; maxiter::Int = 6)
     cx = T((nx + 1) / 2)
     cy = T((ny + 1) / 2)
     old = copy(data)
-    for j in 1:ny, i in 1:nx
+    for j in 1:nx, i in 1:ny
         isfinite(old[i, j]) && continue
         fillable[i, j] && continue
         rs = T[]
         logs = T[]
         vals = T[]
-        for jj in max(1, j - 2):min(ny, j + 2), ii in max(1, i - 2):min(nx, i + 2)
+        for jj in max(1, j - 2):min(nx, j + 2), ii in max(1, i - 2):min(ny, i + 2)
             v = old[ii, jj]
             if isfinite(v) && v > zero(T)
-                push!(rs, hypot(T(ii) - cx, T(jj) - cy))
+                push!(rs, hypot(T(jj) - cx, T(ii) - cy))
                 push!(logs, log(T(v)))
                 push!(vals, T(v))
             end
@@ -438,7 +438,7 @@ function fill_grid_holes!(data; maxiter::Int = 6)
         slope < zero(T) || continue
         intercept = lmean - slope * rmean
 
-        target_r = hypot(T(i) - cx, T(j) - cy)
+        target_r = hypot(T(j) - cx, T(i) - cy)
         target_r ≥ minimum(rs) || continue
         value = exp(intercept + slope * target_r)
         if isfinite(value) && zero(T) < value ≤ maximum(vals)
@@ -450,10 +450,10 @@ function fill_grid_holes!(data; maxiter::Int = 6)
     for _ in 1:maxiter
         changed = false
         old = copy(data)
-        for j in 1:ny, i in 1:nx
+        for j in 1:nx, i in 1:ny
             isfinite(old[i, j]) && continue
             vals = T[]
-            for jj in max(1, j - 2):min(ny, j + 2), ii in max(1, i - 2):min(nx, i + 2)
+            for jj in max(1, j - 2):min(nx, j + 2), ii in max(1, i - 2):min(ny, i + 2)
                 isfinite(old[ii, jj]) && push!(vals, old[ii, jj])
             end
             if !isempty(vals)
@@ -480,10 +480,10 @@ Project each valid, normalized stellar pixel onto the oversampled ePSF grid,
 returning per-cell sample lists.
 """
 function project_star_pixels_to_grid(image, stars, state::BuilderState{T}, badmask) where {T}
-    nx, ny = state.shape
+    ny, nx = state.shape
     cells = [T[] for _ in 1:(nx * ny)]
     sx, sy = state.oversampling
-    ox, oy = state.origin
+    ox, oy = state.origin.x, state.origin.y
     for star in stars
         star.used || continue
         isfinite(star.flux) && star.flux > eps(T) || continue
@@ -491,14 +491,14 @@ function project_star_pixels_to_grid(image, stars, state::BuilderState{T}, badma
             isnothing(badmask) || !badmask[idx] || continue
             v = image[idx]
             isfinite(v) || continue
-            gx = _round_half_away(T(ox) + T(sx) * (T(idx[1]) - star.x))
-            gy = _round_half_away(T(oy) + T(sy) * (T(idx[2]) - star.y))
+            gx = _round_half_away(T(ox) + T(sx) * (T(idx[2]) - star.x))
+            gy = _round_half_away(T(oy) + T(sy) * (T(idx[1]) - star.y))
             1 ≤ gx ≤ nx && 1 ≤ gy ≤ ny || continue
             sample = T(v - star.bkg) / star.flux
             if abs(sample) > state.sample_clip
                 continue
             end
-            push!(cells[gx + (gy - 1) * nx], sample)
+            push!(cells[gy + (gx - 1) * ny], sample)
         end
     end
     return cells
@@ -511,11 +511,11 @@ Apply sigma-clipped median combination to each ePSF cell, returning a grid
 with NaN markers for unfilled cells.
 """
 function robust_combine_grid_cells(cells, state::BuilderState{T}) where {T}
-    nx, ny = state.shape
-    data = fill(T(NaN), nx, ny)
-    for gy in 1:ny, gx in 1:nx
-        vals = cells[gx + (gy - 1) * nx]
-        isempty(vals) || (data[gx, gy] = _robust_location(vals, state.sigma_clip))
+    ny, nx = state.shape
+    data = fill(T(NaN), ny, nx)
+    for gx in 1:nx, gy in 1:ny
+        vals = cells[gy + (gx - 1) * ny]
+        isempty(vals) || (data[gy, gx] = _robust_location(vals, state.sigma_clip))
     end
     return data
 end
@@ -528,13 +528,13 @@ Return a quartic-smoothed copy of an empirical ePSF grid using the fixed
 clamping to the nearest valid grid cell.
 """
 function smooth_grid_quartic!(data::AbstractMatrix{T}) where {T}
-    nx, ny = size(data)
+    ny, nx = size(data)
     out = similar(data)
-    for j in 1:ny, i in 1:nx
+    for j in 1:nx, i in 1:ny
         acc = zero(T)
         for kj in 1:5, ki in 1:5
-            ii = clamp(i + ki - 3, 1, nx)
-            jj = clamp(j + kj - 3, 1, ny)
+            ii = clamp(i + kj - 3, 1, ny)
+            jj = clamp(j + ki - 3, 1, nx)
             acc += T(_QUARTIC_SMOOTHING_KERNEL[kj][ki]) * data[ii, jj]
         end
         out[i, j] = acc
@@ -559,13 +559,13 @@ function recenter_grid_to_origin!(data, origin, oversampling)
     cy = zero(T)
     for j in axes(data, 2), i in axes(data, 1)
         w = weights[i, j]
-        cx += T(i) * w
-        cy += T(j) * w
+        cx += T(j) * w
+        cy += T(i) * w
     end
     cx /= s
     cy /= s
-    dx = cx - T(origin[1])
-    dy = cy - T(origin[2])
+    dx = cx - T(origin.x)
+    dy = cy - T(origin.y)
     if abs(dx) < T(1.0e-6) && abs(dy) < T(1.0e-6)
         return data
     end
@@ -575,7 +575,7 @@ function recenter_grid_to_origin!(data, origin, oversampling)
     end
     out = similar(data)
     for j in axes(data, 2), i in axes(data, 1)
-        out[i, j], _, _ = bicubic_interpolate(data, T(i) + dx, T(j) + dy; fill_value = zero(T))
+        out[i, j], _, _ = bicubic_interpolate(data, T(i) + dy, T(j) + dx; fill_value = zero(T))
     end
     return out
 end
@@ -634,7 +634,7 @@ function finite_unmasked_pixels(star, image, badmask, fit_rad)
         isnothing(badmask) || !badmask[idx] || continue
         isfinite(image[idx]) || continue
         if !isnothing(fit_rad)
-            _pixel_wholly_inside(idx[1], idx[2], star.x, star.y, fit_rad) || continue
+            _pixel_wholly_inside(idx[1], idx[2], star.y, star.x, fit_rad) || continue
         end
         push!(pix, idx)
     end
@@ -892,13 +892,13 @@ the circular aperture (pixel-wholly-inside test) used when fitting each star's
 centroid and flux against the current ePSF; defaults to `psf_rad`.
 """
 function fit_psf(
-        ::Type{ImagePSF}, image::AbstractMatrix, x, y;
+        ::Type{ImagePSF}, image::AbstractMatrix, y, x;
         psf_rad::Real,
         fit_rad::Real = psf_rad,
         drop_edge::Bool = true,
         kwargs...
     )
-    stars = extract_stars(image, x, y, psf_rad; drop_edge)
+    stars = extract_stars(image, y, x, psf_rad; drop_edge)
     return build_epsf(image, stars; psf_radius = psf_rad, fit_rad, kwargs...)
 end
 

@@ -15,10 +15,10 @@ Evaluate an analytic unit-flux model on the same oversampled grid as an
 function _truth_grid(model, psf::ImagePSF)
     # Convert each oversampled grid point into detector-pixel offsets.
     truth = similar(psf.data)
-    ox, oy = psf.origin
+    ox, oy = psf.origin.x, psf.origin.y
     sx, sy = psf.oversampling
     for j in axes(truth, 2), i in axes(truth, 1)
-        truth[i, j] = evaluate(model, (i - ox) / sx, (j - oy) / sy)
+        truth[i, j] = evaluate(model, (i - oy) / sy, (j - ox) / sx)
     end
     # Match ImagePSF's normalization for direct array comparisons.
     truth .*= prod(psf.oversampling) / sum(truth)
@@ -31,12 +31,13 @@ end
     data = [exp(-((i - 4)^2 + (j - 4)^2) / 5) for i in 1:7, j in 1:7]
     model = ImagePSF(data; x = 10.3, y = 11.4, flux = 120.0, bkg = 7.0, oversampling = 2, normalize = true)
 
-    @test centroid(model) == (10.3, 11.4)
+    @test centroid(model) == (11.4, 10.3)
     @test integral(model) == 120.0
     @test background(model) == 7.0
     @test sum(model.data) ≈ 4.0
-    @test extent(model) == ((8.8, 11.8), (9.9, 12.9))
+    @test extent(model) == ((9.9, 12.9), (8.8, 11.8))
     @test evaluate(model, -100, -100) == 7.0
+    @test ImagePSF(data; origin = (x = 4, y = 5)).origin == (y = 5.0, x = 4.0)
 
     fill_model = ImagePSF(data; x = 0, y = 0, flux = 4, bkg = 1, fill_value = 0.25)
     @test evaluate(fill_model, -100, -100) == 2.0
@@ -48,8 +49,8 @@ end
     @test updated.flux === 2.0
     @test updated.data === model.data # Identity check for array reuse
 
-    f, g = evaluate_fg(model, 10.8, 11.9)
-    @test f ≈ evaluate(model, 10.8, 11.9)
+    f, g = evaluate_fg(model, 11.9, 10.8)
+    @test f ≈ evaluate(model, 11.9, 10.8)
 
     # Compare the analytic ImagePSF gradient against finite differences.
     p0 = [model.x, model.y, model.flux, model.bkg]
@@ -62,7 +63,7 @@ end
         pminus[k] -= h
         mplus = ImagePSF(model.data; x = pplus[1], y = pplus[2], flux = pplus[3], bkg = pplus[4], origin = model.origin, oversampling = model.oversampling)
         mminus = ImagePSF(model.data; x = pminus[1], y = pminus[2], flux = pminus[3], bkg = pminus[4], origin = model.origin, oversampling = model.oversampling)
-        fd[k] = (evaluate(mplus, 10.8, 11.9) - evaluate(mminus, 10.8, 11.9)) / (2h)
+        fd[k] = (evaluate(mplus, 11.9, 10.8) - evaluate(mminus, 11.9, 10.8)) / (2h)
     end
     @test collect(g) ≈ fd rtol = 1.0e-5 atol = 1.0e-5
 end
@@ -71,13 +72,16 @@ end
     data = [exp(-((i - 4)^2 + (j - 4)^2) / 5) for i in 1:7, j in 1:7]
     model = ImagePSF(data; x = 10.3, y = 11.4, flux = 120.0, bkg = 7.0, oversampling = 2, normalize = true)
     # Verify out-of-bounds interpolation and constructor validation paths.
-    val, dx, dy = bicubic_interpolate(model.data, -1, 2; fill_value = 0.3)
+    val, dy, dx = bicubic_interpolate(model.data, -1, 2; fill_value = 0.3)
     @test val == 0.3
     @test dx == 0
     @test dy == 0
     @test_throws ArgumentError bicubic_interpolate(rand(3, 4), 2, 2)
     @test_throws ArgumentError ImagePSF(rand(3, 4))
     @test_throws ArgumentError ImagePSF(data; oversampling = (2.0, 2))
+    @test_throws ArgumentError ImagePSF(data; origin = (4.0, 4.0))
+    @test_throws ArgumentError ImagePSF(data; origin = (y = 4.0,))
+    @test_throws ArgumentError ImagePSF(data; origin = (y = 4.0, x = 4.0, z = 0.0))
     bad = copy(data)
     bad[1, 1] = NaN
     @test_throws ArgumentError ImagePSF(bad)
@@ -118,9 +122,9 @@ end
     # Fit only ImagePSF's source parameters to ensure it works with LM/IRLS.
     grid_model = CircularGaussianPRF(x = 8, y = 8, fwhm = 2.4, flux = 1, bkg = 0)
     psf_data = evaluate.(grid_model, 1:16, (1:16)')
-    truth = ImagePSF(psf_data; x = 8.35, y = 7.75, flux = 300.0, bkg = 4.0, origin = (8.0, 8.0), normalize = true)
+    truth = ImagePSF(psf_data; x = 8.35, y = 7.75, flux = 300.0, bkg = 4.0, origin = (y = 8.0, x = 8.0), normalize = true)
     image = evaluate.(truth, 1:16, (1:16)')
-    init = ImagePSF(psf_data; x = 8.0, y = 8.1, flux = 260.0, bkg = 3.5, origin = (8.0, 8.0), normalize = true)
+    init = ImagePSF(psf_data; x = 8.0, y = 8.1, flux = 260.0, bkg = 3.5, origin = (y = 8.0, x = 8.0), normalize = true)
 
     best, result = fit_star(init, image, (1:16, 1:16); max_iter = 100)
     @test result.converged
@@ -150,8 +154,8 @@ end
     psf, result = fit_psf(
         ImagePSF,
         image,
-        sources.x .+ randn(rng, length(sources.x)) * 0.5,
-        sources.y .+ randn(rng, length(sources.y)) * 0.5;
+        sources.y .+ randn(rng, length(sources.y)) * 0.5,
+        sources.x .+ randn(rng, length(sources.x)) * 0.5;
         psf_rad = 5.0,
         oversampling = 2,
         smooth = true,
@@ -180,8 +184,8 @@ end
     # Verify the explicit-cutout API forwards into the same empirical builder.
     inds = ntuple(
         k -> (
-            floor(Int, sources.x[k] - 5):ceil(Int, sources.x[k] + 5),
             floor(Int, sources.y[k] - 5):ceil(Int, sources.y[k] + 5),
+            floor(Int, sources.x[k] - 5):ceil(Int, sources.x[k] + 5),
         ),
         length(sources.x)
     )
@@ -224,16 +228,16 @@ end
     for k in 1:round(Int, 0.75 * length(sources.x))
         dx = rand(rng, -3:3)
         dy = rand(rng, -3:3)
-        i = clamp(round(Int, sources.x[k]) + dx, 1, size(image, 1))
-        j = clamp(round(Int, sources.y[k]) + dy, 1, size(image, 2))
+        i = clamp(round(Int, sources.y[k]) + dy, 1, size(image, 1))
+        j = clamp(round(Int, sources.x[k]) + dx, 1, size(image, 2))
         image[i, j] += rand(rng) < 0.8 ? 1500.0 : -14.0
     end
 
     psf, result = fit_psf(
         ImagePSF,
         image,
-        sources.x .+ randn(rng, length(sources.x)) * 0.25,
-        sources.y .+ randn(rng, length(sources.y)) * 0.25;
+        sources.y .+ randn(rng, length(sources.y)) * 0.25,
+        sources.x .+ randn(rng, length(sources.x)) * 0.25;
         psf_rad = 5.0,
         oversampling = 2,
         smooth = true,

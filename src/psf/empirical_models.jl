@@ -72,7 +72,7 @@ struct ImagePSF{T, A <: AbstractMatrix{T}} <: AbstractPSFModel{T}
     y::T
     flux::T
     bkg::T
-    origin::Tuple{T, T}
+    origin::NamedTuple{(:y, :x), Tuple{T, T}}
     oversampling::Tuple{Int, Int}
     fill_value::T
 end
@@ -97,8 +97,11 @@ function ImagePSF(
     # Promote model parameters and grid values to one floating-point type.
     T = promote_type(eltype(data), typeof(x), typeof(y), typeof(flux), typeof(bkg), typeof(fill_value))
     if !isnothing(origin)
-        length(origin) == 2 || throw(ArgumentError("`origin` must have two elements"))
-        T = promote_type(T, typeof(origin[1]), typeof(origin[2]))
+        origin isa NamedTuple ||
+            throw(ArgumentError("`origin` must be `nothing` or a NamedTuple with `y` and `x` fields"))
+        length(propertynames(origin)) == 2 && haskey(origin, :y) && haskey(origin, :x) ||
+            throw(ArgumentError("`origin` must include exactly `y` and `x` fields"))
+        T = promote_type(T, typeof(origin.y), typeof(origin.x))
     end
     T = float(T)
 
@@ -115,17 +118,17 @@ function ImagePSF(
 
     # Default origin is the central grid sample; otherwise use the caller's origin.
     org = if isnothing(origin)
-        (T((size(dataT, 1) + 1) / 2), T((size(dataT, 2) + 1) / 2))
+        (y = T((size(dataT, 1) + 1) / 2), x = T((size(dataT, 2) + 1) / 2))
     else
-        ox, oy = T(origin[1]), T(origin[2])
+        oy, ox = T(origin.y), T(origin.x)
         isfinite(ox) && isfinite(oy) || throw(ArgumentError("`origin` must be finite"))
-        (ox, oy)
+        (y = oy, x = ox)
     end
 
     return ImagePSF{T, typeof(dataT)}(dataT, T(x), T(y), T(flux), T(bkg), org, os, T(fill_value))
 end
 
-ImagePSF(data::AbstractMatrix, x, y, flux, bkg; kwargs...) =
+ImagePSF(data::AbstractMatrix, y, x, flux, bkg; kwargs...) =
     ImagePSF(data; x, y, flux, bkg, kwargs...)
 
 ConstructionBase.getproperties(model::ImagePSF) = (x = model.x, y = model.y, flux = model.flux, bkg = model.bkg)
@@ -146,12 +149,12 @@ theta(model::ImagePSF{T}) where {T} = zero(T)
 
 function extent(model::ImagePSF{T}) where {T}
     # Convert tabulated grid bounds back into detector-pixel coordinates.
-    nx, ny = size(model.data)
+    ny, nx = size(model.data)
     sx, sy = model.oversampling
-    ox, oy = model.origin
+    ox, oy = model.origin.x, model.origin.y
     return (
-        (model.x - (ox - one(T)) / sx, model.x + (T(nx) - ox) / sx),
         (model.y - (oy - one(T)) / sy, model.y + (T(ny) - oy) / sy),
+        (model.x - (ox - one(T)) / sx, model.x + (T(nx) - ox) / sx),
     )
 end
 extent(model::ImagePSF, _) = extent(model) # ignore extra argument (fwhm_factor) if provided.
@@ -215,13 +218,13 @@ Boundary conditions and assumptions:
 - The interpolant is intended for regularly spaced grid samples. `x` and `y`
   are array coordinates, not detector-pixel coordinates.
 """
-function bicubic_interpolate(data::AbstractMatrix, x, y; fill_value = zero(eltype(data)))
+function bicubic_interpolate(data::AbstractMatrix, y, x; fill_value = zero(eltype(data)))
     # Work in a promoted floating type and reject out-of-grid samples early.
-    T = promote_type(eltype(data), typeof(x), typeof(y), typeof(fill_value))
+    T = promote_type(eltype(data), typeof(y), typeof(x), typeof(fill_value))
     T = float(T)
-    nx, ny = size(data)
+    ny, nx = size(data)
     nx ≥ 4 && ny ≥ 4 || throw(ArgumentError("`data` must have at least four samples along each axis"))
-    xx, yy = T(x), T(y)
+    yy, xx = T(y), T(x)
     if !(isfinite(xx) && isfinite(yy)) || xx < one(T) || xx > T(nx) || yy < one(T) || yy > T(ny)
         return T(fill_value), zero(T), zero(T)
     end
@@ -245,45 +248,45 @@ function bicubic_interpolate(data::AbstractMatrix, x, y; fill_value = zero(eltyp
     # Interpolate each row in x and keep the row-wise x derivatives.
     @inbounds begin
         row1, drow1dx = _cubic4(
-            T(data[ix1, iy1]), T(data[ix2, iy1]),
-            T(data[ix3, iy1]), T(data[ix4, iy1]), dx
+            T(data[iy1, ix1]), T(data[iy1, ix2]),
+            T(data[iy1, ix3]), T(data[iy1, ix4]), dx
         )
         row2, drow2dx = _cubic4(
-            T(data[ix1, iy2]), T(data[ix2, iy2]),
-            T(data[ix3, iy2]), T(data[ix4, iy2]), dx
+            T(data[iy2, ix1]), T(data[iy2, ix2]),
+            T(data[iy2, ix3]), T(data[iy2, ix4]), dx
         )
         row3, drow3dx = _cubic4(
-            T(data[ix1, iy3]), T(data[ix2, iy3]),
-            T(data[ix3, iy3]), T(data[ix4, iy3]), dx
+            T(data[iy3, ix1]), T(data[iy3, ix2]),
+            T(data[iy3, ix3]), T(data[iy3, ix4]), dx
         )
         row4, drow4dx = _cubic4(
-            T(data[ix1, iy4]), T(data[ix2, iy4]),
-            T(data[ix3, iy4]), T(data[ix4, iy4]), dx
+            T(data[iy4, ix1]), T(data[iy4, ix2]),
+            T(data[iy4, ix3]), T(data[iy4, ix4]), dx
         )
     end
 
     # Interpolate those row values in y, including both first derivatives.
     value, dfdy = _cubic4(row1, row2, row3, row4, dy)
     dfdx, _ = _cubic4(drow1dx, drow2dx, drow3dx, drow4dx, dy)
-    return value, dfdx, dfdy
+    return value, dfdy, dfdx
 end
 
-function evaluate(model::ImagePSF{T}, px, py) where {T}
+function evaluate(model::ImagePSF{T}, py, px) where {T}
     # Map detector-pixel coordinates into the oversampled PSF grid.
     sx, sy = model.oversampling
-    u = T(sx) * (T(px) - model.x) + model.origin[1]
-    v = T(sy) * (T(py) - model.y) + model.origin[2]
+    u = T(sx) * (T(px) - model.x) + model.origin.x
+    v = T(sy) * (T(py) - model.y) + model.origin.y
     # Scale the unit-flux ePSF sample and add scalar background.
-    p, _, _ = bicubic_interpolate(model.data, u, v; fill_value = model.fill_value)
+    p, _, _ = bicubic_interpolate(model.data, v, u; fill_value = model.fill_value)
     return muladd(model.flux, T(p), model.bkg)
 end
 
-function evaluate_fg(model::ImagePSF{T}, px, py) where {T}
+function evaluate_fg(model::ImagePSF{T}, py, px) where {T}
     # Evaluate the ePSF and its grid-space derivatives at this detector pixel.
     sx, sy = model.oversampling
-    u = T(sx) * (T(px) - model.x) + model.origin[1]
-    v = T(sy) * (T(py) - model.y) + model.origin[2]
-    p, dpdu, dpdv = bicubic_interpolate(model.data, u, v; fill_value = model.fill_value)
+    u = T(sx) * (T(px) - model.x) + model.origin.x
+    v = T(sy) * (T(py) - model.y) + model.origin.y
+    p, dpdv, dpdu = bicubic_interpolate(model.data, v, u; fill_value = model.fill_value)
     # Apply the chain rule for centroid, flux, and background parameters.
     profile = T(p)
     f = muladd(model.flux, profile, model.bkg)

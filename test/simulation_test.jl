@@ -60,8 +60,8 @@ end
     psf = CircularGaussianPRF(x = 0, y = 0, fwhm = 2.5, flux = 1, bkg = 0)
     sources = simulate_sources((40, 45), 8; flux = (100.0, 120.0), min_separation = 4, border = 5, rng)
     @test length(sources.x) == 8
-    @test all(6 .≤ sources.x .≤ 35)
-    @test all(6 .≤ sources.y .≤ 40)
+    @test all(6 .≤ sources.x .≤ 40)
+    @test all(6 .≤ sources.y .≤ 35)
     for i in 1:length(sources.x), j in (i + 1):length(sources.x)
         @test hypot(sources.x[i] - sources.x[j], sources.y[i] - sources.y[j]) ≥ 4
     end
