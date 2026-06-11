@@ -282,6 +282,63 @@ end
         @test_throws DimensionMismatch matched_filter(
             img, kern; inv_var=ones(10, 10))
     end
+
+    @testset "SEP-style: inv_var weighting detects source that uniform misses" begin
+        # Reproduction of the SEP documentation example:
+        # https://sep.readthedocs.io/en/stable/filter.html
+        # sep.extract(data, 3.0, err=error, filter_type='conv')    → 0
+        # sep.extract(data, 3.0, err=error, filter_type='matched') → 1
+        #
+        # Image has spatially varying noise: σ=4 in the upper-left triangle
+        # (row > col) and σ=1 elsewhere.  A source at the center sits at the
+        # boundary between quiet and noisy regions.  Uniform-weight correlation
+        # (CrowdPhot's default, analogous to SEP filter_type='conv') gives
+        # full weight to the σ=4 pixels and buries the source.  Inverse-variance
+        # weighting (CrowdPhot with inv_var, analogous to SEP
+        # filter_type='matched') downweights those pixels by 1/16 and recovers
+        # the source.
+        rng_sep = StableRNG(21)
+        n = 16
+
+        # σ map: 4 where row > col, 1 elsewhere
+        err = ones(n, n)
+        for i in 1:n, j in 1:n
+            if i > j
+                err[i, j] = 4.0
+            end
+        end
+
+        data = err .* randn(rng_sep, n, n)
+
+        # Source at center (matching Python data[7:10, 7:10] in 0-indexed)
+        source = [1.0 2.0 1.0;
+                  2.0 4.0 2.0;
+                  1.0 2.0 1.0]
+        data[8:10, 8:10] .+= source
+
+        # SEP's default detection kernel
+        kernel = [1.0 2.0 3.0 2.0 1.0;
+                  2.0 3.0 5.0 3.0 2.0;
+                  3.0 5.0 8.0 5.0 3.0;
+                  2.0 3.0 5.0 3.0 2.0;
+                  1.0 2.0 3.0 2.0 1.0]
+
+        inv_var = 1.0 ./ (err .^ 2)
+        thresh = 3.0
+
+        r_uniform = matched_filter(data, kernel;
+                                   normalize_zerosum=false, sigma=thresh)
+        r_weighted = matched_filter(data, kernel; inv_var,
+                                    normalize_zerosum=false, sigma=thresh)
+
+        cy, cx = 9, 9  # source center in 1-indexed
+
+        # Uniform-weight (SEP conv): source is not detected
+        @test r_uniform.significance_map[cy, cx] < thresh
+
+        # Inverse-variance weighted (SEP matched): source is detected
+        @test r_weighted.significance_map[cy, cx] >= thresh
+    end
 end
 
 # ---------------------------------------------------------------------------
