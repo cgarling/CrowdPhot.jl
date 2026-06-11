@@ -155,7 +155,7 @@ estimate_scale(est::FixedScale, ::AbstractArray) = est.σ
 Iterative M-scale estimator solving ``(1/n) ∑ χ(rᵢ/σ) = δ`` where
 ``χ(r) = r²`` (Huber's proposal 2). The breakdown point is controlled
 by ``δ`` (default 0.5 for 50% breakdown). Iteration stops when the
-relative change in ``σ`` falls below `tol` or `max\_iter` is reached.
+relative change in ``σ`` falls below `tol` or `max_iter` is reached.
 
 For Gaussian data with ``δ = 0.5``, the estimator returns ``σ ≈ √2 = 1.41``
 since ``E[χ(r/σ)] ≈ 1/σ²`` and the equation requires this to equal ``δ``.
