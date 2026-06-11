@@ -27,6 +27,9 @@ makedocs(;
     # repo = GitHub("cgarling/CrowdPhot.jl"),
     pages = [
         "Home" => "index.md",
+        "Tutorials" => [
+            "HST ACS DRZ" => "tutorials/HST-DRZ.md",
+        ],
         "Background Estimation" => "background.md",
         "Detection and Centroiding" => "detection.md",
         "PSFs" => [
