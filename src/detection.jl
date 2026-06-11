@@ -11,9 +11,9 @@ Result of [`matched_filter`](@ref) source detection.
 
 # Fields
 
-- `image::Matrix{T}` — the input image.
-- `inv_var::Union{Matrix{T}, Nothing}` — the inverse variance map (or `nothing`
-  if uniform weights were assumed).
+- `image::AbstractMatrix{T}` — the input image (not copied; caller retains ownership).
+- `inv_var::Union{AbstractMatrix{T}, Nothing}` — the inverse variance map (or `nothing`
+  if uniform weights were assumed; not copied).
 - `smoothed_image::Matrix{T}` — the image correlated with the detection kernel.
 - `smoothed_inv_var::Union{Matrix{T}, Nothing}` — the inverse variance map
   correlated with the squared kernel; used in the denominator of the
@@ -33,8 +33,8 @@ Result of [`matched_filter`](@ref) source detection.
 - `peak_fluxes::Vector{T}` — matched-filter flux estimate at each peak.
 """
 struct MatchedFilterResult{T}
-    image::Matrix{T}
-    inv_var::Union{Matrix{T}, Nothing}
+    image::AbstractMatrix{T}
+    inv_var::Union{AbstractMatrix{T}, Nothing}
     smoothed_image::Matrix{T}
     smoothed_inv_var::Union{Matrix{T}, Nothing}
     significance_map::Matrix{T}
@@ -143,7 +143,7 @@ estimate, or provide `inv_var`, to get true SNR.
     background-subtract the image before calling [`matched_filter`](@ref).
 """
 function matched_filter(image::AbstractMatrix{T}, kernel::AbstractMatrix;
-                        inv_var::Union{AbstractMatrix, Nothing}=nothing,
+                        inv_var::Union{AbstractMatrix{<:AbstractFloat}, Nothing}=nothing,
                         normalize_zerosum::Bool=true,
                         sigma::Real=5.0,
                         border::Symbol=:replicate) where {T}
@@ -188,18 +188,20 @@ function matched_filter(image::AbstractMatrix{T}, kernel::AbstractMatrix;
     smoothed = correlate(image, K, border)
 
     if inv_var !== nothing
-        # Weighted numerator: correlate(w·D, K)
-        weighted_img = float.(inv_var) .* float.(image)
+        weighted_img = inv_var .* image
         num = correlate(weighted_img, K, border)
 
-        # Denominator variance: correlate(w, K²)
-        den = correlate(float.(inv_var), K .^ 2, border)
+        K_sq = K .^ 2
+        # weighted_img is dead after num; reuse its buffer for den.
+        den = weighted_img
+        correlate!(den, inv_var, K_sq, border)
 
-        # Significance: num ./ sqrt(den)
-        S = promote_type(eltype(num), eltype(den), Float64)
-        significance = similar(image, S)
-        @inbounds for i in eachindex(significance, num, den)
-            significance[i] = den[i] > 0 ? num[i] / sqrt(den[i]) : zero(S)
+        # Significance: num ./ sqrt(den).
+        # num's eltype is already wide enough (promoted with Float64 kernel),
+        # so reuse its buffer for the significance map.
+        significance = num
+        @inbounds for i in eachindex(den)
+            significance[i] = den[i] > 0 ? significance[i] / sqrt(den[i]) : zero(eltype(significance))
         end
         smoothed_inv_var = den
     else
@@ -213,7 +215,8 @@ function matched_filter(image::AbstractMatrix{T}, kernel::AbstractMatrix;
 
     # ----- 3. Find local maxima -----
     peaks = findlocalmaxima(significance; edges=false)
-    sig_peaks = [p for p in peaks if significance[p] >= sigma]
+    threshold_peaks(peaks, significance, sigma) = [p for p in peaks if significance[p] >= sigma]
+    sig_peaks = threshold_peaks(peaks, significance, sigma)
 
     # ----- 4. Extract peak information -----
     peaks_x = Float64[p[2] for p in sig_peaks]
@@ -224,8 +227,8 @@ function matched_filter(image::AbstractMatrix{T}, kernel::AbstractMatrix;
     peak_fluxes = T[smoothed[p] for p in sig_peaks]
 
     return MatchedFilterResult(
-        Matrix{T}(image),
-        inv_var === nothing ? nothing : Matrix{T}(inv_var),
+        image,
+        inv_var,
         smoothed,
         smoothed_inv_var,
         significance,

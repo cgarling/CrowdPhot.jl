@@ -85,10 +85,16 @@ allocating the output yourself and calling `correlate!`.
 
 ### Multithreading
 
-The inner loops use `Threads.@threads` over columns.  Each column's output
-is computed independently, so there is no data race as long as `out` does
-not alias `img`.  On machines with many cores the speedup is substantial
-(3–5× on 16 threads).  On single-threaded runs the overhead is negligible.
+The inner loops use `Threads.@threads` over columns.  On machines with many
+cores the speedup is substantial (3–5× on 16 threads).  On single-threaded
+runs the overhead is negligible.
+
+### Border handling
+
+Border conditions are handled inline via strip-mining — no padded copy of
+the input image is made.  The interior pixels (where the full kernel
+footprint lies within the image bounds) use a `@inbounds` fast path.
+The thin border strips use per-access bounds checks via `_getpixel`.
 """
 function correlate(img::AbstractMatrix{T}, kernel, border::Symbol=:replicate) where {T}
     S = promote_type(T, _eltype_kernel(kernel))
@@ -100,19 +106,28 @@ end
     correlate!(out::AbstractMatrix, img::AbstractMatrix, kernel, [border=:replicate]) -> out
 
 In-place variant of [`correlate`](@ref).  Writes the correlation result into `out`,
-which must have the same axes as `img`.
+which must have the same axes as `img`.  `out` must not be the same object as `img`
+(in-place correlation is not a valid operation; aliasing causes data races under
+multi-threading).
 """
 function correlate!(out::AbstractMatrix, img::AbstractMatrix, kernel, border::Symbol=:replicate)
     axes(out) == axes(img) || throw(DimensionMismatch(
         "output axes $(axes(out)) must match image axes $(axes(img))"
     ))
+    out === img && throw(ArgumentError(
+        "out must not be the same object as img; in-place correlation is not supported"
+    ))
     axes(img, 1) != Base.OneTo(size(img, 1)) &&
         throw(ArgumentError("img must use 1-based indexing (got axes $(axes(img))); " *
             "OffsetArrays and other non-standard index ranges are not supported"))
     kern = _canonicalize(kernel)
-    pt, pb, pl, pr = _total_padding(kern, border)
-    padded = _padarray(img, border, pt, pb, pl, pr)
-    _correlate!(out, padded, kern)
+    if border == :replicate
+        _correlate!(out, img, kern, Val(:replicate))
+    elseif border == :zero
+        _correlate!(out, img, kern, Val(:zero))
+    else
+        throw(ArgumentError("unknown border mode :$border; use :replicate or :zero"))
+    end
     out
 end
 
@@ -203,261 +218,333 @@ _identity_kernel(::Type{T}) where {T} = fill(one(float(T)), 1, 1)
 _isidentity(k::AbstractMatrix) = size(k) == (1, 1) && k[1, 1] == 1
 
 # ---------------------------------------------------------------------------
-# Padding calculation
+# Border pixel access helpers
 # ---------------------------------------------------------------------------
 
 """
-    _padding_needed(kernel::AbstractMatrix) -> (top, bottom, left, right)
+    _getpixel(img, r, c, ::Val{:replicate}) -> eltype(img)
 
-Return the number of pixels needed on each side to compute the full correlation
-at every pixel of the image.  The kernel centre is assumed to be at
-`((kr+1)÷2, (kc+1)÷2)` for a `kr×kc` kernel.
+Return `img[r, c]` with out-of-bounds indices clamped to the nearest edge.
 """
-function _padding_needed(kernel::AbstractMatrix)
-    kr, kc = size(kernel)
-    cr, cc = (kr + 1) ÷ 2, (kc + 1) ÷ 2
-    return (cr - 1, kr - cr, cc - 1, kc - cc)
+@inline function _getpixel(img::AbstractMatrix, r::Int, c::Int, ::Val{:replicate})
+    r = clamp(r, 1, size(img, 1))
+    c = clamp(c, 1, size(img, 2))
+    @inbounds img[r, c]
 end
 
-function _total_padding(kernels::Tuple, border::Symbol)
-    pt, pb, pl, pr = 0, 0, 0, 0
-    for k in kernels
-        if !_isidentity(k)
-            t, b, l, r = _padding_needed(k)
-            pt += t; pb += b; pl += l; pr += r
-        end
-    end
-    return (pt, pb, pl, pr)
-end
-
-function _total_padding(kernel::AbstractMatrix, border::Symbol)
-    return _padding_needed(kernel)
-end
-
-# ---------------------------------------------------------------------------
-# Border padding
-# ---------------------------------------------------------------------------
-
 """
-    _padarray(img, border, top, bottom, left, right) -> Matrix
+    _getpixel(img, r, c, ::Val{:zero}) -> eltype(img)
 
-Return a padded copy of `img` extended by the given number of pixels on each
-side.  `border` must be `:replicate` or `:zero`.
+Return `img[r, c]` if in bounds, or `zero(eltype(img))` otherwise.
 """
-function _padarray(img::AbstractMatrix{T}, border::Symbol,
-                   top::Int, bottom::Int, left::Int, right::Int) where {T}
-    H, W = size(img)
-    H2, W2 = H + top + bottom, W + left + right
-    padded = similar(img, T, H2, W2)
-
-    # Copy the interior
-    padded[top+1:top+H, left+1:left+W] .= img
-
-    if border == :zero
-        # Corners are already zero from similar, just zero the strips.
-        _zero_strip!(padded, 1:top,         1:W2)          # top
-        _zero_strip!(padded, top+H+1:H2,    1:W2)          # bottom
-        _zero_strip!(padded, top+1:top+H,   1:left)        # left
-        _zero_strip!(padded, top+1:top+H,   left+W+1:W2)   # right
-    elseif border == :replicate
-        # Top and bottom strips
-        for col in 1:W2
-            # top
-            for row in 1:top
-                @inbounds padded[row, col] = padded[top+1, col]
-            end
-            # bottom
-            for row in top+H+1:H2
-                @inbounds padded[row, col] = padded[top+H, col]
-            end
-        end
-        # Left and right strips (including the corner extension already done above)
-        for row in 1:H2
-            for col in 1:left
-                @inbounds padded[row, col] = padded[row, left+1]
-            end
-            for col in left+W+1:W2
-                @inbounds padded[row, col] = padded[row, left+W]
-            end
-        end
+@inline function _getpixel(img::AbstractMatrix, r::Int, c::Int, ::Val{:zero})
+    if 1 <= r <= size(img, 1) && 1 <= c <= size(img, 2)
+        @inbounds img[r, c]
     else
-        throw(ArgumentError("unknown border mode :$border; use :replicate or :zero"))
+        zero(eltype(img))
     end
-    return padded
 end
 
-function _zero_strip!(A, rows, cols)
-    @inbounds for c in cols, r in rows
-        A[r, c] = zero(eltype(A))
+# Row-only variant — caller guarantees column is in bounds.
+@inline function _getpixel_row(img::AbstractMatrix, r::Int, c::Int, ::Val{:replicate})
+    r = clamp(r, 1, size(img, 1))
+    @inbounds img[r, c]
+end
+@inline function _getpixel_row(img::AbstractMatrix, r::Int, c::Int, ::Val{:zero})
+    if 1 <= r <= size(img, 1)
+        @inbounds img[r, c]
+    else
+        zero(eltype(img))
+    end
+end
+
+# Col-only variant — caller guarantees row is in bounds.
+@inline function _getpixel_col(img::AbstractMatrix, r::Int, c::Int, ::Val{:replicate})
+    c = clamp(c, 1, size(img, 2))
+    @inbounds img[r, c]
+end
+@inline function _getpixel_col(img::AbstractMatrix, r::Int, c::Int, ::Val{:zero})
+    if 1 <= c <= size(img, 2)
+        @inbounds img[r, c]
+    else
+        zero(eltype(img))
     end
 end
 
 # ---------------------------------------------------------------------------
 # Correlation scheduler — routes to 1D-separable or 2D-inseparable paths
+#
+# Each function receives the original (unpadded) image and handles border
+# conditions inline via strip-mining.  `correlate!` guarantees `out !== img`,
+# so all inner loops are thread-safe.
 # ---------------------------------------------------------------------------
 
-# The padded image always carries enough extra rows and columns so that the
-# origin (pixel (1,1) of the original image) sits at (pt+1, pl+1) in the
-# padded array, where pt = sum of top paddings of all factors, etc.
-# Because padding per-factor matches its kernel-radius (cr−1 top, cc−1 left),
-# the general indexing formula
-#
-#     img[offset_row + row + j − cr,  offset_col + col + j − cc]
-#
-# simplifies to  img[row + j − 1,  col + j − 1]  when the image has been
-# padded with exactly the right amount.  The cascade preserves this invariant
-# by constructing intermediate buffers with the correct residual padding.
-
-function _correlate!(out::AbstractMatrix, img::AbstractMatrix, kernel::Tuple{Any})
-    _correlate_2d!(out, img, first(kernel))
+function _correlate!(out::AbstractMatrix, img::AbstractMatrix, kernel::Tuple{Any},
+                     ::Val{B}) where {B}
+    _correlate_2d!(out, img, first(kernel), Val{B}())
 end
 
-function _correlate!(out::AbstractMatrix, img::AbstractMatrix, kernel::Tuple{Any,Any})
+function _correlate!(out::AbstractMatrix, img::AbstractMatrix, kernel::Tuple{Any,Any},
+                     ::Val{B}) where {B}
     k1, k2 = kernel
     if _isidentity(k1)
-        _correlate_2d!(out, img, k2)
+        _correlate_2d!(out, img, k2, Val{B}())
         return
     end
-    # k1 is m×1 (filters rows), k2 is 1×n (filters columns).
-    # Full padding: rows padded for k1, columns padded for k2.
-    # After k1: output has H rows, but the full padded column width survives
-    # because k2 still needs column padding.
+    # Separable: row pass then column pass.  The intermediate tmp buffer
+    # breaks any aliasing concern between out and img.
     T = promote_type(eltype(out), eltype(k1), eltype(k2))
-    H = size(out, 1)
-    tmp = similar(img, T, H, size(img, 2))
-    _correlate_1d!(tmp, img, k1)
-    _correlate_1d!(out, tmp, k2)
+    H, W = size(out)
+    tmp = similar(img, T, H, W)
+    _correlate_1d!(tmp, img, k1, Val{B}())
+    _correlate_1d!(out, tmp, k2, Val{B}())
 end
 
-# Three or more factors — shouldn't arise from _canonicalize but handle
-# gracefully by folding left through sequential 1D passes.
-function _correlate!(out::AbstractMatrix, img::AbstractMatrix, kernel::Tuple)
+# Three or more factors — fold left with fresh intermediates at each step.
+function _correlate!(out::AbstractMatrix, img::AbstractMatrix, kernel::Tuple,
+                     ::Val{B}) where {B}
     T = promote_type(eltype(out), _eltype_kernel(kernel))
     nonid = filter(k -> !_isidentity(k), collect(kernel))
     isempty(nonid) && return copyto!(out, img)
+    H, W = size(out)
     n = length(nonid)
-    # Determine which factors pad rows vs columns, and size buffers accordingly.
-    # After each row-filter pass the row count shrinks; after each col-filter
-    # pass the column count shrinks.  Walk the list right-to-left to determine
-    # the buffer sizes needed at each step.
-    _, row_end, _, col_end = _total_padding(kernel, :replicate)  # border unused here
-    H0, W0 = size(out)  # final output size
-    # initial padded size
-    src_rows = H0 + row_end + _bottom_padding(kernel)
-    src_cols = W0 + col_end + _right_padding(kernel)
-    buf_rows, buf_cols = src_rows, src_cols
     src = img
-    # Build a scratch destination sized for the first intermediate result
     for (i, k) in enumerate(nonid)
-        pt, pb, pl, pr = _padding_needed(k)
-        if pt + pb > 0   # row filter
-            buf_rows = buf_rows - pt - pb
-        end
-        if pl + pr > 0   # col filter
-            buf_cols = buf_cols - pl - pr
-        end
-        dest = (i == n) ? out : similar(img, T, buf_rows, buf_cols)
-        _correlate_1d!(dest, src, k)
+        dest = (i == n) ? out : similar(img, T, H, W)
+        _correlate_1d!(dest, src, k, Val{B}())
         src = dest
     end
 end
 
-# Sum of bottom/right padding across a tuple (companion to _total_padding).
-function _bottom_padding(kernel::Tuple)
-    s = 0
-    for k in kernel
-        _isidentity(k) && continue
-        s += _padding_needed(k)[2]
-    end
-    return s
-end
-
-function _right_padding(kernel::Tuple)
-    s = 0
-    for k in kernel
-        _isidentity(k) && continue
-        s += _padding_needed(k)[4]
-    end
-    return s
-end
-
 # ---------------------------------------------------------------------------
-# Inner correlation loops
+# Inner correlation loops — strip-mined with border handling
 #
-# Invariant: the input image `img` to each of these functions is already
-# padded so that the "origin" (where the current kernel's center aligns with
-# the first valid output pixel) is at img[1, 1].  Consequently the indexing
-# uses `row + j - 1` rather than `row + j - center` — the padding absorbs the
-# center offset.
+# Indexing convention: for a kernel of size (kr, kc) with centre at
+# (cr, cc) = ((kr+1)÷2, (kc+1)÷2) and radius (r, c) = (kr÷2, kc÷2),
+# the correlation at output pixel (row, col) is
+#
+#     Σ_j Σ_i  img[row + i - cr, col + j - cc] * kernel[i, j]
+#
+# which simplifies to
+#
+#     Σ_j Σ_i  img[row + i - r - 1, col + j - c - 1] * kernel[i, j]
+#
+# The interior region (rows r+1..H-r, cols c+1..W-c) uses a pure @inbounds
+# fast path.  Border strips use _getpixel to clamp out-of-bounds accesses.
 # ---------------------------------------------------------------------------
 
-"""
-    _correlate_1d!(out, img, kernel)
+# ---- 1D dispatch ----
 
-Dispatch to a 1D correlation pass based on `kernel` shape.
-- `m×1` → filters along rows (dimension 1).
-- `1×n` → filters along columns (dimension 2).
-- anything else → falls back to `_correlate_2d!`.
-"""
 function _correlate_1d!(out::AbstractMatrix, img::AbstractMatrix,
-                        kernel::AbstractMatrix)
+                        kernel::AbstractMatrix, ::Val{B}) where {B}
     kr, kc = size(kernel)
     if kr > 1 && kc == 1
-        _correlate_rows!(out, img, kernel)
+        _correlate_rows!(out, img, kernel, Val{B}())
     elseif kr == 1 && kc > 1
-        _correlate_cols!(out, img, kernel)
+        _correlate_cols!(out, img, kernel, Val{B}())
     else
-        _correlate_2d!(out, img, kernel)
+        _correlate_2d!(out, img, kernel, Val{B}())
     end
 end
 
-function _correlate_rows!(out::AbstractMatrix{S}, img::AbstractMatrix,
-                          kernel::AbstractMatrix) where {S}
+# ---- Row filter (m×1 kernel) ----
+
+function _correlate_rows!(out::AbstractMatrix, img::AbstractMatrix,
+                          kernel::AbstractMatrix, ::Val{B}) where {B}
     kr = size(kernel, 1)
-    Ho, Wo = size(out)
+    r = kr ÷ 2
+    H, W = size(out)
+    S = eltype(out)
     z = zero(S)
-    Threads.@threads for col in 1:Wo
-        @inbounds for row in 1:Ho
-            acc = z
-            for j in 1:kr
-                acc += img[row + j - 1, col] * kernel[j, 1]
+
+    # Interior rows: r+1 .. H-r.  All kernel footprint rows are in bounds.
+    ri, re = r + 1, H - r
+    if ri <= re
+        Threads.@threads for col in 1:W
+            @inbounds for row in ri:re
+                acc = z
+                for j in 1:kr
+                    acc += img[row + j - r - 1, col] * kernel[j, 1]
+                end
+                out[row, col] = acc
             end
-            out[row, col] = acc
         end
     end
+
+    # Top border: rows 1 .. r.  Row index may underflow.
+    if r >= 1
+        Threads.@threads for col in 1:W
+            @inbounds for row in 1:r
+                acc = z
+                for j in 1:kr
+                    ir = row + j - r - 1
+                    acc += _getpixel_row(img, ir, col, Val{B}()) * kernel[j, 1]
+                end
+                out[row, col] = acc
+            end
+        end
+    end
+
+    # Bottom border: rows H-r+1 .. H.  Row index may overflow.
+    if r >= 1
+        Threads.@threads for col in 1:W
+            @inbounds for row in H-r+1:H
+                acc = z
+                for j in 1:kr
+                    ir = row + j - r - 1
+                    acc += _getpixel_row(img, ir, col, Val{B}()) * kernel[j, 1]
+                end
+                out[row, col] = acc
+            end
+        end
+    end
+
     out
 end
 
-function _correlate_cols!(out::AbstractMatrix{S}, img::AbstractMatrix,
-                          kernel::AbstractMatrix) where {S}
+# ---- Column filter (1×n kernel) ----
+
+function _correlate_cols!(out::AbstractMatrix, img::AbstractMatrix,
+                          kernel::AbstractMatrix, ::Val{B}) where {B}
     kc = size(kernel, 2)
-    Ho, Wo = size(out)
+    c = kc ÷ 2
+    H, W = size(out)
+    S = eltype(out)
     z = zero(S)
-    Threads.@threads for col in 1:Wo
-        @inbounds for row in 1:Ho
-            acc = z
-            for j in 1:kc
-                acc += img[row, col + j - 1] * kernel[1, j]
+
+    # Interior columns: c+1 .. W-c.  All kernel footprint columns are in bounds.
+    ci, ce = c + 1, W - c
+    if ci <= ce
+        Threads.@threads for col in ci:ce
+            @inbounds for row in 1:H
+                acc = z
+                for j in 1:kc
+                    acc += img[row, col + j - c - 1] * kernel[1, j]
+                end
+                out[row, col] = acc
             end
-            out[row, col] = acc
         end
     end
+
+    # Left border: cols 1 .. c.  Column index may underflow.
+    if c >= 1
+        Threads.@threads for col in 1:c
+            @inbounds for row in 1:H
+                acc = z
+                for j in 1:kc
+                    ic = col + j - c - 1
+                    acc += _getpixel_col(img, row, ic, Val{B}()) * kernel[1, j]
+                end
+                out[row, col] = acc
+            end
+        end
+    end
+
+    # Right border: cols W-c+1 .. W.  Column index may overflow.
+    if c >= 1
+        Threads.@threads for col in W-c+1:W
+            @inbounds for row in 1:H
+                acc = z
+                for j in 1:kc
+                    ic = col + j - c - 1
+                    acc += _getpixel_col(img, row, ic, Val{B}()) * kernel[1, j]
+                end
+                out[row, col] = acc
+            end
+        end
+    end
+
     out
 end
 
-function _correlate_2d!(out::AbstractMatrix{S}, img::AbstractMatrix,
-                        kernel::AbstractMatrix) where {S}
+# ---- 2D non-separable filter ----
+
+function _correlate_2d!(out::AbstractMatrix, img::AbstractMatrix,
+                        kernel::AbstractMatrix, ::Val{B}) where {B}
     kr, kc = size(kernel)
-    Ho, Wo = size(out)
+    r, c = kr ÷ 2, kc ÷ 2
+    H, W = size(out)
+    S = eltype(out)
     z = zero(S)
-    Threads.@threads for col in 1:Wo
-        @inbounds for row in 1:Ho
-            acc = z
-            for kc_i in 1:kc, kr_i in 1:kr
-                acc += img[row + kr_i - 1, col + kc_i - 1] * kernel[kr_i, kc_i]
+
+    # Interior: rows r+1..H-r, cols c+1..W-c.  All kernel footprint
+    # pixels are in bounds — full @inbounds fast path.
+    ri, re = r + 1, H - r
+    ci, ce = c + 1, W - c
+    if ri <= re && ci <= ce
+        Threads.@threads for col in ci:ce
+            @inbounds for row in ri:re
+                acc = z
+                for kc_i in 1:kc, kr_i in 1:kr
+                    acc += img[row + kr_i - r - 1, col + kc_i - c - 1] *
+                           kernel[kr_i, kc_i]
+                end
+                out[row, col] = acc
             end
-            out[row, col] = acc
         end
     end
+
+    # Top strip: rows 1..r, all columns.  Row index may underflow.
+    # (Includes the four corner regions — no separate corner handling needed.)
+    if r >= 1
+        Threads.@threads for col in 1:W
+            @inbounds for row in 1:r
+                acc = z
+                for kc_i in 1:kc, kr_i in 1:kr
+                    ir = row + kr_i - r - 1
+                    ic = col + kc_i - c - 1
+                    acc += _getpixel(img, ir, ic, Val{B}()) * kernel[kr_i, kc_i]
+                end
+                out[row, col] = acc
+            end
+        end
+    end
+
+    # Bottom strip: rows H-r+1..H, all columns.  Row index may overflow.
+    if r >= 1
+        Threads.@threads for col in 1:W
+            @inbounds for row in H-r+1:H
+                acc = z
+                for kc_i in 1:kc, kr_i in 1:kr
+                    ir = row + kr_i - r - 1
+                    ic = col + kc_i - c - 1
+                    acc += _getpixel(img, ir, ic, Val{B}()) * kernel[kr_i, kc_i]
+                end
+                out[row, col] = acc
+            end
+        end
+    end
+
+    # Left strip: middle rows, cols 1..c.  Only column index may underflow;
+    # row index is always in bounds for rows ri..re.
+    if c >= 1 && ri <= re
+        Threads.@threads for col in 1:c
+            @inbounds for row in ri:re
+                acc = z
+                for kc_i in 1:kc, kr_i in 1:kr
+                    ic = col + kc_i - c - 1
+                    acc += _getpixel_col(img, row + kr_i - r - 1, ic, Val{B}()) *
+                           kernel[kr_i, kc_i]
+                end
+                out[row, col] = acc
+            end
+        end
+    end
+
+    # Right strip: middle rows, cols W-c+1..W.  Only column index may overflow.
+    if c >= 1 && ri <= re
+        Threads.@threads for col in W-c+1:W
+            @inbounds for row in ri:re
+                acc = z
+                for kc_i in 1:kc, kr_i in 1:kr
+                    ic = col + kc_i - c - 1
+                    acc += _getpixel_col(img, row + kr_i - r - 1, ic, Val{B}()) *
+                           kernel[kr_i, kc_i]
+                end
+                out[row, col] = acc
+            end
+        end
+    end
+
     out
 end
