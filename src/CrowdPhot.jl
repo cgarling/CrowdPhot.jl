@@ -8,6 +8,7 @@ import Random
 using StaticArrays: SMatrix, @SMatrix, @SVector
 using Statistics: median, median!, mean, std
 
+export Background2D
 export simulate_sources, simulate_image, make_gaussians_image, centroid_poly, choose_centroid
 export matched_filter, MatchedFilterResult
 
