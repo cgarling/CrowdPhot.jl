@@ -289,7 +289,7 @@ function evaluate_fg(model::GaussianPSF{T}, py, px) where {T}
     df_dtheta = Ag * γ * Qtheta
     df_dflux = g / norm
     df_dbkg = one(T)
-    G = SA[df_dy, df_dx, df_dax, df_day, df_dtheta, df_dflux, df_dbkg]
+    G = SA[df_dy, df_dx, df_day, df_dax, df_dtheta, df_dflux, df_dbkg]
     return f, G
 end
 
@@ -336,7 +336,7 @@ function evaluate_fgh(model::GaussianPSF{T}, py, px) where {T}
     df_dtheta = Ag * γ * Qtheta
     df_dflux = g / norm
     df_dbkg = one(T)
-    G = SA[df_dy, df_dx, df_dax, df_day, df_dtheta, df_dflux, df_dbkg]
+    G = SA[df_dy, df_dx, df_day, df_dax, df_dtheta, df_dflux, df_dbkg]
 
     # Second derivatives of sqmahab
     Rxx = 2 * (cs^2 / ax² + sn^2 / ay²)
@@ -354,7 +354,7 @@ function evaluate_fgh(model::GaussianPSF{T}, py, px) where {T}
     Raytheta = d * 4 * u * v / ay^3
     Rtheta2 = d^2 * 2 * (v^2 - u^2) * D
 
-    # Hessian entries (row/col order: y, x, x_fwhm, y_fwhm, theta, flux, bkg)
+    # Hessian entries (row/col order: y, x, y_fwhm, x_fwhm, theta, flux, bkg)
     # Second derivatives involving only sqmahab (∂A/∂x = ∂A/∂y = ∂A/∂theta = 0)
     dxx = Ag * (γ^2 * Qx^2 + γ * Rxx)
     dyy = Ag * (γ^2 * Qy^2 + γ * Ryy)
@@ -386,12 +386,12 @@ function evaluate_fgh(model::GaussianPSF{T}, py, px) where {T}
     dthetaflux = γ * g * Qtheta / norm
 
     H = SA[
-        dyy     dxy     dyax     dyay     dytheta     dyflux     0
-        dxy     dxx     dxax     dxay     dxtheta     dxflux     0
-        dyax    dxax    daxax    daxay    daxtheta    daxflux    0
-        dyay    dxay    daxay    dayay    daytheta    dayflux    0
-        dytheta dxtheta daxtheta daytheta dtheta2     dthetaflux 0
-        dyflux  dxflux  daxflux  dayflux  dthetaflux  0          0
+        dyy     dxy     dyay     dyax     dytheta     dyflux     0
+        dxy     dxx     dxay     dxax     dxtheta     dxflux     0
+        dyay    dxay    dayay    daxay    daytheta    dayflux    0
+        dyax    dxax    daxay    daxax    daxtheta    daxflux    0
+        dytheta dxtheta daytheta daxtheta dtheta2     dthetaflux 0
+        dyflux  dxflux  dayflux  daxflux  dthetaflux  0          0
         0       0       0        0        0           0          0
     ]
     return f, G, H
@@ -637,7 +637,7 @@ function evaluate_fg(model::GaussianPRF{T}, py, px) where {T}
     df_dtheta = fl4 * deg2rad(one(T)) * (dEy_dv * u * Ex - dEx_du * v * Ey)
     df_dflux = Ex * Ey / 4
     df_dbkg = one(T)
-    G = SA[df_dy, df_dx, df_dax, df_day, df_dtheta, df_dflux, df_dbkg]
+    G = SA[df_dy, df_dx, df_day, df_dax, df_dtheta, df_dflux, df_dbkg]
     return f, G
 end
 
@@ -837,7 +837,7 @@ function evaluate_fg(model::MoffatPSF{T}, py, px) where {T}
     df_dβ = Ag * (1 / (β - 1) - log(h))
     df_dflux = profile / norm
     df_dbkg = one(T)
-    G = SA[df_dy, df_dx, df_dax, df_day, df_dtheta, df_dβ, df_dflux, df_dbkg]
+    G = SA[df_dy, df_dx, df_day, df_dax, df_dtheta, df_dβ, df_dflux, df_dbkg]
     return f, G
 end
 
