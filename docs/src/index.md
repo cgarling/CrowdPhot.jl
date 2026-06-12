@@ -14,7 +14,12 @@ estimation, and synthetic-image simulation.
     `(x, y)` maps to `image[y, x]`: `y` is the first matrix dimension and
     `x` is the second matrix dimension. This convention applies to source
     positions, peaks, centroids, PSF model centers, fitting, simulation, and
-    internal calculations. See [here](@ref pixel_coords) for more information.
+    internal calculations. For consistency between matrix indexing operations
+    and coordinate ordering, we use `(y, x)` order for coordinate inputs and
+    outputs from functions. These are the same *quantities* as in most other
+    software (i.e., our `x` is the same as the `x` in photutils)  but we order
+    them differently for consistency between callsites, return values, and
+    matrix operations. See [here](@ref pixel_coords) for more information.
 
 The package is organized around a few composable pieces:
 
@@ -50,10 +55,6 @@ Available parametric models include:
 | [`MoffatPSF`](@ref) | Elliptical Moffat PSF with rotation |
 | [`AiryPSF`](@ref) | Airy-disk PSF parameterized by first-dark-ring radius |
 | [`ImagePSF`](@ref) | Empirical image-backed PSF with bicubic interpolation |
-
-All current PSF models that implement analytic gradients have specialized
-`fit_star` dispatches. These preserve the generic `fixed`-parameter interface
-while using scalar model-specific accumulation kernels for the normal equations.
 
 Empirical PSF support includes [`ImagePSF`](@ref) for tabulated PSFs and
 [`fit_psf`](@ref) for building image-backed ePSFs from stellar cutouts.

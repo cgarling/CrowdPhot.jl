@@ -456,7 +456,7 @@ Base.@kwdef struct CircularGaussianPRF{T} <: AbstractPSFModel{T}
     end
 end
 
-# Peak occurs when centroid is exactly at a pixel centre: flux * erf(√ln2 / fwhm)² + bkg
+# Peak occurs when centroid is exactly at a pixel center: flux * erf(√ln2 / fwhm)² + bkg
 peak(model::CircularGaussianPRF{T}) where {T} =
     model.flux * erf(sqrt(T(log(2))) / model.fwhm)^2 + model.bkg
 effective_area(model::CircularGaussianPRF{T}) where {T} = π * model.fwhm^2 / T(2 * log(2))
@@ -567,7 +567,7 @@ Base.@kwdef struct GaussianPRF{T} <: AbstractPSFModel{T}
     end
 end
 
-# Peak occurs when centroid is at a pixel centre: flux * erf(√ln2/x_fwhm) * erf(√ln2/y_fwhm) + bkg
+# Peak occurs when centroid is at a pixel center: flux * erf(√ln2/x_fwhm) * erf(√ln2/y_fwhm) + bkg
 peak(model::GaussianPRF{T}) where {T} =
     model.flux * erf(sqrt(T(log(2))) / model.x_fwhm) * erf(sqrt(T(log(2))) / model.y_fwhm) + model.bkg
 effective_area(model::GaussianPRF{T}) where {T} = π * model.x_fwhm * model.y_fwhm / T(2 * log(2))

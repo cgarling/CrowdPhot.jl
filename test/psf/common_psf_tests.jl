@@ -301,9 +301,9 @@ end
         end
     end
 
-    @testset "symmetry about centre for integer-centroid model" begin
-        # A circular Gaussian centred exactly on a pixel should produce a
-        # rendered kernel that is symmetric about its centre pixel.
+    @testset "symmetry about center for integer-centroid model" begin
+        # A circular Gaussian centered exactly on a pixel should produce a
+        # rendered kernel that is symmetric about its center pixel.
         for fwhm in (3.0, 5.0, 8.0)
             m = CircularGaussianPSF(; x=15.0, y=25.0, fwhm, flux=50.0, bkg=0.0)
             kern = render(m)

@@ -17,7 +17,7 @@ end
 
 @testset "centroid_poly" begin
 
-    @testset "noise-free: centroid at pixel centre" begin
+    @testset "noise-free: centroid at pixel center" begin
         img, model = _make_star(; x0=5.0, y0=5.0)
         result = centroid_poly(img)
         @test result.x ≈ 5.0 atol=1e-12
@@ -85,7 +85,7 @@ end
         @test r3.peak_err ≈ r1.peak_err / sqrt(2)  rtol=1e-10
 
         # down-weighting a corner pixel should not change centroid much for
-        # symmetric star centred on a pixel
+        # symmetric star centered on a pixel
         w = ones(9, 9)
         w[1, 1] = 0.01
         r4 = centroid_poly(img, w)

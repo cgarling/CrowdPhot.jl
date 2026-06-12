@@ -277,10 +277,11 @@ computes in array-index order and then explicitly reverses the result (e.g.
 
 CrowdPhot takes the opposite approach: the array layout is primary, so function
 signatures and returns use `(y, x)` to match `image[i, j]` indexing.  Note that
-photutils' `image[yi, xi]` and CrowdPhot's `image[y, x]` refer to the same
-array element (modulo 0- vs 1-based indexing). Both packages store data the
-same way; they only disagree about whether function signatures should follow
-the array `(y,x)` or the mathematical `(x, y)` convention.
+photutils' `image[yi+1, xi+1]` and CrowdPhot's `image[y, x]` refer to the same
+array element (after accounting for the fact that Python is 0-indexed while
+Julia is 1-indexed). Both packages store data the same way; they only disagree
+about whether function signatures should follow the array `(y,x)` or the
+mathematical `(x, y)` convention.
 
 ### FITS / WCS / IRAF / DS9 / SourceExtractor
 

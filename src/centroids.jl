@@ -3,7 +3,7 @@
 #
 # The 3x3 patch is indexed in row-major order.  Local coordinates (y, x)
 # follow the global convention: y is the row offset (first index), x is the
-# column offset (second index), each in {-1, 0, 1} relative to the centre pixel:
+# column offset (second index), each in {-1, 0, 1} relative to the center pixel:
 #
 #   (-1,-1)  (-1, 0)  (-1, 1)
 #   ( 0,-1)  ( 0, 0)  ( 0, 1)
@@ -192,7 +192,7 @@ function _centroid_poly3(image::AbstractMatrix{T}, inv_var::AbstractMatrix{T}) w
 end
 
 """
-    centroid_poly(image, inv_var = nothing) -> NamedTuple
+    centroid_poly(image::AbstractMatrix [, inv_var]) -> NamedTuple
 
 Polynomial centroid of a point source in `image`. This version is
 designed to work with image cutouts containing a single point source,
@@ -267,11 +267,7 @@ calling `findmax` internally. Useful when the caller has already identified
 the peak pixel (e.g. from a correlation map). `i0` is the row index
 (y-coordinate) and `j0` is the column index (x-coordinate).
 
-Returns the same `NamedTuple` as the two-argument form (fields `y`, `x`,
-`peak`, `y_err`, `x_err`, `peak_err`, `cov`, `com`), including both
-the polynomial centroid and the center-of-mass centroid in `com`. In the
-returned `NamedTuple`, `.y` is the row coordinate and `.x` is the
-column coordinate.
+Returns the same `NamedTuple` as the two-argument form.
 """
 function centroid_poly(image::AbstractMatrix{T}, i0::Int, j0::Int, inv_var::AbstractMatrix = Fill(one(T), size(image))) where {T <: Real}
     # check that a full 3×3 neighbourhood exists

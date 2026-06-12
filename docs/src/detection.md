@@ -117,7 +117,7 @@ For **spatially varying noise** described by an inverse-variance map
                           {\sqrt{\mathrm{den}(y,x)}}
 ```
 
-This is the statistic computed by the current fixed-kernel weighted path.
+This is the statistic computed by the current weighted path.
 It is calibrated under the null hypothesis when the image is already
 background-subtracted.
 
@@ -163,7 +163,7 @@ and the variance is slightly larger.  The
 zero-sum correction, which yields marginally lower noise variance at
 the cost of sensitivity to imperfect background subtraction.
 
-The zero-sum constraint carries a small noise penalty.  The variance
+The zero-sum constraint does carry a small noise penalty.  The variance
 of the correlation response is ``\sigma^2/\mathrm{denom}`` rather than
 the ``\sigma^2/\sum P^2`` that would be achieved without the zero-sum
 correction.  The SNR ratio is
@@ -272,7 +272,7 @@ CrowdPhot provides a fast polynomial centroiding algorithm based on
 polynomial to the 3×3 patch surrounding the brightest pixel of a
 PSF-correlated (matched-filtered) image.  Under the well-sampled,
 approximately Gaussian assumptions studied by Vakili & Hogg, the polynomial
-centroid can approach the Cramér-Rao lower bound and is ``\sim\!200`` ns per
+centroid can approach the Cramér-Rao lower bound and takes ``\sim\!200`` ns per
 source.
 
 Both the polynomial centroid and an inverse-variance-weighted

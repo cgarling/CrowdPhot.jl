@@ -9,7 +9,7 @@ using Test
 # Test helpers
 # ---------------------------------------------------------------------------
 
-"Create a 2D Gaussian PSF kernel centred in an odd-sized array."
+"Create a 2D Gaussian PSF kernel centered in an odd-sized array."
 function _gaussian_kernel(k::Int, σ::Real)
     x = LinRange(-k÷2, k÷2, k)
     g = exp.(-0.5 .* (x ./ σ) .^ 2)
@@ -459,6 +459,15 @@ end
         @test length(result.peaks) >= 1
     end
 
+    @testset "Float FWHM dispatch" begin
+        img = randn(rng, 50, 50) .* 0.3
+        _place_source!(img, 25.0, 25.0, 30.0, 3.0 / 2.355)
+        result = matched_filter(img, 5.0; sigma=4.0)
+        @test result isa MatchedFilterResult
+        @test isodd(size(result.kernel, 1))
+        @test length(result.peaks) >= 1
+    end
+
     @testset "Tuple{Int,Int} FWHM dispatch" begin
         img = randn(rng, 50, 50) .* 0.3
         _place_source!(img, 25.0, 25.0, 30.0, 3.0 / 2.355)
@@ -466,7 +475,19 @@ end
         @test result isa MatchedFilterResult
         @test isodd(size(result.kernel, 1))
         @test isodd(size(result.kernel, 2))
+        @test length(result.peaks) >= 1
     end
+
+    @testset "Tuple Float FWHM dispatch" begin
+        img = randn(rng, 50, 50) .* 0.3
+        _place_source!(img, 25.0, 25.0, 30.0, 3.0 / 2.355)
+        result = matched_filter(img, (5.0f0, 7.0); sigma=4.0)
+        @test result isa MatchedFilterResult
+        @test isodd(size(result.kernel, 1))
+        @test isodd(size(result.kernel, 2))
+        @test length(result.peaks) >= 1
+    end
+
 end
 
 # ---------------------------------------------------------------------------

@@ -150,11 +150,11 @@ end
         kern = Float64[1 2 1; 2 4 2; 1 2 1] ./ 16
         H, W = 9, 9
         img = zeros(H, W)
-        img[5, 5] = 1.0   # spike at centre
+        img[5, 5] = 1.0   # spike at center
 
         out = correlate(img, kern, :zero)
 
-        # The kernel should be reproduced centred at the spike.
+        # The kernel should be reproduced centered at the spike.
         # For a 9×9 image with a 3×3 kernel: out[4:6, 4:6] ≈ kern
         @test out[4:6, 4:6] ≈ kern
         @test all(out[1:3, :] .== 0)   # top zero region
