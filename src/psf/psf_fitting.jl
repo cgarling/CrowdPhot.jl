@@ -462,7 +462,7 @@ function _accum_gaussian!(
         wr = w * r
         cost = muladd(wr, r, cost)
 
-        # Match evaluate_fg's parameter order: y, x, x_fwhm, y_fwhm, theta, flux, bkg.
+        # Match evaluate_fg's parameter order: y, x, y_fwhm, x_fwhm, theta, flux, bkg.
         D = one(FT) / ax² - one(FT) / ay²
         Qx = -2 * (cs * u / ax² - sn * v / ay²)
         Qy = -2 * (sn * u / ax² + cs * v / ay²)
@@ -472,8 +472,8 @@ function _accum_gaussian!(
         g_full = (
             Ag * γ * Qy,
             Ag * γ * Qx,
-            Ag * (-one(FT) / ax + γ * Qax),
             Ag * (-one(FT) / ay + γ * Qay),
+            Ag * (-one(FT) / ax + γ * Qax),
             Ag * γ * Qtheta,
             profile / norm,
             one(FT),
@@ -672,7 +672,7 @@ function _accum_gaussian_prf!(
         wr = w * r
         cost = muladd(wr, r, cost)
 
-        # Match evaluate_fg's parameter order: y, x, x_fwhm, y_fwhm, theta, flux, bkg.
+        # Match evaluate_fg's parameter order: y, x, y_fwhm, x_fwhm, theta, flux, bkg.
         Gxp = two_sqrtpi * exp(-u_p^2)
         Gxm = two_sqrtpi * exp(-u_m^2)
         Gyp = two_sqrtpi * exp(-v_p^2)
@@ -682,8 +682,8 @@ function _accum_gaussian_prf!(
         g_full = (
             fl4 * (sn * dEx_du * Ey + cs * dEy_dv * Ex),
             fl4 * (cs * dEx_du * Ey - sn * dEy_dv * Ex),
-            fl4 / ax * (Gxm * u_m - Gxp * u_p) * Ey,
             fl4 / ay * Ex * (Gym * v_m - Gyp * v_p),
+            fl4 / ax * (Gxm * u_m - Gxp * u_p) * Ey,
             fl4 * degree * (dEy_dv * u * Ex - dEx_du * v * Ey),
             Ex * Ey / 4,
             one(FT),
@@ -874,7 +874,7 @@ function _accum_moffat!(
         wr = w * r
         cost = muladd(wr, r, cost)
 
-        # Match evaluate_fg's parameter order: y, x, x_α, y_α, theta, β, flux, bkg.
+        # Match evaluate_fg's parameter order: y, x, y_α, x_α, theta, β, flux, bkg.
         D = one(FT) / ax² - one(FT) / ay²
         Qx = -2 * (cs * u / ax² - sn * v / ay²)
         Qy = -2 * (sn * u / ax² + cs * v / ay²)
@@ -885,8 +885,8 @@ function _accum_moffat!(
         g_full = (
             Ag * scale * Qy,
             Ag * scale * Qx,
-            Ag * (-one(FT) / ax + scale * Qax),
             Ag * (-one(FT) / ay + scale * Qay),
+            Ag * (-one(FT) / ax + scale * Qax),
             Ag * scale * Qtheta,
             Ag * (one(FT) / (β - one(FT)) - log(h)),
             profile / norm,
