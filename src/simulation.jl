@@ -39,9 +39,9 @@ shot noise, and a background/read-noise variance per pixel of
 corresponding source flux in electrons is `F * gain`:
 
 ```math
-\\mathrm{snr} \\approx \\frac{F}{\\sqrt{F / g + A_\\mathrm{eff}\\,\\sigma_b^2}},
-\\quad
-\\sigma_b^2 = \\max\\left(0, \\frac{\\mathrm{background}}{g} + \\mathrm{read\\_noise}^2\\right)
+\mathrm{snr} \approx \frac{F}{\sqrt{F / g + A_\mathrm{eff}\,\sigma_b^2}},
+\quad
+\sigma_b^2 = \max\left(0, \frac{\mathrm{background}}{g} + \mathrm{read\_noise}^2\right)
 ```
 
 Solving the quadratic for the positive flux gives

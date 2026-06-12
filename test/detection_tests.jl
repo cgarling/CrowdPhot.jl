@@ -342,7 +342,7 @@ end
         r_weighted = matched_filter(data, kernel; inv_var,
                                     normalize_zerosum=false, sigma=thresh)
 
-        x0, y0 = 9, 9  # source center
+        y0, x0 = 9, 9  # source center
 
         # Uniform-weight (SEP conv): source is not detected
         @test r_uniform.significance_map[y0, x0] < thresh
@@ -440,7 +440,7 @@ end
     rng = StableRNG(505)
 
     @testset "AbstractPSFModel dispatch" begin
-        model = CircularGaussianPSF(; x=0.0, y=0.0, fwhm=4.0, flux=1.0, bkg=0.0)
+        model = CircularGaussianPSF(; y=0.0, x=0.0, fwhm=4.0, flux=1.0, bkg=0.0)
         img = randn(rng, 50, 50) .* 0.3
         _place_source!(img, 25.0, 25.0, 30.0, 4.0 / 2.355)
         result = matched_filter(img, model; sigma=4.0)
@@ -452,40 +452,44 @@ end
 
     @testset "Int FWHM dispatch" begin
         img = randn(rng, 50, 50) .* 0.3
-        _place_source!(img, 25.0, 25.0, 30.0, 3.0 / 2.355)
+        _place_source!(img, 25.0, 20.0, 30.0, 3.0 / 2.355)
         result = matched_filter(img, 5; sigma=4.0)
         @test result isa MatchedFilterResult
         @test isodd(size(result.kernel, 1))
         @test length(result.peaks) >= 1
+        @test result.peaks[1] == CartesianIndex(25, 20)
     end
 
     @testset "Float FWHM dispatch" begin
         img = randn(rng, 50, 50) .* 0.3
-        _place_source!(img, 25.0, 25.0, 30.0, 3.0 / 2.355)
+        _place_source!(img, 25.0, 20.0, 30.0, 3.0 / 2.355)
         result = matched_filter(img, 5.0; sigma=4.0)
         @test result isa MatchedFilterResult
         @test isodd(size(result.kernel, 1))
         @test length(result.peaks) >= 1
+        @test result.peaks[1] == CartesianIndex(25, 20)
     end
 
     @testset "Tuple{Int,Int} FWHM dispatch" begin
         img = randn(rng, 50, 50) .* 0.3
-        _place_source!(img, 25.0, 25.0, 30.0, 3.0 / 2.355)
+        _place_source!(img, 25.0, 20.0, 30.0, 3.0 / 2.355)
         result = matched_filter(img, (5, 7); sigma=4.0)
         @test result isa MatchedFilterResult
         @test isodd(size(result.kernel, 1))
         @test isodd(size(result.kernel, 2))
         @test length(result.peaks) >= 1
+        @test result.peaks[1] == CartesianIndex(25, 20)
     end
 
     @testset "Tuple Float FWHM dispatch" begin
         img = randn(rng, 50, 50) .* 0.3
-        _place_source!(img, 25.0, 25.0, 30.0, 3.0 / 2.355)
+        _place_source!(img, 25.0, 20.0, 30.0, 3.0 / 2.355)
         result = matched_filter(img, (5.0f0, 7.0); sigma=4.0)
         @test result isa MatchedFilterResult
         @test isodd(size(result.kernel, 1))
         @test isodd(size(result.kernel, 2))
         @test length(result.peaks) >= 1
+        @test result.peaks[1] == CartesianIndex(25, 20)
     end
 
 end
@@ -499,7 +503,7 @@ end
     @testset "field sizes are consistent" begin
         kern = _gaussian_kernel(9, 1.5)
         img = randn(rng, 40, 40) .* 0.3
-        _place_source!(img, 20.0, 20.0, 20.0, 1.5)
+        _place_source!(img, 25.0, 20.0, 20.0, 1.5)
         inv_var = fill(4.0, size(img))
         result = matched_filter(img, kern; inv_var, sigma=3.0)
 
@@ -510,7 +514,7 @@ end
         @test size(result.smoothed_inv_var) == (40, 40)
         @test length(result.peaks) == length(result.peak_significances)
         @test length(result.peaks) == length(result.peak_fluxes)
-        @test eltype(result.peaks) == CartesianIndex{2}
+        @test result.peaks[1] == CartesianIndex(25, 20)
         @test result.kernel_norm > 0
     end
 
