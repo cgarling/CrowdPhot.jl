@@ -364,8 +364,8 @@ function _accum_circular_gaussian!(
         wr = w * r
         cost = muladd(wr, r, cost)
         g_full = (
-            -2 * Ag * γ_f2 * dx,
             -2 * Ag * γ_f2 * dy,
+            -2 * Ag * γ_f2 * dx,
             -2 * Ag * (1 + γ * sqmahab) / fwhm,
             g / norm,
             one(FT),
@@ -462,7 +462,7 @@ function _accum_gaussian!(
         wr = w * r
         cost = muladd(wr, r, cost)
 
-        # Match evaluate_fg's parameter order: x, y, x_fwhm, y_fwhm, theta, flux, bkg.
+        # Match evaluate_fg's parameter order: y, x, x_fwhm, y_fwhm, theta, flux, bkg.
         D = one(FT) / ax² - one(FT) / ay²
         Qx = -2 * (cs * u / ax² - sn * v / ay²)
         Qy = -2 * (sn * u / ax² + cs * v / ay²)
@@ -470,8 +470,8 @@ function _accum_gaussian!(
         Qay = -2 * v^2 / ay^3
         Qtheta = degree * 2 * u * v * D
         g_full = (
-            Ag * γ * Qx,
             Ag * γ * Qy,
+            Ag * γ * Qx,
             Ag * (-one(FT) / ax + γ * Qax),
             Ag * (-one(FT) / ay + γ * Qay),
             Ag * γ * Qtheta,
@@ -565,14 +565,14 @@ function _accum_circular_gaussian_prf!(
         wr = w * r
         cost = muladd(wr, r, cost)
 
-        # Match evaluate_fg's parameter order: x, y, fwhm, flux, bkg.
+        # Match evaluate_fg's parameter order: y, x, fwhm, flux, bkg.
         Gxp = two_sqrtpi * exp(-u_p^2)
         Gxm = two_sqrtpi * exp(-u_m^2)
         Gyp = two_sqrtpi * exp(-v_p^2)
         Gym = two_sqrtpi * exp(-v_m^2)
         g_full = (
-            fl4 * Ey * α * (Gxm - Gxp),
             fl4 * Ex * α * (Gym - Gyp),
+            fl4 * Ey * α * (Gxm - Gxp),
             fl4 / fwhm * ((Gxm * u_m - Gxp * u_p) * Ey + Ex * (Gym * v_m - Gyp * v_p)),
             Ex * Ey / 4,
             one(FT),
@@ -672,7 +672,7 @@ function _accum_gaussian_prf!(
         wr = w * r
         cost = muladd(wr, r, cost)
 
-        # Match evaluate_fg's parameter order: x, y, x_fwhm, y_fwhm, theta, flux, bkg.
+        # Match evaluate_fg's parameter order: y, x, x_fwhm, y_fwhm, theta, flux, bkg.
         Gxp = two_sqrtpi * exp(-u_p^2)
         Gxm = two_sqrtpi * exp(-u_m^2)
         Gyp = two_sqrtpi * exp(-v_p^2)
@@ -680,8 +680,8 @@ function _accum_gaussian_prf!(
         dEx_du = αx * (Gxm - Gxp)
         dEy_dv = αy * (Gym - Gyp)
         g_full = (
-            fl4 * (cs * dEx_du * Ey - sn * dEy_dv * Ex),
             fl4 * (sn * dEx_du * Ey + cs * dEy_dv * Ex),
+            fl4 * (cs * dEx_du * Ey - sn * dEy_dv * Ex),
             fl4 / ax * (Gxm * u_m - Gxp * u_p) * Ey,
             fl4 / ay * Ex * (Gym * v_m - Gyp * v_p),
             fl4 * degree * (dEy_dv * u * Ex - dEx_du * v * Ey),
@@ -774,8 +774,8 @@ function _accum_circular_moffat!(
         wr = w * r
         cost = muladd(wr, r, cost)
         g_full = (
-            2 * Ag * β * dx / (α² * u),
             2 * Ag * β * dy / (α² * u),
+            2 * Ag * β * dx / (α² * u),
             Ag * (-2 / α + 2 * β * r2 / (α^3 * u)),
             Ag * (1 / (β - one(FT)) - log(u)),
             profile / norm,
@@ -874,7 +874,7 @@ function _accum_moffat!(
         wr = w * r
         cost = muladd(wr, r, cost)
 
-        # Match evaluate_fg's parameter order: x, y, x_α, y_α, theta, β, flux, bkg.
+        # Match evaluate_fg's parameter order: y, x, x_α, y_α, theta, β, flux, bkg.
         D = one(FT) / ax² - one(FT) / ay²
         Qx = -2 * (cs * u / ax² - sn * v / ay²)
         Qy = -2 * (sn * u / ax² + cs * v / ay²)
@@ -883,8 +883,8 @@ function _accum_moffat!(
         Qtheta = degree * 2 * u * v * D
         scale = -β / h
         g_full = (
-            Ag * scale * Qx,
             Ag * scale * Qy,
+            Ag * scale * Qx,
             Ag * (-one(FT) / ax + scale * Qax),
             Ag * (-one(FT) / ay + scale * Qay),
             Ag * scale * Qtheta,
@@ -999,7 +999,7 @@ function _accum_airy!(
             df_dy = -df_dr * dy / r
             df_da = amp / a * (-u * dA2_du - 2 * A2)
             df_dradius = df_da / airy_rz
-            g_full = (df_dx, df_dy, df_dradius, df_dflux, one(FT))
+            g_full = (df_dy, df_dx, df_dradius, df_dflux, one(FT))
         end
 
         # Accumulate only the active parameter block expected by lm_irls.
@@ -1086,8 +1086,8 @@ function _accum_image_psf!(
         wr = w * r
         cost = muladd(wr, r, cost)
         g_full = (
-            -flux * sx * FT(dpdu),
             -flux * sy * FT(dpdv),
+            -flux * sx * FT(dpdu),
             profile,
             one(FT),
         )

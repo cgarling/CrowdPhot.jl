@@ -18,11 +18,12 @@ function _as_oversampling(oversampling)
 end
 
 """
-    ImagePSF(data; x=0, y=0, flux=1, bkg=0, origin=nothing,
+    ImagePSF(data; y=0, x=0, flux=1, bkg=0, origin=nothing,
              oversampling=1, fill_value=0, normalize=false)
+    ImagePSF(data, y, x, flux, bkg; kwargs...)
 
 Empirical image-backed PSF/ePSF model. `data` is a finite 2D sampled PSF image;
-`x` and `y` are the source centroid in detector-pixel coordinates, `flux` is a
+`y` and `x` are the source centroid in detector-pixel coordinates, `flux` is a
 multiplicative scale, and `bkg` is an additive scalar background. `oversampling`
 is the integer sampling factor of `data` relative to detector pixels.
 
@@ -31,7 +32,7 @@ Values outside the tabulated image are `flux * fill_value + bkg`.
 
 # Notes
 ## Centroid and origin
-`x` and `y` give the center of the star *in the image being modeled*. `origin` locates the
+`y` and `x` give the center of the star *in the image being modeled*. `origin` locates the
 stellar centroid inside the tabulated PSF image, in 1-based array coordinates.
 When evaluating at detector-pixel coordinates `(py, px)` for a star whose putative
 center is at `(y, x)`, the tabulated PSF is sampled at
@@ -85,8 +86,8 @@ end
 
 function ImagePSF(
         data::AbstractMatrix;
-        x = 0,
         y = 0,
+        x = 0,
         flux = 1,
         bkg = 0,
         origin = nothing,
@@ -137,7 +138,7 @@ end
 ImagePSF(data::AbstractMatrix, y, x, flux, bkg; kwargs...) =
     ImagePSF(data; x, y, flux, bkg, kwargs...)
 
-ConstructionBase.getproperties(model::ImagePSF) = (x = model.x, y = model.y, flux = model.flux, bkg = model.bkg)
+ConstructionBase.getproperties(model::ImagePSF) = (y = model.y, x = model.x, flux = model.flux, bkg = model.bkg)
 
 function ConstructionBase.setproperties(model::ImagePSF{T, S}, patch::NamedTuple) where {T, S}
     # Only fit parameters can change; PSF data stay fixed.
@@ -301,7 +302,7 @@ function evaluate_fg(model::ImagePSF{T}, py, px) where {T}
     df_dy = -model.flux * T(sy) * T(dpdv)
     df_dflux = profile
     df_dbkg = one(T)
-    return f, SA[df_dx, df_dy, df_dflux, df_dbkg]
+    return f, SA[df_dy, df_dx, df_dflux, df_dbkg]
 end
 
 """

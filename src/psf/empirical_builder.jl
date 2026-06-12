@@ -57,7 +57,7 @@ struct EmpiricalStar{T}
 end
 
 ConstructionBase.getproperties(star::EmpiricalStar) =
-    (x = star.x, y = star.y, flux = star.flux, bkg = star.bkg)
+    (y = star.y, x = star.x, flux = star.flux, bkg = star.bkg)
 
 function ConstructionBase.setproperties(star::EmpiricalStar{T}, patch::NamedTuple) where {T}
     x = haskey(patch, :x) ? T(patch.x) : star.x
@@ -667,7 +667,7 @@ function fit_star_against_epsf(
     if length(pix) <= nparams
         return ConstructionBase.setproperties(star, (used = false, converged = false))
     end
-    x0 = fit_bkg ? T[star.x, star.y, star.flux, star.bkg] : T[star.x, star.y, star.flux]
+    x0 = fit_bkg ? T[star.y, star.x, star.flux, star.bkg] : T[star.y, star.x, star.flux]
     star_bkg = star.bkg  # capture before closure for fixed-bkg mode
 
     function accum!(A::AbstractMatrix{FT}, b::AbstractVector{FT}, residuals::AbstractVector{FT}, x::AbstractVector{FT}, weights) where {FT}
@@ -675,7 +675,7 @@ function fit_star_against_epsf(
         fill!(b, zero(FT))
         cost = zero(FT)
         model = ImagePSF(
-            psf.data; x = x[1], y = x[2], flux = x[3],
+            psf.data; y = x[1], x = x[2], flux = x[3],
             bkg = fit_bkg ? x[4] : star_bkg, origin = psf.origin,
             oversampling = psf.oversampling, fill_value = psf.fill_value
         )
@@ -710,7 +710,7 @@ function fit_star_against_epsf(
     if all(isfinite, p) && p[3] > eps(T)
         return ConstructionBase.setproperties(
             star, (
-                x = T(p[1]), y = T(p[2]), flux = T(p[3]),
+                y = T(p[1]), x = T(p[2]), flux = T(p[3]),
                 bkg = fit_bkg ? T(p[4]) : star.bkg,
                 converged = result.converged,
                 cost = T(result.minimum),
