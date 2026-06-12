@@ -53,7 +53,7 @@ end
     @test f ≈ evaluate(model, 11.9, 10.8)
 
     # Compare the analytic ImagePSF gradient against finite differences.
-    p0 = [model.x, model.y, model.flux, model.bkg]
+    p0 = [model.y, model.x, model.flux, model.bkg]
     fd = similar(p0)
     h = 1.0e-5
     for k in eachindex(p0)
@@ -61,8 +61,8 @@ end
         pminus = copy(p0)
         pplus[k] += h
         pminus[k] -= h
-        mplus = ImagePSF(model.data; x = pplus[1], y = pplus[2], flux = pplus[3], bkg = pplus[4], origin = model.origin, oversampling = model.oversampling)
-        mminus = ImagePSF(model.data; x = pminus[1], y = pminus[2], flux = pminus[3], bkg = pminus[4], origin = model.origin, oversampling = model.oversampling)
+        mplus = ImagePSF(model.data; y = pplus[1], x = pplus[2], flux = pplus[3], bkg = pplus[4], origin = model.origin, oversampling = model.oversampling)
+        mminus = ImagePSF(model.data; y = pminus[1], x = pminus[2], flux = pminus[3], bkg = pminus[4], origin = model.origin, oversampling = model.oversampling)
         fd[k] = (evaluate(mplus, 11.9, 10.8) - evaluate(mminus, 11.9, 10.8)) / (2h)
     end
     @test collect(g) ≈ fd rtol = 1.0e-5 atol = 1.0e-5
