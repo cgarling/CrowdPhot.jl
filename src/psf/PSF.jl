@@ -157,7 +157,9 @@ end
 
 Returns the model value `f` and partial derivatives of the `model`
 with respect to the parameters `G` at position `(y, x)`, where `y` is the
-row coordinate and `x` is the column coordinate.
+row coordinate and `x` is the column coordinate. `G` follows
+`ConstructionBase.getproperties(model)` order; model-center derivatives use
+`y` before `x`.
 """
 function evaluate_fg end
 
@@ -165,7 +167,9 @@ function evaluate_fg end
     evaluate_fgh(model::AbstractPSFModel{T}, y::Real, x::Real) → (f::T, G::SVector{T}, H::SMatrix{T})
 Returns the model value `f`, partial derivatives `G`, and Hessian matrix `H` of the `model`
 with respect to the parameters at position `(y, x)`, where `y` is the row coordinate and
-`x` is the column coordinate.
+`x` is the column coordinate. `G` and `H` follow
+`ConstructionBase.getproperties(model)` order; model-center derivatives use
+`y` before `x`.
 """
 function evaluate_fgh end
 
@@ -216,13 +220,13 @@ for determining pixel indices for rendering and fitting.
 ```jldoctest
 julia> using CrowdPhot.PSF: extent, CircularGaussianPSF, GaussianPSF
 
-julia> extent(CircularGaussianPSF(x=10, y=20, fwhm=5, flux=30, bkg=1), 5)
+julia> extent(CircularGaussianPSF(y=20, x=10, fwhm=5, flux=30, bkg=1), 5)
 ((7.5, 32.5), (-2.5, 22.5))
 
-julia> extent(GaussianPSF(x=10, y=20, x_fwhm=5, y_fwhm=3, theta=90, flux=30, bkg=1), 5)
+julia> extent(GaussianPSF(y=20, x=10, x_fwhm=5, y_fwhm=3, theta=90, flux=30, bkg=1), 5)
 ((7.5, 32.5), (2.5, 17.5))
 
-julia> extent(Int, GaussianPSF(x=10, y=20, x_fwhm=5, y_fwhm=3, theta=90, flux=30, bkg=1), 5)
+julia> extent(Int, GaussianPSF(y=20, x=10, x_fwhm=5, y_fwhm=3, theta=90, flux=30, bkg=1), 5)
 ((7, 33), (2, 18))
 ```
 """
