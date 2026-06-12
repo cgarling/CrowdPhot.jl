@@ -71,7 +71,6 @@ Base.@kwdef struct CircularGaussianPSF{T} <: AbstractPSFModel{T}
         return new{T}(T(y), T(x), T(fwhm), T(flux), T(bkg))
     end
 end
-CircularGaussianPSF(; y, x, fwhm, flux, bkg) = CircularGaussianPSF(y, x, fwhm, flux, bkg)
 peak(model::CircularGaussianPSF{T}) where {T} = model.flux / (π * model.fwhm^2 / -T(GAUSS_PRE)) + model.bkg
 effective_area(model::CircularGaussianPSF{T}) where {T} = π * model.fwhm^2 / T(2 * log(2))
 
@@ -772,8 +771,8 @@ Base.@kwdef struct MoffatPSF{T} <: AbstractPSFModel{T}
     flux::T
     bkg::T
 
-    function MoffatPSF(y, x, x_α, y_α, theta, β, flux, bkg)
-        T = promote_type(typeof(y), typeof(x), typeof(x_α), typeof(y_α), typeof(theta), typeof(β), typeof(flux), typeof(bkg))
+    function MoffatPSF(y, x, y_α, x_α,theta, β, flux, bkg)
+        T = promote_type(typeof(y), typeof(x), typeof(y_α), typeof(x_α), typeof(theta), typeof(β), typeof(flux), typeof(bkg))
         T = T <: Integer ? Float64 : T
         return new{T}(T(y), T(x), T(y_α), T(x_α), T(theta), T(β), T(flux), T(bkg))
     end
