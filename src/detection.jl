@@ -66,11 +66,7 @@ PSF template.
   zero sum, which cancels any uniform background offset in the correlation.
   The default (`true`) is the safe choice and should be used whenever the
   image may contain an un-subtracted background.  Set to `false` when the
-  image has been reliably background-subtracted: the zero-sum/non-zero-sum
-  SNR ratio is approximately ``\\sqrt{1 - 4/(R/\\sigma)^2}``, where ``R``
-  is the kernel truncation radius in units of the PSF width ``\\sigma``.
-  Thus the zero-sum penalty is ~13% at ``R=4\\sigma`` and ~25% at
-  ``R=3\\sigma``.
+  image has been reliably background-subtracted.
 - `sigma` is the detection threshold in units of the significance map.
 - `border` controls edge handling: `:replicate` (default) or `:zero`.
 
@@ -78,69 +74,6 @@ PSF template.
 
 A [`MatchedFilterResult`](@ref) containing the significance map, peak
 positions, and flux estimates.
-
-# Mathematical background
-
-By default (`normalize_zerosum = true`) the kernel is normalized to zero
-sum, ``\\sum K_i = 0``, so that any uniform background offset cancels
-automatically in the correlation.  This is valid regardless of whether
-the image has been background-subtracted.  On a subtracted image the expected
-flux response for an isolated source matched by ``P`` is unchanged, but the
-formal estimator differs and the zero-sum constraint carries an additional
-variance penalty.
-
-When `normalize_zerosum = false` the kernel is instead normalized by
-``\\sum P^2``, which yields marginally lower noise variance but requires
-the image to be reliably background-subtracted.
-
-The kernel is
-
-```math
-K_i = \\frac{P_i - \\bar{P}}{\\mathrm{denom}}, \\qquad
-\\bar{P} = \\frac{1}{N}\\sum_j P_j, \\qquad
-\\mathrm{denom} = \\sum_j P_j^2 - \\frac{(\\sum_j P_j)^2}{N}.
-```
-
-The detection significance (SNR) at each pixel is
-
-```math
-\\mathrm{SNR}(y,x) = \\frac{\\sum_{dy,dx} K_{dy,dx} \\, D[y+dy,\\,x+dx]}
-                          {\\sigma \\; / \\sqrt{\\mathrm{denom}}}
-```
-
-and the matched-filter flux estimate at a peak is ``\\hat{F} = \\sum K \\cdot D``
-evaluated at the peak position.  With `normalize_zerosum = true`, this is the
-profiled-background flux estimator: it fits the source amplitude after
-removing the best constant offset over the kernel footprint.  It is unbiased
-for an isolated source matching ``P``, but it is not algebraically identical
-to the known-background estimator ``\\sum P(D-B)/\\sum P^2``.
-
-For **spatially varying noise** described by an inverse-variance map
-``w_i = 1/\\sigma_i^2``, two correlations are required:
-
-```math
-\\mathrm{num}(y,x) = \\sum K_{dy,dx} \\, w[y+dy,\\,x+dx] \\, D[y+dy,\\,x+dx]
-```
-
-```math
-\\mathrm{den}(y,x) = \\sum K_{dy,dx}^2 \\, w[y+dy,\\,x+dx]
-```
-
-```math
-\\mathrm{SNR} = \\frac{\\mathrm{num}}{\\sqrt{\\mathrm{den}}}
-```
-
-where ``w = \\mathrm{inv\\_var}``.  When `inv_var = nothing`, uniform
-weights ``w = 1`` are assumed and the significance map is in units of the
-unknown pixel-level noise σ.  Divide the significance map by your noise
-estimate, or provide `inv_var`, to get true SNR.
-
-!!! note "Zero-sum kernel with spatially-varying weights"
-    When `normalize_zerosum = true` and `inv_var` varies significantly
-    across the kernel footprint, ``\\sum K_{dy,dx} = 0`` alone does **not**
-    guarantee ``\\sum K_{dy,dx} w[y+dy,x+dx] = 0``, so a constant background
-    can leak into the weighted response.  In this case you should
-    background-subtract the image before calling [`matched_filter`](@ref).
 """
 function matched_filter(image::AbstractMatrix{T}, kernel::AbstractMatrix;
                         inv_var::Union{AbstractMatrix{<:AbstractFloat}, Nothing}=nothing,
@@ -248,22 +181,22 @@ matched_filter(image::AbstractMatrix, model::AbstractPSFModel; kws...) =
     matched_filter(image, render(model); kws...)
 
 """
-    matched_filter(image::AbstractMatrix, fwhm::Int; kws...)
+    matched_filter(image::AbstractMatrix, fwhm::Number; kws...)
 
 Convenience method for matched-filter detection using a
 [`CircularGaussianPRF`](@ref) with the specified `fwhm`.
 """
-matched_filter(image::AbstractMatrix, fwhm::Int; kws...) = 
+matched_filter(image::AbstractMatrix, fwhm::Number; kws...) = 
     matched_filter(image, CircularGaussianPRF(; fwhm, x=0, y=0, bkg=0, flux=1); kws...)
 
 """
-    matched_filter(image::AbstractMatrix, fwhm::Tuple{Int, Int}; kws...)
+    matched_filter(image::AbstractMatrix, fwhm::NTuple{2, Number}; kws...)
 
 Convenience method for matched-filter detection using a
 [`GaussianPRF`](@ref) with y- and x-FWHM specified by the `fwhm` tuple as
 `(y_fwhm, x_fwhm)`.
 """
-matched_filter(image::AbstractMatrix, fwhm::Tuple{Int, Int}; kws...) = 
+matched_filter(image::AbstractMatrix, fwhm::Tuple{<:Number, <:Number}; kws...) = 
     matched_filter(image, GaussianPRF(; x=0, y=0, bkg=0, flux=1, x_fwhm=fwhm[2],
         y_fwhm=fwhm[1], theta=0); kws...)
 
@@ -278,8 +211,8 @@ Return the coordinates of all local maxima in `img`.  A pixel is a local
 maximum if its value is strictly greater than all 8 of its immediate
 neighbours (3×3 window).  If `edges=false`, pixels on the image boundary
 are excluded from consideration.  Each returned `CartesianIndex(row, col)`
-has `row` corresponding to the y (first array dimension) coordinate and
-`col` corresponding to the x (second array dimension) coordinate.
+has `row` corresponding to the `y` (first array dimension) coordinate and
+`col` corresponding to the `x` (second array dimension) coordinate.
 
 See also: [`matched_filter`](@ref).
 """
