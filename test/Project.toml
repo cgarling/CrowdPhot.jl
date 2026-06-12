@@ -22,3 +22,6 @@ SafeTestsets = "0.1"
 StableRNGs = "1.0.4"
 StaticArrays = "0.12, 1"
 Test = "1"
+
+[sources]
+CrowdPhot = {path = ".."}
