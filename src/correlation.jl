@@ -33,9 +33,9 @@ See also: [`correlate!`](@ref) for an in-place variant.
 # Notes
 - The center is assumed to be at integer index `((m+1)÷2, (n+1)÷2)`
   for an `m×n` kernel.
-Only `size(kernel)` is used to determine the centre; `axes(kernel)` is
+Only `size(kernel)` is used to determine the center; `axes(kernel)` is
 ignored.  Unlike ImageFiltering.jl (which uses OffsetArrays so that
-`kernel[-1:1, -1:1]` encodes the centre at `[0,0]`), this implementation
+`kernel[-1:1, -1:1]` encodes the center at `[0,0]`), this implementation
 relies purely on the size convention.
 
 ### Separability detection tolerances
@@ -54,9 +54,9 @@ a dense `Matrix` copy of the kernel, so wrapper array types are materialised.
 When `kernel` is a `Tuple` of two matrices, the **shape** of each factor
 determines the filtering direction:
 
-- `m × 1` — filters along rows (dimension 1).  Its centre is at row
+- `m × 1` — filters along rows (dimension 1).  Its center is at row
   `(m+1)÷2`.
-- `1 × n` — filters along columns (dimension 2).  Its centre is at column
+- `1 × n` — filters along columns (dimension 2).  Its center is at column
   `(n+1)÷2`.
 
 Each factor must have exactly one non-singleton dimension.  A factor that
@@ -162,7 +162,7 @@ _canonicalize(kernel::AbstractMatrix) = (_validate_kernel(kernel); _tryfactor(ke
 
 Validate kernel properties required for correct correlation:
 
-- Both dimensions must be odd (centre at integer index `((m+1)÷2, (n+1)÷2)`).
+- Both dimensions must be odd (center at integer index `((m+1)÷2, (n+1)÷2)`).
 - Axes must be 1-based (OffsetArrays and other non-standard index ranges are
   not supported because the inner loops use literal `1:m` ranges).
 
@@ -173,7 +173,7 @@ function _validate_kernel(kernel::AbstractMatrix)
     if !(isodd(m) && isodd(n))
         throw(ArgumentError(
             "kernel dimensions must be odd (got $m×$n); " *
-            "the correlation centre is at ((m+1)÷2, (n+1)÷2), " *
+            "the correlation center is at ((m+1)÷2, (n+1)÷2), " *
             "which requires odd-sized kernels"))
     end
     if axes(kernel, 1) != Base.OneTo(m) || axes(kernel, 2) != Base.OneTo(n)
@@ -319,7 +319,7 @@ end
 # ---------------------------------------------------------------------------
 # Inner correlation loops — strip-mined with border handling
 #
-# Indexing convention: for a kernel of size (kr, kc) with centre at
+# Indexing convention: for a kernel of size (kr, kc) with center at
 # (cr, cc) = ((kr+1)÷2, (kc+1)÷2) and radius (r, c) = (kr÷2, kc÷2),
 # the correlation at output pixel (row, col) is
 #

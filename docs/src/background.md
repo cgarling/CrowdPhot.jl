@@ -20,8 +20,8 @@ excluded from — the background estimate.
 
 Both interfaces accept a mask that marks pixels to skip (saturated
 stars, bad pixels, diffraction spikes, etc.) and support iterative sigma
-clipping to suppress residual source contamination. *The mask is `true`
-for pixels that should be skipped.*
+clipping to suppress residual source contamination. The mask is **`true`**
+for pixels that should be **skipped**.
 
 ## Location and RMS estimators
 
@@ -40,9 +40,8 @@ contamination, and computational cost.
 | [`BiweightLocationBackground`](@ref) | Tukey biweight location; highly robust but requires a good starting median |
 
 **Recommendation:** `SExtractorBackground` (the default) is a good general
-choice.  Switch to `BiweightLocationBackground` when your images contain a high
-source density and you use a mask to cover the brightest stars, or use
-`MedianBackground` for maximum simplicity.
+choice.  Consider `BiweightLocationBackground` when your images contain a high
+source density and you use a mask to cover the brightest stars.
 
 ### RMS (scatter) estimators
 
@@ -223,7 +222,7 @@ fig
 
 ### Example: comparing estimators on the same image
 
-First, with a small 16 pixel box size
+First, with a small 16 pixel box size:
 
 ```@example bkg2d
 rng2 = StableRNG(7)
@@ -375,7 +374,7 @@ fig
   Build an initial mask by thresholding at a few sigma above a first-pass
   background estimate, then re-run `Background2D`.
 
-- **`filter_size`** should be odd (default `(3, 3)`).  Larger values (e.g.,
+- **`filter_size`** must be odd (default `(3, 3)`).  Larger values (e.g.,
   `(5, 5)`) smooth over mesh cells that are corrupted by bright isolated stars;
   but sizes larger than the spatial scale of genuine background variation
   will bias the estimate.

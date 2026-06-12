@@ -15,7 +15,7 @@ arbitrary sub-pixel locations via separable bicubic interpolation.
 
 The distinction between an *instrumental* PSF and an *effective* PSF (ePSF) is
 central to the `ImagePSF` design. Following [Anderson2000](@citet), the effective
-PSF $\psi_E(\Delta x, \Delta y)$ is the convolution of the instrumental PSF
+PSF $\psi_E(\Delta y, \Delta x)$ is the convolution of the instrumental PSF
 $\psi_I$ with the pixel response function $\mathcal{R}$, so that a
 background-subtracted stellar pixel value can be written directly as
 
