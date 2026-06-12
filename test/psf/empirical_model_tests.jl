@@ -29,7 +29,7 @@ end
     # Check core model API behavior because ImagePSF stores fixed grid data
     # alongside fit parameters, unlike the analytic models.
     data = [exp(-((i - 4)^2 + (j - 4)^2) / 5) for i in 1:7, j in 1:7]
-    model = ImagePSF(data; x = 10.3, y = 11.4, flux = 120.0, bkg = 7.0, oversampling = 2, normalize = true)
+    model = ImagePSF(data; y = 11.4, x = 10.3, flux = 120.0, bkg = 7.0, oversampling = 2, normalize = true)
 
     @test centroid(model) == (11.4, 10.3)
     @test integral(model) == 120.0
@@ -37,9 +37,9 @@ end
     @test sum(model.data) ≈ 4.0
     @test extent(model) == ((9.9, 12.9), (8.8, 11.8))
     @test evaluate(model, -100, -100) == 7.0
-    @test ImagePSF(data; origin = (x = 4, y = 5)).origin == (y = 5.0, x = 4.0)
+    @test ImagePSF(data; origin = (y = 5, x = 4)).origin == (y = 5.0, x = 4.0)
 
-    fill_model = ImagePSF(data; x = 0, y = 0, flux = 4, bkg = 1, fill_value = 0.25)
+    fill_model = ImagePSF(data; y = 0, x = 0, flux = 4, bkg = 1, fill_value = 0.25)
     @test evaluate(fill_model, -100, -100) == 2.0
 
     # Updating fit parameters should reuse the immutable model's PSF array
@@ -122,9 +122,9 @@ end
     # Fit only ImagePSF's source parameters to ensure it works with LM/IRLS.
     grid_model = CircularGaussianPRF(x = 8, y = 8, fwhm = 2.4, flux = 1, bkg = 0)
     psf_data = evaluate.(grid_model, 1:16, (1:16)')
-    truth = ImagePSF(psf_data; x = 8.35, y = 7.75, flux = 300.0, bkg = 4.0, origin = (y = 8.0, x = 8.0), normalize = true)
+    truth = ImagePSF(psf_data; y = 7.75, x = 8.35, flux = 300.0, bkg = 4.0, origin = (y = 8.0, x = 8.0), normalize = true)
     image = evaluate.(truth, 1:16, (1:16)')
-    init = ImagePSF(psf_data; x = 8.0, y = 8.1, flux = 260.0, bkg = 3.5, origin = (y = 8.0, x = 8.0), normalize = true)
+    init = ImagePSF(psf_data; y = 8.1, x = 8.0, flux = 260.0, bkg = 3.5, origin = (y = 8.0, x = 8.0), normalize = true)
 
     best, result = fit_star(init, image, (1:16, 1:16); max_iter = 100)
     @test result.converged
@@ -137,7 +137,7 @@ end
 @testset "Empirical ImagePSF recovery" begin
     # Recover an undersampled integrated Gaussian PRF from many clean stars.
     rng = StableRNG(42)
-    truth_model = CircularGaussianPRF(x = 0, y = 0, fwhm = 1.8, flux = 1, bkg = 0)
+    truth_model = CircularGaussianPRF(y = 0, x = 0, fwhm = 1.8, flux = 1, bkg = 0)
     image, sources = simulate_image(
         (128, 128),
         truth_model,
@@ -210,7 +210,7 @@ end
 @testset "Empirical ImagePSF with defective stars" begin
     # Stress the robust stack with many hot and low pixels in the training stars.
     rng = StableRNG(123)
-    truth_model = CircularGaussianPRF(x = 0, y = 0, fwhm = 1.9, flux = 1, bkg = 0)
+    truth_model = CircularGaussianPRF(y = 0, x = 0, fwhm = 1.9, flux = 1, bkg = 0)
     image, sources = simulate_image(
         (96, 96),
         truth_model,
