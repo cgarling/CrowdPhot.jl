@@ -8,7 +8,7 @@ using StaticArrays: SA, SVector, MMatrix
 using Statistics: median, mean
 
 export AbstractPSFModel, AiryPSF, CircularGaussianPSF, GaussianPSF, CircularGaussianPRF, GaussianPRF, CircularMoffatPSF, MoffatPSF, ImagePSF
-export evaluate, evaluate_fg, centroid, integral, render, render!, peak, amplitude, effective_area, fit_star, fit_psf
+export evaluate, evaluate_fg, centroid, integral, render, peak, amplitude, effective_area, fit_star, fit_psf
 export LMResult, MADScale, FixedScale, MScale, estimate_scale, TukeyLoss, weight, KnownWeightsCovarianceEstimator, ReweightedCovarianceEstimator
 
 """AbstractPSFModel{T}: Abstract type for PSF models with element type `T`. All PSF models should be subtypes of this abstract type, and implement the following methods:"""
