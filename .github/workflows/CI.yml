@@ -50,6 +50,17 @@ jobs:
         with:
           files: lcov.info
           fail_ci_if_error: false
+  aqua:
+    name: Aqua tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1'
+      - uses: julia-actions/julia-buildpkg@v1
+      - run: julia -e 'using Pkg; Pkg.add("Aqua")'
+      - run: julia --project=@. -e 'using Aqua, CrowdPhot; Aqua.test_all(CrowdPhot, ambiguities=false)'
   docs:
     name: Documentation
     timeout-minutes: 60
