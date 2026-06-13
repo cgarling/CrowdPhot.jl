@@ -136,7 +136,7 @@ cutout using inverse-variance-weighted second central moments.
   Defaults to ``2\sqrt{2\log 2} \approx 2.35482``.
 
 # Returns
-`(; fwhm, roundness1_aperture, roundness2_aperture, flux, centroid)` where
+`(; fwhm, roundness1_aperture, roundness2_aperture, moment_norm, centroid)` where
 
 - `fwhm::NamedTuple (; y, x, theta)`: moment-based, axis-aligned marginal
   full width at half maximum along the ``y`` (row) and ``x`` (column)
@@ -154,7 +154,9 @@ cutout using inverse-variance-weighted second central moments.
   convention: ``2(\sqrt{\sigma^2_{yy}} - \sqrt{\sigma^2_{xx}})/(\sqrt{\sigma^2_{yy}} + \sqrt{\sigma^2_{xx}})``.
   0 = circular, negative = extended in x (columns),
   positive = extended in y (rows).
-- `flux::T`: total weighted flux ``M_{00}`` above background.
+- `moment_norm::T`: weighted zeroth moment ``M_{00}`` used to normalize
+  the shape moments.  When `inv_var` is not uniform this is not a physical
+  source flux and should not be used for photometric calibration.
 - `centroid::NamedTuple (; y, x, y_err, x_err, cov)`: centre-of-mass
   centroid, 1-σ uncertainties, and 2×2 `SMatrix` covariance.
 
@@ -203,7 +205,7 @@ function measure_star_shape(
         zn = zero(FT)
         return (; fwhm = (; y = n, x = n, theta = n),
                  roundness1_aperture = n, roundness2_aperture = n,
-                 flux = FT_M00,
+                 moment_norm = FT_M00,
                  centroid = (; y = n, x = n, y_err = n, x_err = n,
                               cov = @SMatrix [n n; n n]))
     end
@@ -273,7 +275,7 @@ function measure_star_shape(
 
     return (; fwhm = (; y = fwhm_y, x = fwhm_x, theta),
              roundness1_aperture, roundness2_aperture,
-             flux = FT_M00,
+             moment_norm = FT_M00,
              centroid = (; y = fwhm_cen, x = fwhm_cen_x,
                           y_err = sqrt(max(zero(FT), cent_cov_yy)),
                           x_err = sqrt(max(zero(FT), cent_cov_xx)),
@@ -328,7 +330,7 @@ For each peak in `result.peaks`, this function:
    (normalized curvature, roundness).
 3. Calls [`choose_centroid`](@ref) to select the best centroid estimate.
 4. Calls [`measure_star_shape`](@ref) on the full cutout to compute
-   aperture-based morphology (FWHM, roundness, flux).
+   aperture-based morphology (FWHM, roundness, moment normalization).
 
 All coordinate fields in the returned NamedTuples are in **global**
 pixel coordinates of the original image.
@@ -368,7 +370,7 @@ has the following fields:
 - `centroid`: the chosen centroid `(; y, x, source)` from
   [`choose_centroid`](@ref) in global pixels.  `source` is `:poly` or `:com`.
 - `morphology`: the full [`measure_star_shape`](@ref) result — `(; fwhm,
-  roundness1_aperture, roundness2_aperture, flux, centroid)` with
+  roundness1_aperture, roundness2_aperture, moment_norm, centroid)` with
   coordinates in global pixels.
 
 !!! note
@@ -490,7 +492,7 @@ function measure_star_shapes(
             fwhm = morph_local.fwhm,
             roundness1_aperture = morph_local.roundness1_aperture,
             roundness2_aperture = morph_local.roundness2_aperture,
-            flux = morph_local.flux,
+            moment_norm = morph_local.moment_norm,
             centroid = (;
                 y = morph_local.centroid.y + dy_global,
                 x = morph_local.centroid.x + dx_global,

@@ -138,6 +138,16 @@ measure_star_shape
 measure_star_shapes
 ```
 
+### Moment Normalization
+
+The aperture result includes `moment_norm`, the weighted zeroth moment
+``M_{00}`` used internally to normalize centroids, FWHM estimates, and
+aperture roundness.  This value follows the same weighting and masking as
+the shape moments.  If `inv_var` is non-uniform, `moment_norm` is not a
+physical source flux and should not be used for magnitude calibration or
+as a photometric prior.  Use `matched_filter_flux`, an unweighted aperture
+sum, or a PSF-fit flux for photometry.
+
 ## References
 This page cites the following references:
 

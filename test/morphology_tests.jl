@@ -103,7 +103,7 @@ end
         @test isfinite(result.fwhm.theta)
         @test abs(result.roundness1_aperture) < 0.30   # SROUND ~0 for symmetric
         @test abs(result.roundness2_aperture) < 0.15   # GROUND ~0 for circular
-        @test result.flux > 0
+        @test result.moment_norm > 0
         @test result.centroid.y ≈ 8.0 atol=0.5
         @test result.centroid.x ≈ 8.0 atol=0.5
     end
@@ -145,7 +145,7 @@ end
         @test isnan(result.fwhm.x)
         # Zero-width → degenerate (denominator vanishes), treated as isotropic.
         @test result.roundness2_aperture == 0.0
-        @test result.flux == 100.0
+        @test result.moment_norm == 100.0
         @test result.centroid.y ≈ 4.0
         @test result.centroid.x ≈ 4.0
     end
@@ -156,7 +156,7 @@ end
         w[5, 5] = 0.0
         result_full = measure_star_shape(img, 5, 5)
         result_masked = measure_star_shape(img, 5, 5; inv_var=w)
-        @test result_masked.flux < result_full.flux
+        @test result_masked.moment_norm < result_full.moment_norm
     end
 
     @testset "sub-pixel centroid via measure_star_shape convenience" begin
@@ -175,7 +175,7 @@ end
         @test result.fwhm.y > 0
         @test result.fwhm.x > 0
         @test result.roundness2_aperture isa Float32
-        @test result.flux isa Float32
+        @test result.moment_norm isa Float32
     end
 
     @testset "shift invariance — integer pixel" begin
@@ -301,12 +301,12 @@ end
         img, _ = _make_gaussian_cutout(; x0=5.0, y0=5.0, flux=200.0, fwhm=2.0, shape=(9,9))
         # With bg=1000, all pixels are below background → M00=0.
         r_below = measure_star_shape(img, 5, 5; background=1000)
-        @test r_below.flux == 0.0
+        @test r_below.moment_norm == 0.0
         @test isnan(r_below.fwhm.y)
         # With bg=5, only the central pixels exceed background.
         r_partial = measure_star_shape(img, 5, 5; background=5)
-        @test r_partial.flux > 0
-        @test r_partial.flux < 200.0  # less than total star flux
+        @test r_partial.moment_norm > 0
+        @test r_partial.moment_norm < 200.0  # less than total unweighted flux
     end
 
     @testset "noisy image — roundness bounded" begin
@@ -369,8 +369,8 @@ end
         @test abs(r.core.roundness1_core) < 0.30
         @test abs(r.core.roundness2_core) < 0.30
 
-        # Flux is positive
-        @test r.morphology.flux > 0
+        # Moment normalization is positive for a valid source.
+        @test r.morphology.moment_norm > 0
         @test r.significance > 0
         @test r.matched_filter_flux > 0
 
@@ -475,7 +475,7 @@ end
         # so centroid_poly should succeed.
         @test isfinite(r.core.poly.y)
         @test isfinite(r.core.poly.x)
-        @test r.morphology.flux > 0
+        @test r.morphology.moment_norm > 0
         @test r.centroid.y > 0
         @test r.centroid.x > 0
     end
@@ -495,9 +495,9 @@ end
 
         # Both should find the source at the same position.
         @test r_ivar.peak_index == r_none.peak_index
-        # Morphology fluxes should be similar (both use uniform weights
-        # since inv_var=1.0 is uniform).
-        @test r_ivar.morphology.flux ≈ r_none.morphology.flux rtol=0.01
+        # Moment normalizations should be similar because both paths use
+        # uniform weights.
+        @test r_ivar.morphology.moment_norm ≈ r_none.morphology.moment_norm rtol=0.01
     end
 
     @testset "coordinate consistency" begin
@@ -533,8 +533,8 @@ end
         # Large half_width — cutout captures more of the PSF wings.
         r_large = measure_star_shapes(mf; half_width=10)[1]
 
-        # Larger cutout captures more flux.
-        @test r_large.morphology.flux > r_small.morphology.flux
+        # Larger cutout contributes more positive weighted signal.
+        @test r_large.morphology.moment_norm > r_small.morphology.moment_norm
         # Both should have reasonable FWHM estimates.
         @test r_small.morphology.fwhm.y > 0
         @test r_large.morphology.fwhm.y > 0
@@ -571,7 +571,7 @@ end
         # Each result should have valid morphology.
         for r in results
             @test r.peak_index >= 1
-            @test r.morphology.flux > 0
+            @test r.morphology.moment_norm > 0
             @test r.morphology.fwhm.y > 0
             @test r.morphology.fwhm.x > 0
             @test isfinite(r.core.normalized_curvature)
