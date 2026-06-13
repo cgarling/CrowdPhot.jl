@@ -19,8 +19,8 @@ artifact_dir = Pkg.Artifacts.ensure_artifact_installed("jbjl03010_drc", artifact
 fits_path = joinpath(artifact_dir, "jbjl03010_drc.fits")
 
 # Load relevant parts from FITS file
-hdr, img, weights = FITS(fits_path) do fits
-    read_header(fits[1]), read(fits[2]), read(fits[3])
+hdr, sci_hdr, img, weights = FITS(fits_path) do fits
+    read_header(fits[1]), read_header(fits[2]), read(fits[2]), read(fits[3])
 end
 
 # Plot image
@@ -135,53 +135,108 @@ fig
 We feed the [`MatchedFilterResult`](@ref) directly to
 [`measure_star_shapes`](@ref), which extracts a cutout around each peak,
 computes sub-pixel centroids via [`centroid_poly`](@ref), and measures
-aperture-based FWHM, roundness, and flux via
-[`measure_star_shape`](@ref).
+aperture-based FWHM, roundness, moment normalization, and rectangular
+aperture-sum diagnostics via [`measure_star_shape`](@ref).
 
 Moment-based statistics can be biased if the cutout includes many
 background-dominated pixels. Here we use a `half_width=2` so the full
-width of the cutout is 4 pixels, twice the FWHM of the kernel we used
+width of the cutout is 5 pixels, just over twice the FWHM of the kernel we used
 for detection, which gives good results.
 
 ```@example hst-drc
 # Measure morphology for all detected sources
 results = measure_star_shapes(mf; half_width = 2)
+```
 
-# Compute instrumental magnitudes from aperture flux
-inst_mag = Float64[]
-for r in results
-    flux = r.morphology.flux
-    push!(inst_mag, flux > 0 ? -2.5 * log10(flux) : NaN)
-end
+### Flux Diagnostics
+
+At this point in processing we have two quick flux diagnostics. The
+`matched_filter_flux` is the amplitude of the PSF template at the detected
+peak; it is intended to estimate the source flux when the source matches the
+detection kernel and the local background is handled by the zero-sum filter.
+It is not a full PSF fit, so blends, PSF mismatch, and structured backgrounds
+can bias it.
+
+The `morphology.aperture_sum` is the unweighted sum of `image - background`
+over the small rectangular cutout used for shape measurement. It is useful
+because it is simple and tied to exactly the pixels used for the morphology,
+but it is not a robust circular aperture measurement. We have not performed
+any aperture correction here: ACS/WFC zeropoints are defined for an
+"infinite" aperture of radius 5.5", much larger than this 5x5-pixel cutout.
+See the
+[ACS docs](https://hst-docs.stsci.edu/acsdhb/chapter-5-acs-data-analysis/5-1-photometry#id-5.1Photometry-5.1.25.1.2ApertureandColorCorrections)
+for further information on aperture corrections.
+
+```@example hst-drc
+# Compute instrumental magnitudes from the rectangular count-rate aperture sum,
+# excluding stars with negative aperture sums.
+inst_mag = [
+    r.morphology.aperture_sum > 0 ?
+        -2.5 * log10(r.morphology.aperture_sum) :
+        NaN
+    for r in results
+]
+
+# Compute instrumental magnitudes from the matched-filter flux estimate.
+mf_inst_mag = [
+    r.matched_filter_flux > 0 ?
+        -2.5 * log10(r.matched_filter_flux) :
+        NaN
+    for r in results
+]
 
 # Filter to sources with valid measurements
-good = findall(results) do r
+good = findall(eachindex(results)) do i
+    r = results[i]
     r.morphology.fwhm.y > 0 &&
     r.morphology.fwhm.x > 0 &&
     isfinite(r.core.normalized_curvature) &&
-    r.morphology.flux > 0
+    r.morphology.moment_norm > 0 &&
+    isfinite(inst_mag[i]) &&
+    isfinite(mf_inst_mag[i])
 end
 
 println("$(length(good)) / $(length(results)) sources have valid morphological measurements")
+
+# Compare ST magnitudes from the two quick flux estimates.
+stmag_zeropoint = -2.5 * log10(sci_hdr["PHOTFLAM"]) + sci_hdr["PHOTZPT"]
+aperture_mags = inst_mag[good] .+ stmag_zeropoint
+matched_filter_mags = mf_inst_mag[good] .+ stmag_zeropoint
+
+fig = Figure(size = (500, 430))
+ax = Axis(fig[1, 1];
+    xlabel = "Aperture-sum ST magnitude",
+    ylabel = "Matched-filter ST magnitude",
+    title = "Flux Diagnostics")
+h = hexbin!(ax, aperture_mags, matched_filter_mags; bins = 80, colorscale = log10)
+# lo = minimum((minimum(aperture_mags), minimum(matched_filter_mags)))
+# hi = maximum((maximum(aperture_mags), maximum(matched_filter_mags)))
+lo, hi = 20, 30
+lines!(ax, [lo, hi], [lo, hi]; color = :black, linestyle = :dash)
+xlims!(ax, hi, lo)
+ylims!(ax, hi, lo)
+Colorbar(fig[1, 2], h; label = "Counts")
+fig
 ```
 
 ## Morphology Diagnostics
 
-The panels below show how morphological measurements trend with
-instrumental magnitude.  Brighter sources (lower instrumental magnitude)
-have more reliable shape measurements, while fainter sources scatter
-more due to noise.  We use 2-D histograms to visualize density in the
-crowded regions. For this HST example, the "core" morphology statistics
-(which are calculated on the 3x3 pixels surrounding the centroid) will
-be about equivalent to the aperture statistics because our aperture
-box size is only 5x5 pixels, so they do not add much information in this
-case.
+The panels below show how morphological measurements trend with *small-aperture* ST magnitude.
+We use the aperture magnitudes here as we used a simple Gaussian for our matched-filter
+detection pass, so the flux estimates based on that metric are likely to be biased.
+A quick-look estimate from the [encircled energy curves](https://www.stsci.edu/files/live/sites/www/files/home/hst/instrumentation/acs/data-analysis/aperture-corrections/_documents/bohlin2016_wfc_ee-1.txt)
+suggests these cutout aperture magnitudes need a correction of roughly
+``-0.4`` mag, making them brighter, which we apply below. **This is not a robust
+aperture correction, we will discuss how to measure true calibrated magnitudes later.**
 
 ```@example hst-drc
 using Statistics
 
-# Extract measurements for valid sources
-mags = inst_mag[good]
+# Reuse the aperture-sum ST magnitudes from the flux diagnostics above,
+# applying *APPROXIMATE* 0.4 mag aperture correction
+mags = aperture_mags .- 0.4
+
+# Unpack data from `results`, which has array-of-structs layout
 fwhm_y  = [results[i].morphology.fwhm.y for i in good]
 fwhm_x  = [results[i].morphology.fwhm.x for i in good]
 fwhm_theta = [results[i].morphology.fwhm.theta for i in good]
@@ -196,31 +251,31 @@ mf_flux = [results[i].matched_filter_flux for i in good]
 fig = Figure(size = (900, 1000))
 
 # Panel 1: FWHM y vs magnitude
-ax1 = Axis(fig[1, 1]; xlabel = "Instrumental magnitude",
+ax1 = Axis(fig[1, 1]; xlabel = "Small-aperture ST magnitude",
            ylabel = "FWHM y (pix)", title = "FWHM (y-axis)")
 h1 = hexbin!(ax1, mags, fwhm_y; bins = 80)
 Colorbar(fig[1, 2], h1; label = "Counts")
 
 # Panel 2: FWHM x vs magnitude
-ax2 = Axis(fig[1, 3]; xlabel = "Instrumental magnitude",
+ax2 = Axis(fig[1, 3]; xlabel = "Small-aperture ST magnitude",
            ylabel = "FWHM x (pix)", title = "FWHM (x-axis)")
 h2 = hexbin!(ax2, mags, fwhm_x; bins = 80)
 Colorbar(fig[1, 4], h2; label = "Counts")
 
 # Panel 3: roundness1 (SROUND) vs magnitude
-ax3 = Axis(fig[2, 1]; xlabel = "Instrumental magnitude",
+ax3 = Axis(fig[2, 1]; xlabel = "Small-aperture ST magnitude",
            ylabel = "roundness1", title = "roundness1_aperture (SROUND)")
 h3 = hexbin!(ax3, mags, round1; bins = 80)
 Colorbar(fig[2, 2], h3; label = "Counts")
 
 # Panel 4: roundness2 (GROUND) vs magnitude
-ax4 = Axis(fig[2, 3]; xlabel = "Instrumental magnitude",
+ax4 = Axis(fig[2, 3]; xlabel = "Small-aperture ST magnitude",
            ylabel = "roundness2", title = "roundness2_aperture (GROUND)")
 h4 = hexbin!(ax4, mags, round2; bins = 80)
 Colorbar(fig[2, 4], h4; label = "Counts")
 
 # Panel 5: normalized curvature vs magnitude
-ax5 = Axis(fig[3, 1]; xlabel = "Instrumental magnitude",
+ax5 = Axis(fig[3, 1]; xlabel = "Small-aperture ST magnitude",
            ylabel = "normalized curvature", title = "Normalized Core Curvature (2/FWHM²) / I_0")
 ylims!(ax5, -1, 3)
 idxs = findall(x -> -10 < x < 10, sharp)
@@ -239,7 +294,7 @@ for (lo, hi) in zip(mag_bins[1:end-1], mag_bins[2:end])
     push!(med_fwhm_y, median(fwhm_y[bin_idx]))
     push!(med_fwhm_x, median(fwhm_x[bin_idx]))
 end
-ax6 = Axis(fig[3, 3]; xlabel = "Instrumental magnitude",
+ax6 = Axis(fig[3, 3]; xlabel = "Small-aperture ST magnitude",
            ylabel = "Median FWHM (pix)", title = "Median FWHM by magnitude")
 scatterlines!(ax6, mag_centers, med_fwhm_y; label = "y", color = :blue)
 scatterlines!(ax6, mag_centers, med_fwhm_x; label = "x", color = :red)

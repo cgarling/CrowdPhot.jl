@@ -138,15 +138,26 @@ measure_star_shape
 measure_star_shapes
 ```
 
-### Moment Normalization
+### Moment Normalization and Aperture Sums
 
 The aperture result includes `moment_norm`, the weighted zeroth moment
 ``M_{00}`` used internally to normalize centroids, FWHM estimates, and
 aperture roundness.  This value follows the same weighting and masking as
 the shape moments.  If `inv_var` is non-uniform, `moment_norm` is not a
 physical source flux and should not be used for magnitude calibration or
-as a photometric prior.  Use `matched_filter_flux`, an unweighted aperture
-sum, or a PSF-fit flux for photometry.
+as a photometric prior.
+
+The result also includes `aperture_sum`, `aperture_area`, and
+`aperture_sum_err`.  These are quick rectangular-cutout diagnostics over
+unmasked pixels (`inv_var > 0`): `aperture_sum` is the unweighted sum of
+`image - background`, `aperture_area` is the number of contributing
+pixels, and `aperture_sum_err` is the formal propagated uncertainty
+``\sqrt{\sum 1/\mathtt{inv\_var}}`` under the assumption of independent
+pixel errors.  Mask invalid pixels by setting their inverse variance to
+zero.  They are useful flux proxies, but are not aperture-corrected and
+should not be used for anything requiring precision.
+We generally prefer the `matched_filter_flux`, an explicit aperture
+photometry routine, or a PSF-fit flux for calibrated photometry.
 
 ## References
 This page cites the following references:
