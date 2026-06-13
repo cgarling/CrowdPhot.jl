@@ -37,9 +37,9 @@ roundness2_core)`:
   inverse-variance-weighted center-of-mass centroid and its 2×2
   covariance on the same 3×3 patch.
 - `normalized_curvature`: negated Laplacian divided by the fitted peak
-  value, ``-(2d + 2f)/\\mathrm{peak} \\approx 2/\\mathrm{FWHM}^2`` for a
-  Gaussian.  Flux-independent; ~0.5 for a typical stellar PSF, orders of
-  magnitude larger for cosmic rays.
+  value, ``-(2d + 2f)/\\mathrm{peak} \\approx 16\\log(2)/\\mathrm{FWHM}^2``
+  for a circular Gaussian.  Flux-independent; broad stellar PSFs have
+  lower values than cosmic rays and hot pixels.
 - `roundness1_core`: DAOPHOT SROUND / photutils `roundness1` convention:
   ``2\\cdot\\Sigma_2/\\Sigma_4`` — ratio of bilateral (2-fold) to fourfold
   symmetry of the 8 neighbour pixels.  0 = symmetric, nonzero = asymmetric.
@@ -68,7 +68,9 @@ the covariance will be large but the centroid estimates remain finite.
 # References
 See [Vakili2016](@citet) for details.
 """
-function _centroid_poly3(image::AbstractMatrix{T}, inv_var::AbstractMatrix{T}) where {T <: Real}
+function _centroid_poly3(image::AbstractMatrix, inv_var::AbstractMatrix)
+    FT = float(promote_type(eltype(image), eltype(inv_var)))
+
     # Coordinates:
     #
     #   image[1,1] image[1,2] image[1,3]     y = -1
@@ -80,13 +82,13 @@ function _centroid_poly3(image::AbstractMatrix{T}, inv_var::AbstractMatrix{T}) w
     # Design row is (1, x, y, x^2, x*y, y^2).
 
     @inbounds begin
-        z11 = image[1,1]; z12 = image[1,2]; z13 = image[1,3]
-        z21 = image[2,1]; z22 = image[2,2]; z23 = image[2,3]
-        z31 = image[3,1]; z32 = image[3,2]; z33 = image[3,3]
+        z11 = FT(image[1,1]); z12 = FT(image[1,2]); z13 = FT(image[1,3])
+        z21 = FT(image[2,1]); z22 = FT(image[2,2]); z23 = FT(image[2,3])
+        z31 = FT(image[3,1]); z32 = FT(image[3,2]); z33 = FT(image[3,3])
 
-        w11 = inv_var[1,1]; w12 = inv_var[1,2]; w13 = inv_var[1,3]
-        w21 = inv_var[2,1]; w22 = inv_var[2,2]; w23 = inv_var[2,3]
-        w31 = inv_var[3,1]; w32 = inv_var[3,2]; w33 = inv_var[3,3]
+        w11 = FT(inv_var[1,1]); w12 = FT(inv_var[1,2]); w13 = FT(inv_var[1,3])
+        w21 = FT(inv_var[2,1]); w22 = FT(inv_var[2,2]); w23 = FT(inv_var[2,3])
+        w31 = FT(inv_var[3,1]); w32 = FT(inv_var[3,2]); w33 = FT(inv_var[3,3])
     end
 
     wz11 = w11 * z11; wz12 = w12 * z12; wz13 = w13 * z13
@@ -134,7 +136,7 @@ function _centroid_poly3(image::AbstractMatrix{T}, inv_var::AbstractMatrix{T}) w
     # The propagated covariance needs N⁻¹, so form it once and reuse it for
     # both the fitted coefficients and the output covariance.
     C = cholesky(Symmetric(Nmat))
-    Ninv = SMatrix{6,6,T,36}(inv(C))
+    Ninv = SMatrix{6,6,FT}(inv(C))
 
     X = Ninv * rvec
     a, b, c, d, e, f = X[1], X[2], X[3], X[4], X[5], X[6]
@@ -146,9 +148,14 @@ function _centroid_poly3(image::AbstractMatrix{T}, inv_var::AbstractMatrix{T}) w
     two_f = 2 * f
     Δ = two_d * two_f - e * e
 
-    # Tikhonov-style regularisation for near-singular curvature matrix
-    if abs(Δ) < T(1e-10)
-        ε = T(1e-8)
+    # TODO: Make polynomial-centroid failure recognition more robust: use a
+    # scale-relative determinant test for D, reject non-maximum curvatures
+    # before regularizing, apply sign-aware scale-relative damping only to
+    # weak local maxima, and return an invalid polynomial estimate when the
+    # damped curvature still fails validation so choose_centroid can use COM.
+    # For now we just add Tikhonov-style regularization.
+    if abs(Δ) < FT(1e-10)
+        ε = FT(1e-8)
         two_d += ε
         two_f += ε
         Δ = two_d * two_f - e * e
@@ -178,15 +185,15 @@ function _centroid_poly3(image::AbstractMatrix{T}, inv_var::AbstractMatrix{T}) w
     sum2 = wz12 + wz32 - wz21 - wz23 + wz11 + wz33 - wz31 - wz13
     sum4 = abs(wz12) + abs(wz32) + abs(wz21) + abs(wz23) +
            abs(wz11) + abs(wz33) + abs(wz31) + abs(wz13)
-    roundness1_core = if sum4 > eps(T)
+    roundness1_core = if sum4 > eps(FT)
         2 * sum2 / sum4
     else
-        zero(T)
+        zero(FT)
     end
 
     # Normalized curvature — negated Laplacian divided by peak value.
-    # For a Gaussian, -(2d+2f)/peak ≈ 2/FWHM², independent of flux.
-    normalized_curvature = -(two_d + two_f) / max(abs(peak), eps(T))
+    # For a circular Gaussian, this is ≈ 16log(2)/FWHM² and independent of flux.
+    normalized_curvature = -(two_d + two_f) / max(abs(peak), eps(FT))
 
     # GROUND from the quadratic fit curvatures (DAOPHOT / photutils roundness2).
     # For a Gaussian, the marginal-fit height HX ∝ 1/σ_x ∝ √|d|, so
@@ -196,26 +203,26 @@ function _centroid_poly3(image::AbstractMatrix{T}, inv_var::AbstractMatrix{T}) w
     sqrt_ad = sqrt(abs(dreg))
     sqrt_af = sqrt(abs(freg))
     denom = sqrt_ad + sqrt_af
-    roundness2_core = if denom > eps(T)
+    roundness2_core = if denom > eps(FT)
         2 * (sqrt_ad - sqrt_af) / denom
     else
-        zero(T)
+        zero(FT)
     end
 
     # Jacobian of (yc, xc, peak) w.r.t. (a, b, c, d, e, f).
     # At the stationary point ∂P/∂x = ∂P/∂y = 0, so d(peak)/dθ simplifies
     # to the basis vector evaluated at the centroid.
     J = @SMatrix [
-        zero(T)   e * invΔ         -two_d * invΔ   -(2 * c + 4 * freg * yc) * invΔ   (b + 2 * e * yc) * invΔ   -4 * dreg * yc * invΔ
-        zero(T)  -two_f * invΔ     e * invΔ        -4 * freg * xc * invΔ             (c + 2 * e * xc) * invΔ   -(2 * b + 4 * dreg * xc) * invΔ
-        one(T)    xc               yc              xc2                               xcyc                      yc2
+        zero(FT)   e * invΔ         -two_d * invΔ   -(2 * c + 4 * freg * yc) * invΔ   (b + 2 * e * yc) * invΔ   -4 * dreg * yc * invΔ
+        zero(FT)  -two_f * invΔ     e * invΔ        -4 * freg * xc * invΔ             (c + 2 * e * xc) * invΔ   -(2 * b + 4 * dreg * xc) * invΔ
+        one(FT)    xc               yc              xc2                               xcyc                      yc2
     ]
 
     cov = J * Ninv * transpose(J)
 
-    y_err = sqrt(max(zero(T), cov[1,1]))
-    x_err = sqrt(max(zero(T), cov[2,2]))
-    peak_err = sqrt(max(zero(T), cov[3,3]))
+    y_err = sqrt(max(zero(FT), cov[1,1]))
+    x_err = sqrt(max(zero(FT), cov[2,2]))
+    peak_err = sqrt(max(zero(FT), cov[3,3]))
 
     # Inverse-variance-weighted center-of-mass on the 3×3 patch.
     invR00 = inv(R00)
@@ -229,8 +236,8 @@ function _centroid_poly3(image::AbstractMatrix{T}, inv_var::AbstractMatrix{T}) w
     var_com_y = (S02 - 2 * com_y * S01 + com_y * com_y * S00) * invR00_sq
     cov_com_xy = (S11 - com_x * S01 - com_y * S10 + com_x * com_y * S00) * invR00_sq
     com_cov = @SMatrix [var_com_y cov_com_xy; cov_com_xy var_com_x]
-    com_y_err = sqrt(max(zero(T), var_com_y))
-    com_x_err = sqrt(max(zero(T), var_com_x))
+    com_y_err = sqrt(max(zero(FT), var_com_y))
+    com_x_err = sqrt(max(zero(FT), var_com_x))
 
     return (; poly = (; y = yc, x = xc, peak,
                       y_err, x_err, peak_err, cov),
@@ -273,8 +280,8 @@ roundness2_core)` where
   uncertainties, and its 2×2 `SMatrix` covariance.  Access as
   `result.com.y`, `result.com.x`, etc.
 - `normalized_curvature` — negated Laplacian divided by the fitted peak
-  value; ``\\approx 2/\\mathrm{FWHM}^2`` for a Gaussian.  This flux-independent
-statistic is useful for distinguishing stars from
+  value; ``\\approx 16\\log(2)/\\mathrm{FWHM}^2`` for a circular Gaussian.
+  This flux-independent statistic is useful for distinguishing stars from
   cosmic rays and hot pixels.
 - `roundness1_core` — DAOPHOT SROUND / photutils `roundness1`:
   ``2\\cdot\\Sigma_2/\\Sigma_4`` from the 8 neighbour pixels.
@@ -314,7 +321,10 @@ julia> round(result.com.x; digits=1), round(result.com.y; digits=1)
 # References
 See [Vakili2016](@citet) for details.
 """
-function centroid_poly(image::AbstractMatrix{T}, inv_var::AbstractMatrix = Fill(one(T), size(image))) where {T <: Real}
+function centroid_poly(
+        image::AbstractMatrix{T},
+        inv_var::AbstractMatrix = Fill(one(float(T)), size(image)),
+    ) where {T <: Real}
     _, maxidx = findmax(image)
     i0, j0 = Tuple(maxidx)  # row, column
     return centroid_poly(image, Int(i0), Int(j0), inv_var)
@@ -330,13 +340,19 @@ the peak pixel (e.g. from a correlation map). `i0` is the row index
 
 Returns the same `NamedTuple` as the two-argument form.
 """
-function centroid_poly(image::AbstractMatrix{T}, i0::Int, j0::Int, inv_var::AbstractMatrix = Fill(one(T), size(image))) where {T <: Real}
+function centroid_poly(
+        image::AbstractMatrix{T},
+        i0::Int,
+        j0::Int,
+        inv_var::AbstractMatrix = Fill(one(float(T)), size(image)),
+    ) where {T <: Real}
     # check that a full 3×3 neighbourhood exists
-    nan = T(NaN)
-    nan3 = @SMatrix [nan nan nan; nan nan nan; nan nan nan]
-    nan2 = @SMatrix [nan nan; nan nan]
-    nancom = (; y = nan, x = nan, y_err = nan, x_err = nan, cov = nan2)
+    FT = float(promote_type(T, eltype(inv_var)))
     if i0 < 2 || i0 > size(image, 1) - 1 || j0 < 2 || j0 > size(image, 2) - 1
+        nan = FT(NaN)
+        nan3 = @SMatrix [nan nan nan; nan nan nan; nan nan nan]
+        nan2 = @SMatrix [nan nan; nan nan]
+        nancom = (; y = nan, x = nan, y_err = nan, x_err = nan, cov = nan2)
         return (; poly = (; y = nan, x = nan, peak = nan,
                           y_err = nan, x_err = nan, peak_err = nan,
                           cov = nan3),
@@ -380,9 +396,9 @@ Given the `NamedTuple` returned by [`centroid_poly`](@ref) or
 
 The polynomial centroid is preferred for well-sampled data where the
 3×3 patch has enough curvature for a reliable quadratic fit.  The COM
-centroid is chosen when the polynomial's curvature matrix is nearly
-singular (e.g. for very broad PSFs), indicated by a polynomial-vs-COM
-variance ratio exceeding 10².
+centroid is chosen when the polynomial result is non-finite, has invalid
+covariance, or has a polynomial-vs-COM variance ratio exceeding 10² in
+either coordinate.
 
 Returns `(; y, x, source)` where `source` is `:poly` or `:com`.
 
@@ -395,11 +411,41 @@ Returns `(; y, x, source)` where `source` is `:poly` or `:com`.
     prefer the COM centroid directly.
 """
 function choose_centroid(result)
-    # If the polynomial covariance is more than 100× the COM covariance,
-    # the curvature matrix is essentially degenerate → use COM.
-    if result.poly.cov[2,2] > 100 * result.com.cov[2,2]
+    # Validate both estimators before comparing their covariance scales.
+    poly_y_var = result.poly.cov[1,1]
+    poly_x_var = result.poly.cov[2,2]
+    com_y_var  = result.com.cov[1,1]
+    com_x_var  = result.com.cov[2,2]
+
+    poly_ok = isfinite(result.poly.y) && isfinite(result.poly.x) &&
+              isfinite(poly_y_var) && isfinite(poly_x_var) &&
+              poly_y_var > 0 && poly_x_var > 0
+
+    com_ok = isfinite(result.com.y) && isfinite(result.com.x) &&
+             isfinite(com_y_var) && isfinite(com_x_var) &&
+             com_y_var >= 0 && com_x_var >= 0
+
+    # Only meaningful when COM variances are finite/valid, but safe to compute here.
+    y_scale = max(com_y_var, eps(float(typeof(com_y_var))))
+    x_scale = max(com_x_var, eps(float(typeof(com_x_var))))
+
+    poly_degenerate = poly_ok && com_ok &&
+                      (poly_y_var > 100 * y_scale ||
+                       poly_x_var > 100 * x_scale)
+
+    if !poly_ok && com_ok
+        # Polynomial failed, COM is valid.
         return (; y = result.com.y, x = result.com.x, source = :com)
+
+    elseif poly_degenerate
+        # Both are valid, but polynomial covariance is much worse than COM.
+        return (; y = result.com.y, x = result.com.x, source = :com)
+
     else
+        # Prefer polynomial in all other cases:
+        # - polynomial valid, COM invalid
+        # - both valid and polynomial is not degenerate
+        # - both invalid, preserving the behavior of the original code
         return (; y = result.poly.y, x = result.poly.x, source = :poly)
     end
 end

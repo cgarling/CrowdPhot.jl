@@ -114,10 +114,11 @@ cutout using inverse-variance-weighted second central moments.
 # Returns
 `(; fwhm, roundness1_aperture, roundness2_aperture, flux, centroid)` where
 
-- `fwhm::NamedTuple (; y, x, theta)`: moment-based full width at half
-  maximum along the ``y`` (row) and ``x`` (column) axes, and the
-  position angle `theta` of the major axis in degrees, measured
-  counter-clockwise from the ``+x``-axis (column direction).
+- `fwhm::NamedTuple (; y, x, theta)`: moment-based, axis-aligned marginal
+  full width at half maximum along the ``y`` (row) and ``x`` (column)
+  axes.  These are not principal-axis widths for a rotated source.
+  `theta` is the position angle of the covariance major axis in degrees,
+  measured counter-clockwise from the ``+x``-axis (column direction).
   ``\theta = 0`` means the major axis is aligned with columns;
   positive ``\theta`` rotates toward rows.
 - `roundness1_aperture::T`: DAOPHOT SROUND / photutils `roundness1`

@@ -1,6 +1,6 @@
 # When adding a benchmark suite, update SUITE_NAMES and SUITE_TITLES, then
 # define its BenchmarkGroup under SUITE using the same suite name.
-using CrowdPhot: make_gaussians_image, simulate_image, centroid_poly, _centroid_poly3, correlate, findlocalmaxima, measure_star_shape
+using CrowdPhot: make_gaussians_image, simulate_image, centroid_poly, _centroid_poly3, correlate, findlocalmaxima, measure_star_shape, choose_centroid
 using CrowdPhot.PSF: GaussianPSF, CircularGaussianPSF, CircularGaussianPRF, evaluate, evaluate_fg, fit_star, fit_psf, TukeyLoss, bicubic_interpolate, fill_grid_holes!, ImagePSF
 using CrowdPhot.Background
 import BackgroundMeshes as BM
@@ -210,6 +210,8 @@ for n in (7, 15)
         inds = (1:n, 1:n)
         img = evaluate.(model, inds[1], inds[2]')
         SUITE["centroids"]["centroid_poly ($n×$n)"] = @benchmarkable centroid_poly($img)
+        cen = centroid_poly(img)
+        SUITE["centroids"]["choose_centroid ($n×$n)"] = @benchmarkable choose_centroid($cen) samples=1000 evals=100
     end
 end
 
