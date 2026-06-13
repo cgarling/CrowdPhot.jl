@@ -4,7 +4,7 @@ Here we will run photometry on an HST/ACS DRC file which
 is a high-level data product that has been calibrated,
 geometrically-corrected, and dither-combined by AstroDrizzle.
 
-```@example hst-drz
+```@example hst-drc
 using CrowdPhot
 using FITSIO
 using LazyArtifacts
@@ -28,7 +28,7 @@ fig = Figure(size=(700,700),)
 ax = Axis(fig[1,1]; aspect = DataAspect(),
     xlabel = "x", ylabel = "y", 
     title="Leo A, HST F814W, Proposal ID 12273, PI: R. van der Marel",
-    titlesize = 20)
+    titlesize = 20, yreversed = true)
 
 colorrange = zscale(img) # Use PlotUtils.zscale for reasonable color limits
 hm = image!(ax, img'; colorrange, colorscale=LuptonAsinhScale())
@@ -40,7 +40,7 @@ fig
 DRZ files have already been background-subtracted, but we will will still
 run background estimation to get the noise (RMS) map.
 
-```@example hst-drz
+```@example hst-drc
 # `img` is NaN in areas not covered, allowing us to make a coverage mask
 coverage_mask = isnan.(img)
 # Estimate 2-D background with 256 pixel mesh size
@@ -48,9 +48,9 @@ bkg = Background2D(img, 256; coverage_mask, fill_value=NaN)
 img_sub = img .- bkg.background
 
 fig = Figure(size = (700, 300))
-ax1 = Axis(fig[1, 1]; title = "Image", aspect = DataAspect())
-ax2 = Axis(fig[1, 2]; title = "Background model", aspect = DataAspect())
-ax3 = Axis(fig[1, 3]; title = "Residual", aspect = DataAspect())
+ax1 = Axis(fig[1, 1]; title = "Image", aspect = DataAspect(), yreversed = true)
+ax2 = Axis(fig[1, 2]; title = "Background model", aspect = DataAspect(), yreversed = true)
+ax3 = Axis(fig[1, 3]; title = "Residual", aspect = DataAspect(), yreversed = true)
 
 im1 = image!(ax1, img'; colorrange)
 im2 = image!(ax2, bkg.background'; colorrange)
@@ -73,7 +73,7 @@ Gaussian kernel with FWHM = 2.0 pixels, the approximate width of the
 ACS/WFC PSF at F814W.  We provide the inverse-variance map from the
 background RMS so that noisier regions are properly down-weighted.
 
-```@example hst-drz
+```@example hst-drc
 # Convert to Float64 for consistency with the PSF kernel
 img_sub_f64 = Float64.(img_sub)
 
@@ -89,6 +89,47 @@ mf = matched_filter(img_sub_f64, psf_fwhm; inv_var, sigma = 5.0)
 println("Detected $(length(mf.peaks)) sources at ≥ 5σ")
 ```
 
+And now we can plot our detections on a small part of the image:
+
+```@example hst-drc
+region_width = 500
+ny, nx = size(img_sub)
+y_start = 1500
+x_start = 1500
+y_range = y_start:min(ny, y_start + region_width - 1)
+x_range = x_start:min(nx, x_start + region_width - 1)
+
+region_img = img_sub[y_range, x_range]
+region_colorrange = zscale(region_img[isfinite.(region_img)])
+
+# CrowdPhot coordinates are image[y, x]; Makie overlays take (x, y).
+region_peaks = filter(mf.peaks) do peak
+    y, x = Tuple(peak)
+    y in y_range && x in x_range
+end
+
+# Draw 4-pixel-diameter source circles in image-coordinate units.
+source_circles = map(region_peaks) do peak
+    y, x = Tuple(peak)
+    Circle(Point2f(x, y), 2)
+end
+
+fig = Figure(size = (700, 700))
+ax = Axis(fig[1, 1];
+    aspect = DataAspect(), yreversed = true,
+    xlabel = "x", ylabel = "y",
+    title = "Detected sources in a 500×500 pixel region")
+
+hm = heatmap!(ax, x_range, y_range, region_img';
+    colorrange = region_colorrange, colorscale = LuptonAsinhScale(),
+    colormap = :grays, interpolate = false)
+poly!(ax, source_circles; color = (:limegreen, 0), strokecolor = :limegreen,
+    strokewidth = 1.2)
+Colorbar(fig[1, 2], hm; height = Relative(0.75), valign = :center)
+
+fig
+```
+
 ## Morphological Measurements
 
 We feed the [`MatchedFilterResult`](@ref) directly to
@@ -102,7 +143,7 @@ background-dominated pixels. Here we use a `half_width=2` so the full
 width of the cutout is 4 pixels, twice the FWHM of the kernel we used
 for detection, which gives good results.
 
-```@example hst-drz
+```@example hst-drc
 # Measure morphology for all detected sources
 results = measure_star_shapes(mf; half_width = 2)
 
@@ -136,7 +177,7 @@ be about equivalent to the aperture statistics because our aperture
 box size is only 5x5 pixels, so they do not add much information in this
 case.
 
-```@example hst-drz
+```@example hst-drc
 using Statistics
 
 # Extract measurements for valid sources
