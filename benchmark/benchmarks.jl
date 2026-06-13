@@ -1,6 +1,6 @@
 # When adding a benchmark suite, update SUITE_NAMES and SUITE_TITLES, then
 # define its BenchmarkGroup under SUITE using the same suite name.
-using CrowdPhot: make_gaussians_image, simulate_image, centroid_poly, _centroid_poly3, correlate, findlocalmaxima
+using CrowdPhot: make_gaussians_image, simulate_image, centroid_poly, _centroid_poly3, correlate, findlocalmaxima, measure_star_shape
 using CrowdPhot.PSF: GaussianPSF, CircularGaussianPSF, CircularGaussianPRF, evaluate, evaluate_fg, fit_star, fit_psf, TukeyLoss, bicubic_interpolate, fill_grid_holes!, ImagePSF
 using CrowdPhot.Background
 import BackgroundMeshes as BM
@@ -61,7 +61,7 @@ function _flatten_results!(flat, group, prefix)
     end
 end
 
-const SUITE_NAMES = ["parametric", "fitting", "empirical", "background", "centroids", "correlation", "peakfinding"]
+const SUITE_NAMES = ["parametric", "fitting", "empirical", "background", "centroids", "correlation", "peakfinding", "morphology"]
 const SUITE_TITLES = Dict(
     "parametric" => "Parametric Suite",
     "fitting" => "Fitting Suite",
@@ -70,6 +70,7 @@ const SUITE_TITLES = Dict(
     "centroids" => "Centroids Suite",
     "correlation" => "Correlation Suite",
     "peakfinding" => "Peak Finding Suite",
+    "morphology" => "Morphology Suite",
 )
 
 function selected_suite_names(args)
@@ -278,6 +279,22 @@ for (sz, label) in [((100, 100), "100x100"), ((500, 500), "500x500"), ((2000, 20
         SUITE["peakfinding"]["$lbl, ImageFiltering.jl"] = @benchmarkable _if_findlocalmaxima(img; edges=true) setup=(
             img = rand($s...)
         ) samples=10
+    end
+end
+
+# ---------------------------------------------------------------------------
+# Morphology benchmarks — measure_star_shape on Gaussian cutouts
+# ---------------------------------------------------------------------------
+SUITE["morphology"] = BenchmarkGroup()
+
+for n in (5, 11, 21)
+    let sz = n
+        model = CircularGaussianPSF(x = (sz + 1) / 2, y = (sz + 1) / 2,
+            fwhm = 2.8, flux = 100.0, bkg = 0.0)
+        inds = (1:sz, 1:sz)
+        img = evaluate.(model, inds[1], inds[2]')
+        SUITE["morphology"]["measure_star_shape ($sz×$sz)"] =
+            @benchmarkable measure_star_shape($img)
     end
 end
 

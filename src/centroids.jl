@@ -23,13 +23,28 @@
 
 Fit a quadratic 2-D polynomial ``P(x,y) = a + bx + cy + dx² + exy + fy²``
 to a 3×3 patch using weighted least squares with inverse-variance weights
-`inv_var`.  Returns `(; y, x, peak, y_err, x_err, peak_err, cov, com)`
-where `y, x` are the sub-pixel polynomial centroid coordinates (row, column)
-relative to the patch center, `peak` is the polynomial value at the centroid,
-the `_err` fields are 1-σ uncertainties, `cov` is the full 3×3 `SMatrix`
-covariance of `(y, x, peak)`, and `com` is a `NamedTuple`
-`(; y, x, y_err, x_err, cov)` with the inverse-variance-weighted
-center-of-mass centroid and its 2×2 covariance on the same 3×3 patch.
+`inv_var`.
+
+# Returns
+A `NamedTuple` with keys `(; poly, com, sharpness, roundness1_core,
+roundness2_core)`:
+
+- `poly`: `NamedTuple` `(; y, x, peak, y_err, x_err, peak_err, cov)` with
+  the polynomial centroid (row, column) relative to the patch center, the
+  fitted value at the centroid, 1-σ uncertainties, and 3×3 `SMatrix`
+  covariance of `(y, x, peak)`.
+- `com`: `NamedTuple` `(; y, x, y_err, x_err, cov)` with the
+  inverse-variance-weighted center-of-mass centroid and its 2×2
+  covariance on the same 3×3 patch.
+- `sharpness`: negated Laplacian ``-(2d+2f)`` of the quadratic fit.
+  Positive for peaks, near zero for flat regions, negative for valleys.
+- `roundness1_core`: DAOPHOT SROUND / photutils `roundness1` convention:
+  ``2\\cdot\\Sigma_2/\\Sigma_4`` — ratio of bilateral (2-fold) to fourfold
+  symmetry of the 8 neighbour pixels.  0 = symmetric, nonzero = asymmetric.
+- `roundness2_core`: DAOPHOT GROUND / photutils `roundness2` convention:
+  ``2(\\sqrt{|d|} - \\sqrt{|f|})/(\\sqrt{|d|} + \\sqrt{|f|})``.
+  0 = circular core, negative = extended in x (columns),
+  positive = extended in y (rows).
 
 The design matrix is fixed (local coordinates `{-1,0,1}²`), so the
 only free inputs are the 9 pixel values and 9 inverse-variance weights.
@@ -149,10 +164,37 @@ function _centroid_poly3(image::AbstractMatrix{T}, inv_var::AbstractMatrix{T}) w
 
     peak = a + b * xc + c * yc + d * xc2 + e * xcyc + f * yc2
 
-    # Use the regularised curvature values consistently in the propagated
-    # derivatives (only matters when the near-singular branch was taken).
+    # Morphological diagnostics — roundness1_core (SROUND, bilateral vs.
+    # fourfold symmetry) and roundness2_core (GROUND, marginal height ratio).
+    # Both use the 8 neighbour pixels already in registers from the 3×3 patch.
+    # DAOPHOT convention: 0 = symmetric/circular, nonzero = asymmetric/elongated.
+
+    # SROUND on the 3×3 patch (DAOPHOT / photutils roundness1).
+    # SUM2 = +45° axis sum minus -45° axis sum (bilateral asymmetry).
+    # SUM4 = sum of absolute values over all 8 neighbours (fourfold normalisation).
+    sum2 = z12 + z32 - z21 - z23 + z11 + z33 - z31 - z13
+    sum4 = abs(z12) + abs(z32) + abs(z21) + abs(z23) +
+           abs(z11) + abs(z33) + abs(z31) + abs(z13)
+    roundness1_core = if sum4 > eps(T)
+        2 * sum2 / sum4
+    else
+        zero(T)
+    end
+
+    # GROUND from the quadratic fit curvatures (DAOPHOT / photutils roundness2).
+    # For a Gaussian, the marginal-fit height HX ∝ 1/σ_x ∝ √|d|, so
+    # 2·(HX-HY)/(HX+HY) = 2·(√|d|-√|f|)/(√|d|+√|f|).
+    sharpness = -(two_d + two_f)
     dreg = two_d / 2
     freg = two_f / 2
+    sqrt_ad = sqrt(abs(dreg))
+    sqrt_af = sqrt(abs(freg))
+    denom = sqrt_ad + sqrt_af
+    roundness2_core = if denom > eps(T)
+        2 * (sqrt_ad - sqrt_af) / denom
+    else
+        zero(T)
+    end
 
     # Jacobian of (yc, xc, peak) w.r.t. (a, b, c, d, e, f).
     # At the stationary point ∂P/∂x = ∂P/∂y = 0, so d(peak)/dθ simplifies
@@ -184,11 +226,12 @@ function _centroid_poly3(image::AbstractMatrix{T}, inv_var::AbstractMatrix{T}) w
     com_y_err = sqrt(max(zero(T), var_com_y))
     com_x_err = sqrt(max(zero(T), var_com_x))
 
-    return (; y = yc, x = xc, peak,
-             y_err, x_err, peak_err, cov,
+    return (; poly = (; y = yc, x = xc, peak,
+                      y_err, x_err, peak_err, cov),
              com = (; y = com_y, x = com_x,
                      cov = com_cov,
-                     y_err = com_y_err, x_err = com_x_err))
+                     y_err = com_y_err, x_err = com_x_err),
+             sharpness, roundness1_core, roundness2_core)
 end
 
 """
@@ -212,27 +255,38 @@ pixel coordinates.
   mask bad or saturated pixels.
 
 # Returns
-A `NamedTuple` with keys `(; y, x, peak, y_err, x_err, peak_err, cov, com)` where
+A `NamedTuple` with keys `(; poly, com, sharpness, roundness1_core,
+roundness2_core)` where
 
-- `y`, `x` — polynomial centroid in global pixel coordinates (row, column).
-- `peak` — fitted polynomial value at the centroid.
-- `y_err`, `x_err`, `peak_err` — 1-σ uncertainties propagated from the
-  weighted least-squares parameter covariance.
-- `cov` — 3×3 `SMatrix` covariance of `(y, x, peak)`.
+- `poly` — `NamedTuple` `(; y, x, peak, y_err, x_err, peak_err, cov)`
+  with the polynomial centroid in global pixel coordinates (row, column),
+  the fitted value at the centroid, 1-σ uncertainties, and 3×3 `SMatrix`
+  covariance of `(y, x, peak)`.  Access as `result.poly.y`, `result.poly.x`, etc.
 - `com` — `NamedTuple` `(; y, x, y_err, x_err, cov)` with the
   inverse-variance-weighted center-of-mass centroid, its 1-σ
   uncertainties, and its 2×2 `SMatrix` covariance.  Access as
   `result.com.y`, `result.com.x`, etc.
+- `sharpness` — negated Laplacian of the quadratic fit;
+  positive for peaks, near zero for flat regions, negative for valleys.
+  Useful for distinguishing stars from cosmic rays and hot pixels.
+- `roundness1_core` — DAOPHOT SROUND / photutils `roundness1`:
+  ``2\\cdot\\Sigma_2/\\Sigma_4`` from the 8 neighbour pixels.
+  0 = symmetric, nonzero = asymmetric.
+- `roundness2_core` — DAOPHOT GROUND / photutils `roundness2`:
+  ``2(\\sqrt{|d|} - \\sqrt{|f|})/(\\sqrt{|d|} + \\sqrt{|f|})``.
+  0 = circular core, negative = extended in x (columns),
+  positive = extended in y (rows).
 
 If the brightest pixel lies on the image border (no full 3×3
 neighbourhood), every field is `NaN`:
 
 ```julia
-(; y = NaN, x = NaN, peak = NaN,
-   y_err = NaN, x_err = NaN, peak_err = NaN,
-   cov = @SMatrix [NaN NaN NaN; NaN NaN NaN; NaN NaN NaN],
+(; poly = (; y = NaN, x = NaN, peak = NaN,
+            y_err = NaN, x_err = NaN, peak_err = NaN,
+            cov = @SMatrix [NaN NaN NaN; NaN NaN NaN; NaN NaN NaN]),
    com = (; y = NaN, x = NaN, y_err = NaN, x_err = NaN,
-          cov = @SMatrix [NaN NaN; NaN NaN]))
+          cov = @SMatrix [NaN NaN; NaN NaN]),
+   sharpness = NaN, roundness1_core = NaN, roundness2_core = NaN)
 ```
 
 # Examples
@@ -243,7 +297,7 @@ julia> img = [0.1 0.3 0.1; 0.3 1.0 0.3; 0.1 0.3 0.1];
 
 julia> result = centroid_poly(img);
 
-julia> round(result.x; digits=1), round(result.y; digits=1)
+julia> round(result.poly.x; digits=1), round(result.poly.y; digits=1)
 (2.0, 2.0)
 
 julia> round(result.com.x; digits=1), round(result.com.y; digits=1)
@@ -276,9 +330,11 @@ function centroid_poly(image::AbstractMatrix{T}, i0::Int, j0::Int, inv_var::Abst
     nan2 = @SMatrix [nan nan; nan nan]
     nancom = (; y = nan, x = nan, y_err = nan, x_err = nan, cov = nan2)
     if i0 < 2 || i0 > size(image, 1) - 1 || j0 < 2 || j0 > size(image, 2) - 1
-        return (; y = nan, x = nan, peak = nan,
-                 y_err = nan, x_err = nan, peak_err = nan,
-                 cov = nan3, com = nancom)
+        return (; poly = (; y = nan, x = nan, peak = nan,
+                          y_err = nan, x_err = nan, peak_err = nan,
+                          cov = nan3),
+                 com = nancom,
+                 sharpness = nan, roundness1_core = nan, roundness2_core = nan)
     end
 
     # extract 3×3 views
@@ -290,18 +346,21 @@ function centroid_poly(image::AbstractMatrix{T}, i0::Int, j0::Int, inv_var::Abst
 
     # convert local → global coordinates
     # i0 is row (y), j0 is column (x)
-    return (; y = i0 + local_result.y,
-             x = j0 + local_result.x,
-             peak = local_result.peak,
-             y_err = local_result.y_err,
-             x_err = local_result.x_err,
-             peak_err = local_result.peak_err,
-             cov = local_result.cov,
+    return (; poly = (; y = i0 + local_result.poly.y,
+                       x = j0 + local_result.poly.x,
+                       peak = local_result.poly.peak,
+                       y_err = local_result.poly.y_err,
+                       x_err = local_result.poly.x_err,
+                       peak_err = local_result.poly.peak_err,
+                       cov = local_result.poly.cov),
              com = (; y = i0 + local_result.com.y,
                      x = j0 + local_result.com.x,
                      y_err = local_result.com.y_err,
                      x_err = local_result.com.x_err,
-                     cov = local_result.com.cov))
+                     cov = local_result.com.cov),
+             sharpness = local_result.sharpness,
+             roundness1_core = local_result.roundness1_core,
+             roundness2_core = local_result.roundness2_core)
 end
 
 """
@@ -309,7 +368,7 @@ end
 
 Given the `NamedTuple` returned by [`centroid_poly`](@ref) or
 [`_centroid_poly3`](@ref), choose between the polynomial centroid
-(`result.y`, `result.x`) and the center-of-mass centroid
+(`result.poly.y`, `result.poly.x`) and the center-of-mass centroid
 (`result.com.y`, `result.com.x`).
 
 The polynomial centroid is preferred for well-sampled data where the
@@ -331,9 +390,9 @@ Returns `(; y, x, source)` where `source` is `:poly` or `:com`.
 function choose_centroid(result)
     # If the polynomial covariance is more than 100× the COM covariance,
     # the curvature matrix is essentially degenerate → use COM.
-    if result.cov[2,2] > 100 * result.com.cov[2,2]
+    if result.poly.cov[2,2] > 100 * result.com.cov[2,2]
         return (; y = result.com.y, x = result.com.x, source = :com)
     else
-        return (; y = result.y, x = result.x, source = :poly)
+        return (; y = result.poly.y, x = result.poly.x, source = :poly)
     end
 end

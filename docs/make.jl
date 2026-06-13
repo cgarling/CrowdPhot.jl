@@ -34,7 +34,9 @@ makedocs(;
             "HST ACS DRZ" => "tutorials/HST-DRZ.md",
         ],
         "Background Estimation" => "background.md",
-        "Detection and Centroiding" => "detection.md",
+        "Detection" => "detection.md",
+        "Centroid Refinement and Morphology" => "morphology.md",
+        "Candidate Selection" => "picking.md",
         "PSFs" => [
             "PSF API" => "psf/psf_api.md",
             "Parametric PSF Models" => "psf/parametric_models.md",
