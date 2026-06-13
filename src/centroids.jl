@@ -56,6 +56,12 @@ added to its diagonal before computing the centroid.  If the data are
 so noisy that the regularized determinant is still effectively zero,
 the covariance will be large but the centroid estimates remain finite.
 
+For a well-sampled Gaussian with a sufficiently large aperture, the
+quadratic curvature matrix and the flux second-moment covariance are dual
+descriptions of the same local profile.  In that limit,
+`roundness2_core` converges to the moment-based aperture `roundness2`;
+undersampling, masking, finite apertures, blends, and non-Gaussian PSFs can
+make the two diagnostics differ substantially.
 
 !!! note
     This function assumes the inputs are valid 3×3 matrices.  Border
@@ -135,8 +141,15 @@ function _centroid_poly3(image::AbstractMatrix, inv_var::AbstractMatrix)
 
     # The propagated covariance needs N⁻¹, so form it once and reuse it for
     # both the fitted coefficients and the output covariance.
-    C = cholesky(Symmetric(Nmat))
-    Ninv = SMatrix{6,6,FT}(inv(C))
+    # TODO: Make this robust to PosDefException from singular or nearly
+    # singular weighted 3×3 designs instead of relying on a pseudoinverse.
+    Ninv = try
+        C = cholesky(Symmetric(Nmat))
+        SMatrix{6,6,FT}(inv(C))
+    catch err
+        err isa PosDefException || rethrow()
+        SMatrix{6,6,FT}(pinv(Nmat))
+    end
 
     X = Ninv * rvec
     a, b, c, d, e, f = X[1], X[2], X[3], X[4], X[5], X[6]
