@@ -16,6 +16,7 @@ import CrowdPhot
 @safetestset "Simulation tests" include("simulation_test.jl")
 @safetestset "Background estimation" include("background_tests.jl")
 @safetestset "Centroids" include("centroids_tests.jl")
+@safetestset "Morphology" include("morphology_tests.jl")
 @safetestset "Correlation" include("correlation_tests.jl")
 @safetestset "Detection" include("detection_tests.jl")
 @safetestset "Doctests" include("doctests.jl")

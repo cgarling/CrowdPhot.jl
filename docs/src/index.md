@@ -33,7 +33,7 @@ The package is organized around a few composable pieces:
   varying 2-D background maps with masking, sigma clipping, robust location
   estimators, and bicubic interpolation.
 - **Detection and centroiding:** matched-filter source detection, local-maximum
-  finding, and polynomial centroid refinement.
+  finding, polynomial centroid refinement, and morphological measurements.
 - **Simulation:** source-list generation, PSF rendering, Poisson/read-noise
   injection, and convenience routines for Gaussian-star test images.
 
@@ -101,7 +101,8 @@ Simulation utilities are available for tests, examples, and benchmarking:
 | Page | Description |
 |------|-------------|
 | [Background Estimation](background.md) | Scalar and 2-D background/RMS estimation |
-| [Detection and Centroiding](detection.md) | Matched-filter detection and centroid refinement |
+| [Detection](detection.md) | Matched-filter source detection |
+| [Centroid Refinement and Morphology](morphology.md) | Sub-pixel centroiding and shape diagnostics |
 | [PSF API](psf/psf_api.md) | Abstract PSF interface and shared utilities |
 | [Parametric PSF Models](psf/parametric_models.md) | Gaussian, PRF, Moffat, and Airy models |
 | [Effective PSF Models](psf/empirical/epsf_overview.md) | Image-backed empirical PSF modeling |

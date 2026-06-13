@@ -11,6 +11,7 @@ using Statistics: median, median!, mean, std
 export Background2D
 export simulate_sources, simulate_image, make_gaussians_image, centroid_poly, choose_centroid
 export matched_filter, MatchedFilterResult
+export measure_star_shape
 
 include("correlation.jl")
 include("utilities.jl")
@@ -22,5 +23,6 @@ include("simulation.jl")
 include("background/background.jl")
 using .Background
 include("centroids.jl")
+include("morphology.jl")
 
 end # module CrowdPhot
