@@ -11,7 +11,7 @@ using Statistics: median, median!, mean, std
 export Background2D
 export simulate_sources, simulate_image, make_gaussians_image, centroid_poly, choose_centroid
 export matched_filter, MatchedFilterResult
-export measure_star_shape
+export measure_star_shape, measure_star_shapes
 
 include("correlation.jl")
 include("utilities.jl")

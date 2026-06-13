@@ -266,3 +266,224 @@ function measure_star_shape(image::AbstractMatrix; kws...)
     i0, j0 = Tuple(maxidx)
     return measure_star_shape(image, Int(i0), Int(j0); kws...)
 end
+
+# ---------------------------------------------------------------------------
+# Batch measurement from matched-filter results
+# ---------------------------------------------------------------------------
+
+"""
+    _default_half_width(result::MatchedFilterResult) -> Int
+
+Return a sensible default half-width for cutout extraction around each
+detected peak.  The kernel radius (half the kernel size) is used as a
+proxy for the PSF extent, with a 2-pixel margin added to capture the
+wings.  The minimum half-width is 3, guaranteeing at least a 7×7 cutout.
+"""
+function _default_half_width(result::MatchedFilterResult)
+    kr = size(result.kernel, 1) ÷ 2
+    kc = size(result.kernel, 2) ÷ 2
+    return max(3, max(kr, kc) + 2)
+end
+
+"""
+    measure_star_shapes(result::MatchedFilterResult; kws...) -> Vector{NamedTuple}
+
+Measure centroid, shape, and morphological properties for every peak
+detected by [`matched_filter`](@ref).
+
+For each peak in `result.peaks`, this function:
+
+1. Extracts a square cutout of size ``(2 \\times \\mathtt{half\\_width} + 1)^2``
+   centred on the peak pixel from the original image.
+2. Calls [`centroid_poly`](@ref) on the 3×3 core to obtain a sub-pixel
+   centroid (polynomial and center-of-mass) and core diagnostics
+   (normalized curvature, roundness).
+3. Calls [`choose_centroid`](@ref) to select the best centroid estimate.
+4. Calls [`measure_star_shape`](@ref) on the full cutout to compute
+   aperture-based morphology (FWHM, roundness, flux).
+
+All coordinate fields in the returned NamedTuples are in **global**
+pixel coordinates of the original image.
+
+# Arguments
+
+- `result::MatchedFilterResult`: result from [`matched_filter`](@ref).
+- `half_width::Int`: half-width of the square cutout extracted around
+  each peak.  The cutout size is ``(2 \\times \\mathtt{half\\_width} + 1)
+  \\times (2 \\times \\mathtt{half\\_width} + 1)`` pixels.  Defaults to the
+  kernel radius plus 2, with a minimum of 3.
+- `background::Real`: scalar background level subtracted before computing
+  image moments.  Defaults to `0`.  Passed to [`measure_star_shape`](@ref).
+- `fwhm_factor::Real`: scale factor from Gaussian σ to FWHM.  Defaults to
+  ``2\\sqrt{2\\log 2} \\approx 2.35482``.  Passed to [`measure_star_shape`](@ref).
+- `peaks::Union{AbstractVector{Int}, Nothing}`: optional vector of integer
+  indices into `result.peaks` specifying which peaks to measure.  When
+  `nothing` (default), all peaks are measured (subject to
+  `min_significance`).
+- `min_significance::Union{Real, Nothing}`: optional significance threshold;
+  only peaks with `result.peak_significances[i] >= min_significance` are
+  measured.  Ignored if `peaks` is also provided.
+
+# Returns
+
+A `Vector` of `NamedTuple`s, one per measured peak.  Each `NamedTuple`
+has the following fields:
+
+- `peak_index::Int`: index into the original `result.peaks` array.
+- `pixel::CartesianIndex{2}`: the peak pixel `(row, column)` in the
+  original image.
+- `significance`: detection significance at this peak.
+- `matched_filter_flux`: matched-filter flux estimate at this peak.
+- `core`: the full [`centroid_poly`](@ref) result — `(; poly, com,
+  normalized_curvature, roundness1_core, roundness2_core)` with
+  coordinates in global pixels.
+- `centroid`: the chosen centroid `(; y, x, source)` from
+  [`choose_centroid`](@ref) in global pixels.  `source` is `:poly` or `:com`.
+- `morphology`: the full [`measure_star_shape`](@ref) result — `(; fwhm,
+  roundness1_aperture, roundness2_aperture, flux, centroid)` with
+  coordinates in global pixels.
+
+!!! note
+    If a peak is so close to the image border that no full 3×3
+    neighbourhood exists, all fields in `core` are `NaN` and
+    `centroid.source` is `:poly` (degenerate).  The `morphology` fields
+    are computed from the available (clipped) cutout and may still be
+    valid.
+
+# Examples
+
+```jldoctest
+julia> using CrowdPhot: matched_filter, measure_star_shapes
+
+julia> mf_result = matched_filter(zeros(50, 50), 3.0; sigma=0.0);
+
+julia> results = measure_star_shapes(mf_result);
+
+julia> isempty(results)
+true
+```
+
+# References
+See [Vakili2016](@citet) for the polynomial centroid method.
+"""
+function measure_star_shapes(
+        result::MatchedFilterResult{T};
+        half_width::Int = _default_half_width(result),
+        background::Real = zero(T),
+        fwhm_factor::Real = 2.3548200450309493,
+        peaks::Union{AbstractVector{Int}, Nothing} = nothing,
+        min_significance::Union{Real, Nothing} = nothing,
+    ) where {T}
+    # Determine which peaks to measure.
+    all_peak_idx = if peaks !== nothing
+        collect(Int, peaks)
+    elseif min_significance !== nothing
+        FT = float(T)
+        findall(sig -> sig >= FT(min_significance), result.peak_significances)
+    else
+        collect(1:length(result.peaks))
+    end
+
+    n = length(all_peak_idx)
+    n == 0 && return NamedTuple[]
+
+    H, W = size(result.image)
+    FT = float(T)
+    results = Vector{NamedTuple}(undef, n)
+
+    for (idx, pidx) in enumerate(all_peak_idx)
+        pixel = result.peaks[pidx]
+        i0, j0 = Tuple(pixel)  # row, column
+
+        # Extract cutout with boundary clipping.
+        y_start = max(1, i0 - half_width)
+        y_end   = min(H, i0 + half_width)
+        x_start = max(1, j0 - half_width)
+        x_end   = min(W, j0 + half_width)
+
+        cutout = @view result.image[y_start:y_end, x_start:x_end]
+
+        ivar_cutout = if result.inv_var !== nothing
+            @view result.inv_var[y_start:y_end, x_start:x_end]
+        else
+            Fill(one(T), size(cutout))
+        end
+
+        # Peak pixel within the cutout (1-indexed).
+        i0_cut = Int(i0 - y_start + 1)
+        j0_cut = Int(j0 - x_start + 1)
+
+        # Global offset for coordinate conversion.
+        dy_global = FT(y_start - 1)
+        dx_global = FT(x_start - 1)
+
+        # 1. Polynomial centroid on the 3×3 core.
+        core_local = centroid_poly(cutout, i0_cut, j0_cut, ivar_cutout)
+
+        # Convert core coordinates to global.
+        core_global = (;
+            poly = (;
+                y = core_local.poly.y + dy_global,
+                x = core_local.poly.x + dx_global,
+                peak = core_local.poly.peak,
+                y_err = core_local.poly.y_err,
+                x_err = core_local.poly.x_err,
+                peak_err = core_local.poly.peak_err,
+                cov = core_local.poly.cov,
+            ),
+            com = (;
+                y = core_local.com.y + dy_global,
+                x = core_local.com.x + dx_global,
+                y_err = core_local.com.y_err,
+                x_err = core_local.com.x_err,
+                cov = core_local.com.cov,
+            ),
+            normalized_curvature = core_local.normalized_curvature,
+            roundness1_core = core_local.roundness1_core,
+            roundness2_core = core_local.roundness2_core,
+        )
+
+        # 2. Choose best centroid.
+        chosen = choose_centroid(core_local)
+        centroid_global = (;
+            y = chosen.y + dy_global,
+            x = chosen.x + dx_global,
+            source = chosen.source,
+        )
+
+        # 3. Aperture morphology.
+        morph_local = measure_star_shape(
+            cutout, i0_cut, j0_cut;
+            inv_var = ivar_cutout,
+            background = background,
+            fwhm_factor = fwhm_factor,
+        )
+
+        # Convert morphology centroid to global.
+        morph_global = (;
+            fwhm = morph_local.fwhm,
+            roundness1_aperture = morph_local.roundness1_aperture,
+            roundness2_aperture = morph_local.roundness2_aperture,
+            flux = morph_local.flux,
+            centroid = (;
+                y = morph_local.centroid.y + dy_global,
+                x = morph_local.centroid.x + dx_global,
+                y_err = morph_local.centroid.y_err,
+                x_err = morph_local.centroid.x_err,
+                cov = morph_local.centroid.cov,
+            ),
+        )
+
+        results[idx] = (;
+            peak_index = pidx,
+            pixel = pixel,
+            significance = result.peak_significances[pidx],
+            matched_filter_flux = result.peak_fluxes[pidx],
+            core = core_global,
+            centroid = centroid_global,
+            morphology = morph_global,
+        )
+    end
+
+    return results
+end
