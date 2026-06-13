@@ -26,7 +26,7 @@ to a 3×3 patch using weighted least squares with inverse-variance weights
 `inv_var`.
 
 # Returns
-A `NamedTuple` with keys `(; poly, com, sharpness, roundness1_core,
+A `NamedTuple` with keys `(; poly, com, normalized_curvature, roundness1_core,
 roundness2_core)`:
 
 - `poly`: `NamedTuple` `(; y, x, peak, y_err, x_err, peak_err, cov)` with
@@ -36,8 +36,10 @@ roundness2_core)`:
 - `com`: `NamedTuple` `(; y, x, y_err, x_err, cov)` with the
   inverse-variance-weighted center-of-mass centroid and its 2×2
   covariance on the same 3×3 patch.
-- `sharpness`: negated Laplacian ``-(2d+2f)`` of the quadratic fit.
-  Positive for peaks, near zero for flat regions, negative for valleys.
+- `normalized_curvature`: negated Laplacian divided by the fitted peak
+  value, ``-(2d + 2f)/\\mathrm{peak} \\approx 2/\\mathrm{FWHM}^2`` for a
+  Gaussian.  Flux-independent; ~0.5 for a typical stellar PSF, orders of
+  magnitude larger for cosmic rays.
 - `roundness1_core`: DAOPHOT SROUND / photutils `roundness1` convention:
   ``2\\cdot\\Sigma_2/\\Sigma_4`` — ratio of bilateral (2-fold) to fourfold
   symmetry of the 8 neighbour pixels.  0 = symmetric, nonzero = asymmetric.
@@ -45,14 +47,15 @@ roundness2_core)`:
   ``2(\\sqrt{|d|} - \\sqrt{|f|})/(\\sqrt{|d|} + \\sqrt{|f|})``.
   0 = circular core, negative = extended in x (columns),
   positive = extended in y (rows).
+  When the curvature matrix is near-singular the regularization biases
+  this toward 0.
 
 The design matrix is fixed (local coordinates `{-1,0,1}²`), so the
 only free inputs are the 9 pixel values and 9 inverse-variance weights.
 
-If the curvature matrix `D = [2d  e;  e  2f]` is near-singular
-(`|4df - e²| < 10^{-10}`), a small Tikhonov-style regularisation is
+If the curvature matrix `D = [2d  e;  e  2f]` is near-singular, a small Tikhonov-style regularization is
 added to its diagonal before computing the centroid.  If the data are
-so noisy that the regularised determinant is still effectively zero,
+so noisy that the regularized determinant is still effectively zero,
 the covariance will be large but the centroid estimates remain finite.
 
 
@@ -171,7 +174,7 @@ function _centroid_poly3(image::AbstractMatrix{T}, inv_var::AbstractMatrix{T}) w
 
     # SROUND on the 3×3 patch (DAOPHOT / photutils roundness1).
     # SUM2 = +45° axis sum minus -45° axis sum (bilateral asymmetry).
-    # SUM4 = sum of absolute values over all 8 neighbours (fourfold normalisation).
+    # SUM4 = sum of absolute values over all 8 neighbours (fourfold normalization).
     sum2 = z12 + z32 - z21 - z23 + z11 + z33 - z31 - z13
     sum4 = abs(z12) + abs(z32) + abs(z21) + abs(z23) +
            abs(z11) + abs(z33) + abs(z31) + abs(z13)
@@ -181,10 +184,13 @@ function _centroid_poly3(image::AbstractMatrix{T}, inv_var::AbstractMatrix{T}) w
         zero(T)
     end
 
+    # Normalized curvature — negated Laplacian divided by peak value.
+    # For a Gaussian, -(2d+2f)/peak ≈ 2/FWHM², independent of flux.
+    normalized_curvature = -(two_d + two_f) / max(abs(peak), eps(T))
+
     # GROUND from the quadratic fit curvatures (DAOPHOT / photutils roundness2).
     # For a Gaussian, the marginal-fit height HX ∝ 1/σ_x ∝ √|d|, so
     # 2·(HX-HY)/(HX+HY) = 2·(√|d|-√|f|)/(√|d|+√|f|).
-    sharpness = -(two_d + two_f)
     dreg = two_d / 2
     freg = two_f / 2
     sqrt_ad = sqrt(abs(dreg))
@@ -231,7 +237,7 @@ function _centroid_poly3(image::AbstractMatrix{T}, inv_var::AbstractMatrix{T}) w
              com = (; y = com_y, x = com_x,
                      cov = com_cov,
                      y_err = com_y_err, x_err = com_x_err),
-             sharpness, roundness1_core, roundness2_core)
+             normalized_curvature, roundness1_core, roundness2_core)
 end
 
 """
@@ -255,7 +261,7 @@ pixel coordinates.
   mask bad or saturated pixels.
 
 # Returns
-A `NamedTuple` with keys `(; poly, com, sharpness, roundness1_core,
+A `NamedTuple` with keys `(; poly, com, normalized_curvature, roundness1_core,
 roundness2_core)` where
 
 - `poly` — `NamedTuple` `(; y, x, peak, y_err, x_err, peak_err, cov)`
@@ -266,9 +272,10 @@ roundness2_core)` where
   inverse-variance-weighted center-of-mass centroid, its 1-σ
   uncertainties, and its 2×2 `SMatrix` covariance.  Access as
   `result.com.y`, `result.com.x`, etc.
-- `sharpness` — negated Laplacian of the quadratic fit;
-  positive for peaks, near zero for flat regions, negative for valleys.
-  Useful for distinguishing stars from cosmic rays and hot pixels.
+- `normalized_curvature` — negated Laplacian divided by the fitted peak
+  value; ``\\approx 2/\\mathrm{FWHM}^2`` for a Gaussian.  This flux-independent
+statistic is useful for distinguishing stars from
+  cosmic rays and hot pixels.
 - `roundness1_core` — DAOPHOT SROUND / photutils `roundness1`:
   ``2\\cdot\\Sigma_2/\\Sigma_4`` from the 8 neighbour pixels.
   0 = symmetric, nonzero = asymmetric.
@@ -286,7 +293,7 @@ neighbourhood), every field is `NaN`:
             cov = @SMatrix [NaN NaN NaN; NaN NaN NaN; NaN NaN NaN]),
    com = (; y = NaN, x = NaN, y_err = NaN, x_err = NaN,
           cov = @SMatrix [NaN NaN; NaN NaN]),
-   sharpness = NaN, roundness1_core = NaN, roundness2_core = NaN)
+   normalized_curvature = NaN, roundness1_core = NaN, roundness2_core = NaN)
 ```
 
 # Examples
@@ -334,7 +341,7 @@ function centroid_poly(image::AbstractMatrix{T}, i0::Int, j0::Int, inv_var::Abst
                           y_err = nan, x_err = nan, peak_err = nan,
                           cov = nan3),
                  com = nancom,
-                 sharpness = nan, roundness1_core = nan, roundness2_core = nan)
+                 normalized_curvature = nan, roundness1_core = nan, roundness2_core = nan)
     end
 
     # extract 3×3 views
@@ -358,7 +365,7 @@ function centroid_poly(image::AbstractMatrix{T}, i0::Int, j0::Int, inv_var::Abst
                      y_err = local_result.com.y_err,
                      x_err = local_result.com.x_err,
                      cov = local_result.com.cov),
-             sharpness = local_result.sharpness,
+             normalized_curvature = local_result.normalized_curvature,
              roundness1_core = local_result.roundness1_core,
              roundness2_core = local_result.roundness2_core)
 end

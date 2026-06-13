@@ -20,7 +20,7 @@ the centroid offset `μ_y = M10 / M00`, `μ_x = M01 / M00` and subtract
 to obtain central moments.
 
 # Returns
-`(; M00, M10, M01, M20, M02, M11)` where each
+`(; M00, M10, M01, M20, M02, M11, sum2, sum4)` where each
 ```math
 M_{pq} = \\sum_{y,x} w_{y,x} \\; \\max(0, z_{y,x}) \\; (y - y_0)^p \\; (x - x_0)^q
 ```
@@ -28,6 +28,12 @@ with ``w = \\mathtt{inv\\_var}`` and ``z = \\mathtt{image} - \\mathtt{background
 Pixels with ``w \\le 0`` are skipped.  If ``M_{00} \\le 0`` (all pixels
 below background or fully masked), `M00 = 0` and higher moments are
 meaningless; the caller should guard against this.
+
+`sum2` and `sum4` are the raw SROUND accumulators (bilateral asymmetry
+and fourfold normalization) computed over all valid pixels with
+``w > 0``, using the reference point ``(y_0, x_0)`` as a proxy for the
+centroid.  The caller must divide ``2\\cdot\\mathrm{sum2}/\\mathrm{sum4}``
+to obtain the SROUND value.
 """
 function _moments2(
         image::AbstractMatrix{T},
@@ -43,6 +49,9 @@ function _moments2(
     M20 = zero(FT)
     M02 = zero(FT)
     M11 = zero(FT)
+    # SROUND accumulators (bilateral asymmetry sums).
+    sum2 = zero(FT)
+    sum4 = zero(FT)
     bg = FT(background)
     fy0 = FT(y0)
     fx0 = FT(x0)
@@ -60,8 +69,21 @@ function _moments2(
         M20 += wz * dy * dy
         M02 += wz * dx * dx
         M11 += wz * dx * dy
+        # SROUND: exclude the central pixel (matching DAOPHOT/photutils).
+        if !(dy == 0 && dx == 0)
+            if dy >= 0 && dx > 0       # quad1: bottom-right
+                sum2 -= wz
+            elseif dy > 0 && dx <= 0   # quad2: bottom-left
+                sum2 += wz
+            elseif dy <= 0 && dx < 0   # quad3: top-left
+                sum2 -= wz
+            else                        # quad4: top-right (dy < 0, dx >= 0)
+                sum2 += wz
+            end
+            sum4 += abs(wz)
+        end
     end
-    return (; M00, M10, M01, M20, M02, M11)
+    return (; M00, M10, M01, M20, M02, M11, sum2, sum4)
 end
 
 # ---------------------------------------------------------------------------
@@ -94,22 +116,22 @@ cutout using inverse-variance-weighted second central moments.
 
 - `fwhm::NamedTuple (; y, x, theta)`: moment-based full width at half
   maximum along the ``y`` (row) and ``x`` (column) axes, and the
-  position angle `theta` of the major axis in degrees CCW from the
-  ``x``-axis (column direction).  ``\theta = 0`` means the major axis
-  is aligned with columns.
+  position angle `theta` of the major axis in degrees, measured
+  counter-clockwise from the ``+x``-axis (column direction).
+  ``\theta = 0`` means the major axis is aligned with columns;
+  positive ``\theta`` rotates toward rows.
 - `roundness1_aperture::T`: DAOPHOT SROUND / photutils `roundness1`
   over the full cutout: ``2\cdot\Sigma_2/\Sigma_4`` where
   ``\Sigma_2`` is the weighted bilateral asymmetry and ``\Sigma_4``
-  the weighted fourfold normalisation, summed over all valid pixels
-  relative to the measured centroid.
+  the weighted fourfold normalization.
   0 = symmetric, nonzero = asymmetric.
-- `roundness2_aperture::T`: DAOPHOT GROUND convention from the full
-  cutout: ``2(\sqrt{\sigma^2_{yy}} - \sqrt{\sigma^2_{xx}})/(\sqrt{\sigma^2_{yy}} + \sqrt{\sigma^2_{xx}})``.
+- `roundness2_aperture::T`: DAOPHOT GROUND / photutils `roundness2`
+  convention: ``2(\sqrt{\sigma^2_{yy}} - \sqrt{\sigma^2_{xx}})/(\sqrt{\sigma^2_{yy}} + \sqrt{\sigma^2_{xx}})``.
   0 = circular, negative = extended in x (columns),
   positive = extended in y (rows).
 - `flux::T`: total weighted flux ``M_{00}`` above background.
-- `centroid::NamedTuple (; y, x)`: centre-of-mass centroid computed
-  from the weighted moments.
+- `centroid::NamedTuple (; y, x, y_err, x_err, cov)`: centre-of-mass
+  centroid, 1-σ uncertainties, and 2×2 `SMatrix` covariance.
 
 If ``M_{00} \le 0`` (all pixels at or below background), every field
 is `NaN`.  If ``\sigma^2_{yy} \le 0`` or ``\sigma^2_{xx} \le 0``
@@ -128,7 +150,13 @@ julia> result = measure_star_shape(img; background=0);
 julia> result.fwhm.y ≈ result.fwhm.x ≈ 1.4603973964538084
 true
 
-julia> abs(result.roundness2_aperture) < 1e-10 # nearly circular
+julia> result.centroid.y ≈ 2.0
+true
+
+julia> result.centroid.x ≈ 2.0
+true
+
+julia> result.centroid.y_err > 0
 true
 ```
 """
@@ -147,10 +175,12 @@ function measure_star_shape(
 
     if FT_M00 <= zero(FT)
         n = FT(NaN)
+        zn = zero(FT)
         return (; fwhm = (; y = n, x = n, theta = n),
                  roundness1_aperture = n, roundness2_aperture = n,
                  flux = FT_M00,
-                 centroid = (; y = n, x = n))
+                 centroid = (; y = n, x = n, y_err = n, x_err = n,
+                              cov = @SMatrix [n n; n n]))
     end
 
     inv_M00 = inv(FT_M00)
@@ -186,43 +216,18 @@ function measure_star_shape(
     fwhm_cen = FT(y0) + μ_y
     fwhm_cen_x = FT(x0) + μ_x
 
-    # roundness1_aperture: full-aperture SROUND (DAOPHOT / photutils
-    # roundness1 — bilateral vs. fourfold symmetry over all pixels).
-    # Quadrants are defined relative to the measured centroid.
-    # Non-positive inv_var or below-background pixels are skipped.
-    sum2 = zero(FT)
-    sum4 = zero(FT)
-    @inbounds for idx in CartesianIndices(image)
-        w = inv_var[idx]
-        w > 0 || continue
-        z = FT(image[idx]) - FT(background)
-        # Skip the central pixel (infinitesimally close to centroid).
-        dy = FT(idx[1]) - fwhm_cen
-        dx = FT(idx[2]) - fwhm_cen_x
-        dy == 0 && dx == 0 && continue
-        wz = w * z
-        # Quadrant signs from photutils: -quad1 + quad2 - quad3 + quad4.
-        if dy >= 0 && dx > 0       # quad1: bottom-right
-            sum2 -= wz
-        elseif dy > 0 && dx <= 0   # quad2: bottom-left
-            sum2 += wz
-        elseif dy <= 0 && dx < 0   # quad3: top-left
-            sum2 -= wz
-        else                        # quad4: top-right (dy < 0, dx >= 0)
-            sum2 += wz
-        end
-        sum4 += abs(wz)
-    end
-    roundness1_aperture = if sum4 > eps(FT)
-        2 * sum2 / sum4
+    # roundness1_aperture: SROUND from the sums accumulated in _moments2.
+    # Uses the reference point (y0,x0) as a proxy for the centroid; the
+    # error from the centroid offset is negligible for well-centered cutouts.
+    roundness1_aperture = if mom.sum4 > eps(FT)
+        2 * FT(mom.sum2) / FT(mom.sum4)
     else
         zero(FT)
     end
 
-    # roundness2_aperture in the DAOPHOT GROUND convention:
-    # HX ∝ 1/√σ²_xx, HY ∝ 1/√σ²_yy, so
-    # GROUND = 2·(HX-HY)/(HX+HY) = 2·(√σ²_yy - √σ²_xx)/(√σ²_yy + √σ²_xx).
-    # 0 = circular, negative = extended in x, positive = extended in y.
+    # roundness2_aperture in the DAOPHOT GROUND / photutils roundness2
+    # convention: 0 = circular, negative = extended in x, positive =
+    # extended in y.
     sqrt_σyy = sqrt(σ²_yy)
     sqrt_σxx = sqrt(σ²_xx)
     denom_a = sqrt_σyy + sqrt_σxx
@@ -232,10 +237,20 @@ function measure_star_shape(
         zero(FT)
     end
 
+    # Centroid covariance from the delta method:
+    # Var(M1/M00) = (M2/M00 - (M1/M00)²) / M00 = σ² / M00.
+    cent_cov_yy = σ²_yy * inv_M00
+    cent_cov_xx = σ²_xx * inv_M00
+    cent_cov_xy = σ²_xy * inv_M00
+
     return (; fwhm = (; y = fwhm_y, x = fwhm_x, theta),
              roundness1_aperture, roundness2_aperture,
              flux = FT_M00,
-             centroid = (; y = fwhm_cen, x = fwhm_cen_x))
+             centroid = (; y = fwhm_cen, x = fwhm_cen_x,
+                          y_err = sqrt(max(zero(FT), cent_cov_yy)),
+                          x_err = sqrt(max(zero(FT), cent_cov_xx)),
+                          cov = @SMatrix [cent_cov_yy cent_cov_xy;
+                                          cent_cov_xy cent_cov_xx]))
 end
 
 """

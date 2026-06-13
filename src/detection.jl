@@ -88,7 +88,7 @@ function matched_filter(image::AbstractMatrix{T}, kernel::AbstractMatrix;
                                     "image size $(size(image))"))
     end
 
-    # ----- 1. Normalise the kernel -----
+    # ----- 1. normalize the kernel -----
     P = float.(kernel)
     N = length(P)
     sumP = sum(P)
@@ -153,7 +153,7 @@ function matched_filter(image::AbstractMatrix{T}, kernel::AbstractMatrix;
 
     # ----- 4. Extract peak information -----
     peak_sigs = T[significance[p] for p in sig_peaks]
-    # Flux estimate: for both kernel normalisations, smoothed[p] gives the
+    # Flux estimate: for both kernel normalizations, smoothed[p] gives the
     # matched-filter flux estimate directly (kernel scaled so E[corr] = F).
     peak_fluxes = T[smoothed[p] for p in sig_peaks]
 

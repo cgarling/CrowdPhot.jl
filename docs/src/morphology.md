@@ -37,9 +37,8 @@ In addition to the centroid and its covariance,
 core of the source within the central 3x3 pixel box at near-zero additional
 cost (see [Morphological Measurements](@ref) below):
 
-- `sharpness` -- negated Laplacian of the quadratic fit; positive for peaks,
-  near zero for flat regions.  Useful for distinguishing stars from cosmic
-  rays and hot pixels.
+- `normalized_curvature` -- negated Laplacian divided by the fitted peak
+  value; ``\\approx 2/\\mathrm{FWHM}^2``, flux-independent.
 - `roundness1_core` -- DAOPHOT SROUND / photutils `roundness1` on the 3×3
   patch; 0 = symmetric.
 - `roundness2_core` -- DAOPHOT GROUND / photutils `roundness2` from the
@@ -88,22 +87,22 @@ GROUND can be computed directly from the quadratic coefficients without
 a separate marginal fit.  The aperture version derives the same
 quantity from the second central moments of the full cutout.
 
-### Sharpness
+### Normalized Curvature
 
-The `sharpness` field returned by [`centroid_poly`](@ref) is the
-negated Laplacian ``-(2d+2f)`` of the quadratic fit -- the mean upward
-curvature at the peak.  It is proportional to ``1/\mathrm{FWHM}^2`` for
-a Gaussian, making it a fast discriminator: cosmic rays (single bright
-pixels) produce values orders of magnitude larger than stellar PSFs of
-the expected width.
+The `normalized_curvature` field returned by [`centroid_poly`](@ref)
+is the negated Laplacian of the quadratic fit divided by
+the fitted peak value ``-(2d+2f) / I_0``.  For a Gaussian this approximates
+``2/\mathrm{FWHM}^2`` and is independent of flux, making it a fast
+discriminator: cosmic rays (single bright pixels) produce values orders
+of magnitude larger than stellar PSFs of the expected width.
 
 DAOPHOT and photutils define sharpness as
 ``(D_\mathrm{center} - \bar{D}_\mathrm{surrounding}) / H``, where
 ``D`` is the raw image and ``H`` is the convolved brightness
 enhancement.  That definition requires both the raw and convolved
 images, so it belongs in the candidate-selection layer rather than in
-[`centroid_poly`](@ref).  The curvature-based `sharpness` is a
-zero-cost proxy available at centroiding time.
+[`centroid_poly`](@ref).  The curvature-based `normalized_curvature` is
+a zero-cost proxy available at centroiding time.
 
 ### Core vs. Aperture Measurements
 

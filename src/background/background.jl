@@ -855,7 +855,7 @@ function Background2D(
     0 ≤ exclude_percentile ≤ 100 ||
         throw(ArgumentError("exclude_percentile must be in [0, 100]"))
 
-    # Validate and normalise a user-supplied mask so downstream code always sees a
+    # Validate and normalize a user-supplied mask so downstream code always sees a
     # standard AbstractMatrix{Bool} with OneTo axes. `nothing` becomes a Fill of
     # `false` (O(1) storage, no copy). Non-standard axes (e.g. OffsetArrays) are
     # converted to a plain Matrix; this is the only path that allocates.
