@@ -38,7 +38,7 @@ core of the source within the central 3x3 pixel box at near-zero additional
 cost (see [Morphological Measurements](#Morphological-Measurements) below):
 
 - `normalized_curvature` -- negated Laplacian divided by the fitted peak
-  value; ``\\approx 2/\\mathrm{FWHM}^2``, flux-independent.
+  value; ``\approx 2/\mathrm{FWHM}^2``, flux-independent.
 - `roundness1_core` -- DAOPHOT SROUND / photutils `roundness1` on the 3×3
   patch; 0 = symmetric.
 - `roundness2_core` -- DAOPHOT GROUND / photutils `roundness2` from the
@@ -89,7 +89,7 @@ For common asymmetries the two statistics correlate — an elliptical
 core or a one-sided spike changes both the second moments and the
 fourfold symmetry.  They diverge when flux is added symmetrically on
 opposite sides (e.g. left *and* right, or top *and* bottom).  This
-keeps ``\\sigma^2_{xx} \\approx \\sigma^2_{yy}`` so GROUND stays near
+keeps ``\sigma^2_{xx} \approx \sigma^2_{yy}`` so GROUND stays near
 zero, but breaks fourfold symmetry so SROUND becomes nonzero.
 Conversely, a feature aligned at exactly 45° can leave SROUND near zero
 while GROUND registers the ellipticity.  Measuring both allows us to
@@ -110,7 +110,9 @@ DAOPHOT and photutils define sharpness as
 enhancement.  That definition requires both the raw and convolved
 images, so it belongs in the candidate-selection layer rather than in
 [`centroid_poly`](@ref).  The curvature-based `normalized_curvature` is
-a zero-cost proxy available at centroiding time.
+a zero-cost proxy available at centroiding time. **TODO: Determine if
+normalized curvature is a sufficient statistic to remove sharp contaminants
+like cosmic rays.**
 
 ### Core vs. Aperture Measurements
 
@@ -121,6 +123,11 @@ a zero-cost proxy available at centroiding time.
 | Roundness accuracy | Limited by 3×3 sampling | Integrates over full profile |
 | FWHM | Not available | Moment-based (Gaussian approx.) |
 | Best use | Fast pre-filter at detection time | Candidate evaluation before PSF fitting |
+
+Note that moment-based morphological measures like the FWHM are biased when
+image cutouts contain many background-dominated pixels. For this reason we
+recommend the `half_width` keyword argument to `measure_star_shapes` should
+not be too large; $\mathrm{half\_width} = \mathrm{FWHM}$ is often a reasonable value.
 
 ```@docs
 measure_star_shape
