@@ -232,15 +232,15 @@ end
 
     @testset "SROUND/GROUND divergence — symmetric opposite-side pair" begin
         # Flux on the same diagonal (top-left + bottom-right) keeps
-        # M20 ≈ M02 so GROUND stays ~0, but both corners are quad3/quad1
-        # with sign −1 in SROUND, so SROUND becomes negative.  This is
+        # M20 ≈ M02 so GROUND stays ~0, but both corners are quad2/quad4
+        # with sign +1 in SROUND, so SROUND becomes positive.  This is
         # where the two statistics provide complementary information.
         img, _ = _make_gaussian_cutout(; x0=5.0, y0=5.0, fwhm=2.0, shape=(9,9))
         img[3, 3] += 80.0  # top-left
         img[7, 7] += 80.0  # bottom-right
         r = measure_star_shape(img, 5, 5; background=0)
         @test abs(r.roundness2_aperture) ≈ 0 atol = 1e-10  # GROUND ~0 (σ² balanced)
-        @test r.roundness1_aperture < 0 # SROUND negative
+        @test r.roundness1_aperture > 0  # SROUND positive (-45° diagonal = positive)
     end
 
     @testset "asymmetric elliptical Gaussian (SROUND and GROUND)" begin
@@ -398,9 +398,10 @@ end
         @test r.core.roundness2_core < -0.1
         @test r.morphology.roundness2_aperture < -0.1
 
-        # SROUND sign on the 3×3 core can differ from aperture SROUND
-        # for rotated PSFs; test aperture SROUND for the expected sign.
-        @test r.morphology.roundness1_aperture < -0.1
+        # For rotated elliptical PSFs, the rotation couples x- and
+        # y-extension, shifting the SROUND sign depending on which
+        # diagonal axis the major axis aligns with.
+        @test r.morphology.roundness1_aperture > 0.1
     end
 
     @testset "empty peaks (high sigma)" begin
