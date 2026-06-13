@@ -71,13 +71,13 @@ function _moments2(
         M11 += wz * dx * dy
         # SROUND: exclude the central pixel (matching DAOPHOT/photutils).
         if !(dy == 0 && dx == 0)
-            if dy >= 0 && dx > 0       # quad1: bottom-right
+            if dy <= 0 && dx > 0         # top-right + center-right (photutils quad1)
                 sum2 -= wz
-            elseif dy > 0 && dx <= 0   # quad2: bottom-left
+            elseif dy < 0 && dx <= 0     # top-left + top-center (photutils quad2)
                 sum2 += wz
-            elseif dy <= 0 && dx < 0   # quad3: top-left
+            elseif dy >= 0 && dx < 0     # bottom-left + center-left (photutils quad3)
                 sum2 -= wz
-            else                        # quad4: top-right (dy < 0, dx >= 0)
+            elseif dy > 0 && dx >= 0     # bottom-right + bottom-center (photutils quad4)
                 sum2 += wz
             end
             sum4 += abs(wz)
