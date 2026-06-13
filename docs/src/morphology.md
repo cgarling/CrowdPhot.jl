@@ -35,7 +35,7 @@ matrix is nearly singular (e.g. for very broad PSFs).
 In addition to the centroid and its covariance,
 [`centroid_poly`](@ref) also returns morphological diagnostics for the
 core of the source within the central 3x3 pixel box at near-zero additional
-cost (see [Morphological Measurements](@ref) below):
+cost (see [Morphological Measurements](#Morphological-Measurements) below):
 
 - `normalized_curvature` -- negated Laplacian divided by the fitted peak
   value; ``\\approx 2/\\mathrm{FWHM}^2``, flux-independent.
@@ -124,6 +124,7 @@ a zero-cost proxy available at centroiding time.
 
 ```@docs
 measure_star_shape
+measure_star_shapes
 ```
 
 ## References
