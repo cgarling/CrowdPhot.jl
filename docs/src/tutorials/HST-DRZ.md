@@ -97,9 +97,10 @@ computes sub-pixel centroids via [`centroid_poly`](@ref), and measures
 aperture-based FWHM, roundness, and flux via
 [`measure_star_shape`](@ref).
 
-A half-width of 8 pixels (17×17 cutout) captures the PSF core and inner
-wings for HST/ACS data.  This is comparable to the `fit_rad` parameter
-used by DAOPHOT and DOLPHOT for HST photometry.
+Moment-based statistics can be biased if the cutout includes many
+background-dominated pixels. Here we use a `half_width=2` so the full
+width of the cutout is 4 pixels, twice the FWHM of the kernel we used
+for detection, which gives good results.
 
 ```@example hst-drz
 # Measure morphology for all detected sources
@@ -120,7 +121,7 @@ good = findall(results) do r
     r.morphology.flux > 0
 end
 
-println("$(length(good)) sources with valid morphological measurements")
+println("$(length(good)) / $(length(results)) sources have valid morphological measurements")
 ```
 
 ## Morphology Diagnostics
@@ -129,7 +130,11 @@ The panels below show how morphological measurements trend with
 instrumental magnitude.  Brighter sources (lower instrumental magnitude)
 have more reliable shape measurements, while fainter sources scatter
 more due to noise.  We use 2-D histograms to visualize density in the
-crowded regions.
+crowded regions. For this HST example, the "core" morphology statistics
+(which are calculated on the 3x3 pixels surrounding the centroid) will
+be about equivalent to the aperture statistics because our aperture
+box size is only 4x4 pixels, so they do not add much information in this
+case.
 
 ```@example hst-drz
 using Statistics
@@ -141,11 +146,13 @@ fwhm_x  = [results[i].morphology.fwhm.x for i in good]
 fwhm_theta = [results[i].morphology.fwhm.theta for i in good]
 round1 = [results[i].morphology.roundness1_aperture for i in good]
 round2 = [results[i].morphology.roundness2_aperture for i in good]
+round1_core = [results[i].core.roundness1_core for i in good]
+round2_core = [results[i].core.roundness2_core for i in good]
 sharp  = [results[i].core.normalized_curvature for i in good]
 sig    = [results[i].significance for i in good]
 mf_flux = [results[i].matched_filter_flux for i in good]
 
-fig = Figure(size = (900, 600))
+fig = Figure(size = (900, 1000))
 
 # Panel 1: FWHM y vs magnitude
 ax1 = Axis(fig[1, 1]; xlabel = "Instrumental magnitude",
@@ -161,19 +168,19 @@ Colorbar(fig[2, 2], h2; label = "Counts")
 
 # Panel 3: roundness1 (SROUND) vs magnitude
 ax3 = Axis(fig[1, 3]; xlabel = "Instrumental magnitude",
-           ylabel = "roundness1", title = "SROUND")
+           ylabel = "roundness1", title = "roundness1 (SROUND)")
 h3 = hexbin!(ax3, mags, round1; bins = 80)
 Colorbar(fig[1, 4], h3; label = "Counts")
 
 # Panel 4: roundness2 (GROUND) vs magnitude
 ax4 = Axis(fig[2, 3]; xlabel = "Instrumental magnitude",
-           ylabel = "roundness2", title = "GROUND")
+           ylabel = "roundness2", title = "roundness2 (GROUND)")
 h4 = hexbin!(ax4, mags, round2; bins = 80)
 Colorbar(fig[2, 4], h4; label = "Counts")
 
 # Panel 5: normalized curvature vs magnitude
 ax5 = Axis(fig[3, 1]; xlabel = "Instrumental magnitude",
-           ylabel = "normalized curvature", title = "Normalized Curvature (2/FWHM²) / I_0")
+           ylabel = "normalized curvature", title = "Normalized Core Curvature (2/FWHM²) / I_0")
 ylims!(ax5, -1, 3)
 idxs = findall(x -> -10 < x < 10, sharp)
 h5 = hexbin!(ax5, mags[idxs], sharp[idxs]; bins = 80, colorscale=log10)
@@ -196,6 +203,19 @@ ax6 = Axis(fig[3, 3]; xlabel = "Instrumental magnitude",
 scatterlines!(ax6, mag_centers, med_fwhm_y; label = "y", color = :blue)
 scatterlines!(ax6, mag_centers, med_fwhm_x; label = "x", color = :red)
 axislegend(ax6; position = :rt)
+
+# Panel 7: Core SROUND vs Aperture SROUND
+ax7 = Axis(fig[4, 1]; xlabel = "roundness1 aperture",
+           ylabel = "roundness1 core", title = "Core vs Aperture roundness1 (SROUND)")
+h7 = hexbin!(ax7, round1, round1_core; bins = 80, colorscale=log10)
+Colorbar(fig[4, 2], h7; label = "Counts")
+
+# Panel 8: Core GROUND vs Aperture GROUND
+ax8 = Axis(fig[4, 3]; xlabel = "roundness2 aperture",
+           ylabel = "roundness2 core", title = "Core vs Aperture roundness2 (GROUND)")
+h8 = hexbin!(ax8, round2, round2_core; bins = 80, colorscale=log10)
+Colorbar(fig[4, 4], h7; label = "Counts")
+
 
 fig
 ```
