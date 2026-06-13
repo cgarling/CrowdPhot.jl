@@ -48,7 +48,7 @@ source density and you use a mask to cover the brightest stars.
 | Estimator | Description |
 |-----------|-------------|
 | [`StdRMS`](@ref) | Population standard deviation (default) |
-| [`MADStdRMS`](@ref) | Normalised median absolute deviation `1.4826 × MAD`; robust to ~50 % outliers |
+| [`MADStdRMS`](@ref) | normalized median absolute deviation `1.4826 × MAD`; robust to ~50 % outliers |
 | [`BiweightScaleRMS`](@ref) | Biweight midvariance; most robust, slightly higher variance than MAD |
 
 **Recommendation:** `StdRMS` works well when sigma clipping has already removed

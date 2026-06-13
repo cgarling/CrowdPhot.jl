@@ -36,20 +36,21 @@ end
         @test result.poly.peak > 0
     end
 
-    @testset "sharpness, roundness1_core, roundness2_core" begin
-        # Wide PSF: low sharpness, nearly circular/symmetric.
+    @testset "normalized_curvature, roundness1_core, roundness2_core" begin
+        # Wide PSF: low normalized_curvature, nearly circular/symmetric.
         img_wide, _ = _make_star(; fwhm=4.0)
         r_wide = centroid_poly(img_wide)
-        @test r_wide.sharpness > 0    # positive for a peak
-        @test abs(r_wide.roundness1_core) ≈ 0  atol = 1e-10 # SROUND ~0 for symmetric
-        @test abs(r_wide.roundness2_core) ≈ 0  atol = 1e-10 # GROUND ~0 for circular
+        @test r_wide.normalized_curvature > 0    # positive for a peak
+        @test r_wide.normalized_curvature < 1.0
+        @test r_wide.roundness1_core ≈ 0 atol=1e-10  # SROUND ~0 for symmetric
+        @test r_wide.roundness2_core ≈ 0 atol=1e-10  # GROUND ~0 for circular
 
-        # Narrow PSF: higher sharpness.
+        # Narrow PSF: higher normalized_curvature.
         img_narrow, _ = _make_star(; fwhm=1.5)
         r_narrow = centroid_poly(img_narrow)
-        @test r_narrow.sharpness > r_wide.sharpness  # narrower = sharper
-        @test abs(r_narrow.roundness1_core) ≈ 0  atol = 1e-10 # still symmetric
-        @test abs(r_narrow.roundness2_core) ≈ 0  atol = 1e-10 # still circular
+        @test r_narrow.normalized_curvature > r_wide.normalized_curvature
+        @test r_narrow.roundness1_core ≈ 0 atol=1e-10  # still symmetric
+        @test r_narrow.roundness2_core ≈ 0 atol=1e-10  # still circular
     end
 
     @testset "border behaviour" begin
@@ -67,7 +68,7 @@ end
         @test isnan(result.com.x_err)
         @test isnan(result.com.y_err)
         @test all(isnan, result.com.cov)
-        @test isnan(result.sharpness)
+        @test isnan(result.normalized_curvature)
         @test isnan(result.roundness1_core)
         @test isnan(result.roundness2_core)
 
