@@ -205,4 +205,117 @@ end
         @test r_star.fwhm.y > 0
         @test isnan(r_cr.fwhm.y)   # zero-width → NaN
     end
+
+    @testset "centroid covariance" begin
+        img, _ = _make_gaussian_cutout(; x0=8.0, y0=8.0, shape=(17,17))
+        result = measure_star_shape(img, 8, 8; background=0)
+        @test result.centroid.y_err > 0
+        @test result.centroid.x_err > 0
+        @test result.centroid.cov[1,1] ≈ result.centroid.y_err^2
+        @test result.centroid.cov[2,2] ≈ result.centroid.x_err^2
+        @test result.centroid.cov[1,2] ≈ result.centroid.cov[2,1]
+    end
+
+    @testset "asymmetric — one-sided feature (SROUND)" begin
+        # Star with a bright pixel on one side should give nonzero SROUND.
+        img, _ = _make_gaussian_cutout(; x0=5.0, y0=5.0, fwhm=2.0, shape=(9,9))
+        r_sym = measure_star_shape(img, 5, 5; background=0)
+        @test r_sym.roundness1_aperture ≈ 0 atol=1e-10  # SROUND ~0 for symmetric
+        # Add a diffraction-spike-like feature to the right side.
+        img[5, 7] += 50.0
+        img[5, 8] += 30.0
+        r_asym = measure_star_shape(img, 5, 5; background=0)
+        # Right-side feature: dy=0, dx>0 → quad1 → sign -1 → SROUND negative.
+        @test r_asym.roundness1_aperture < -0.05
+    end
+
+    @testset "SROUND/GROUND divergence — symmetric opposite-side pair" begin
+        # Flux on the same diagonal (top-left + bottom-right) keeps
+        # M20 ≈ M02 so GROUND stays ~0, but both corners are quad3/quad1
+        # with sign −1 in SROUND, so SROUND becomes negative.  This is
+        # where the two statistics provide complementary information.
+        img, _ = _make_gaussian_cutout(; x0=5.0, y0=5.0, fwhm=2.0, shape=(9,9))
+        img[3, 3] += 80.0  # top-left
+        img[7, 7] += 80.0  # bottom-right
+        r = measure_star_shape(img, 5, 5; background=0)
+        @test abs(r.roundness2_aperture) ≈ 0 atol = 1e-10  # GROUND ~0 (σ² balanced)
+        @test r.roundness1_aperture < 0 # SROUND negative
+    end
+
+    @testset "asymmetric elliptical Gaussian (SROUND and GROUND)" begin
+        # Axis-aligned ellipse: SROUND and GROUND have the same sign
+        # because the ellipticity produces both bilateral asymmetry and
+        # unequal marginal heights.  They diverge for rotated or
+        # non-elliptical features (e.g. one-sided diffraction spikes).
+        #
+        # Extended in x → both negative.
+        img, _ = _make_elliptical_gaussian(; x_fwhm=4.0, y_fwhm=2.0, theta=0.0,
+            x0=10.0, y0=10.0, shape=(21,21))
+        r = measure_star_shape(img, 10, 10; background=0)
+        @test r.roundness1_aperture < -0.5  # SROUND: x-elongation
+        @test r.roundness2_aperture < -0.5   # GROUND: HX < HY
+        @test r.fwhm.x > r.fwhm.y
+
+        # Extended in y → both positive.
+        img2, _ = _make_elliptical_gaussian(; x_fwhm=2.0, y_fwhm=4.0, theta=0.0,
+            x0=10.0, y0=10.0, shape=(21,21))
+        r2 = measure_star_shape(img2, 10, 10; background=0)
+        @test r2.roundness1_aperture > 0.5
+        @test r2.roundness2_aperture > 0.5
+        @test r2.fwhm.y > r2.fwhm.x
+    end
+
+    @testset "roundness sign agreement (core vs aperture)" begin
+        # Both roundness fields should have the same sign.
+        using CrowdPhot: centroid_poly
+        img, _ = _make_elliptical_gaussian(; x_fwhm=3.0, y_fwhm=1.5, theta=0.0,
+            x0=10.0, y0=10.0, shape=(21,21))
+        cent = centroid_poly(img)
+        shape = measure_star_shape(img, 10, 10; background=0)
+        @test sign(cent.roundness1_core) == sign(shape.roundness1_aperture)
+        @test sign(cent.roundness2_core) == sign(shape.roundness2_aperture)
+    end
+
+    @testset "broad elliptical PSF — core vs aperture roundness" begin
+        using CrowdPhot: centroid_poly
+        # Elliptical Gaussian with broad FWHM: both core and aperture
+        # detect the ellipticity.  The 3×3 curvature measurement is
+        # actually more sensitive than the moment-based aperture because
+        # curvature at the peak falls off faster along the narrow axis.
+        model = GaussianPSF(x=16.0, y=16.0, x_fwhm=6.0, y_fwhm=3.0,
+            theta=0.0, flux=1000.0, bkg=0.0)
+        img = evaluate.(model, 1:31, (1:31)')
+        cent = centroid_poly(img)
+        shape = measure_star_shape(img, 16, 16; background=0)
+        @test cent.roundness2_core < -0.5        # x-extended
+        @test shape.roundness2_aperture < -0.5   # x-extended
+        @test cent.roundness2_core < -0.5  # core detects strong ellipticity
+        @test shape.fwhm.x > shape.fwhm.y
+    end
+
+    @testset "background exclusion — z>0 in _moments2" begin
+        img, _ = _make_gaussian_cutout(; x0=5.0, y0=5.0, flux=200.0, fwhm=2.0, shape=(9,9))
+        # With bg=1000, all pixels are below background → M00=0.
+        r_below = measure_star_shape(img, 5, 5; background=1000)
+        @test r_below.flux == 0.0
+        @test isnan(r_below.fwhm.y)
+        # With bg=5, only the central pixels exceed background.
+        r_partial = measure_star_shape(img, 5, 5; background=5)
+        @test r_partial.flux > 0
+        @test r_partial.flux < 200.0  # less than total star flux
+    end
+
+    @testset "noisy image — roundness bounded" begin
+        using StableRNGs: StableRNG
+        rng = StableRNG(42)
+        img, _ = _make_gaussian_cutout(; x0=3.5, y0=3.5, fwhm=2.8, flux=200.0, shape=(7,7))
+        noisy = img .+ 5.0 .* randn(rng, size(img))
+        r = measure_star_shape(noisy, 4, 4; background=0)
+        @test isfinite(r.roundness1_aperture)
+        @test isfinite(r.roundness2_aperture)
+        @test r.fwhm.y > 0
+        @test r.fwhm.x > 0
+        @test r.centroid.y_err > 0
+        @test r.centroid.x_err > 0
+    end
 end
