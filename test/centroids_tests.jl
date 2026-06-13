@@ -113,6 +113,24 @@ end
         @test r4.poly.y ≈ r1.poly.y  atol=1e-4
     end
 
+    @testset "integer and mixed-type inputs" begin
+        # Centroiding should promote scalar arithmetic without copying input arrays.
+        img_int = [0 1 0; 1 5 1; 0 1 0]
+        r_int = centroid_poly(img_int)
+        @test r_int.poly.x ≈ 2.0
+        @test r_int.poly.y ≈ 2.0
+        @test r_int.poly.x isa Float64
+        @test r_int.com.x isa Float64
+
+        img_f32 = Float32[0 1 0; 1 5 1; 0 1 0]
+        ivar_f64 = ones(3, 3)
+        r_mixed = centroid_poly(img_f32, ivar_f64)
+        @test r_mixed.poly.x ≈ 2.0
+        @test r_mixed.poly.y ≈ 2.0
+        @test r_mixed.poly.x isa Float64
+        @test r_mixed.com.x isa Float64
+    end
+
     @testset "noise tests: SNR regimes" begin
         img_true, model = _make_star(; x0=5.0, y0=5.0)
         peak_true = psf_peak(model)
@@ -286,6 +304,21 @@ end
         @test result3.poly.x > -1e-6
     end
 
+    @testset "roundness1_core masks zero-weighted pixels" begin
+        # Masked neighbour pixels must not influence the SROUND numerator or denominator.
+        patch = [0.1 0.3 0.1;
+                 0.3 1.0 0.3;
+                 0.1 0.3 0.1]
+        patch_bad = copy(patch)
+        patch_bad[1, 2] = 100.0
+        w = ones(3, 3)
+        w[1, 2] = 0.0
+
+        r_reference = _centroid_poly3(patch, w)
+        r_masked = _centroid_poly3(patch_bad, w)
+        @test r_masked.roundness1_core ≈ r_reference.roundness1_core
+    end
+
     @testset "asymmetric GaussianPSF" begin
         model = GaussianPSF(x=5.0, y=5.0, x_fwhm=4.0, y_fwhm=2.8,
                             theta=30.0, flux=10.0, bkg=0.0)
@@ -337,6 +370,16 @@ end
         @test c_b.source == :com
         @test c_b.x ≈ r_b.com.x
         @test c_b.y ≈ r_b.com.y
+
+        # A degenerate y covariance should also trigger the COM fallback.
+        r_ybad = (;
+            poly = (; y = 1.0, x = 2.0, cov = [1000.0 0.0; 0.0 1.0]),
+            com = (; y = 1.1, x = 2.1, cov = [1.0 0.0; 0.0 1.0]),
+        )
+        c_ybad = choose_centroid(r_ybad)
+        @test c_ybad.source == :com
+        @test c_ybad.x ≈ r_ybad.com.x
+        @test c_ybad.y ≈ r_ybad.com.y
 
         # Works with _centroid_poly3 output too
         patch = [0.1 0.3 0.1;

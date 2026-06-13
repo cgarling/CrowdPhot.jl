@@ -38,7 +38,8 @@ core of the source within the central 3x3 pixel box at near-zero additional
 cost (see [Morphological Measurements](#Morphological-Measurements) below):
 
 - `normalized_curvature` -- negated Laplacian divided by the fitted peak
-  value; ``\approx 2/\mathrm{FWHM}^2``, flux-independent.
+  value; ``\approx 16\log(2)/\mathrm{FWHM}^2`` for a circular Gaussian,
+  flux-independent.
 - `roundness1_core` -- DAOPHOT SROUND / photutils `roundness1` on the 3×3
   patch; 0 = symmetric.
 - `roundness2_core` -- DAOPHOT GROUND / photutils `roundness2` from the
@@ -100,9 +101,9 @@ catch failure modes that either statistic alone would miss.
 The `normalized_curvature` field returned by [`centroid_poly`](@ref)
 is the negated Laplacian of the quadratic fit divided by
 the fitted peak value ``-(2d+2f) / I_0``.  For a Gaussian this approximates
-``2/\mathrm{FWHM}^2`` and is independent of flux, making it a fast
-discriminator: cosmic rays (single bright pixels) produce values orders
-of magnitude larger than stellar PSFs of the expected width.
+``16\log(2)/\mathrm{FWHM}^2`` and is independent of flux, making it a fast
+discriminator: cosmic rays (single bright pixels) produce larger values
+than stellar PSFs of the expected width.
 
 DAOPHOT and photutils define sharpness as
 ``(D_\mathrm{center} - \bar{D}_\mathrm{surrounding}) / H``, where
@@ -121,13 +122,16 @@ like cosmic rays.**
 | Scale | 3×3 central patch | Full cutout |
 | Cost | ~200 ns (free with centroid) | ~1.5 μs (21×21) |
 | Roundness accuracy | Limited by 3×3 sampling | Integrates over full profile |
-| FWHM | Not available | Moment-based (Gaussian approx.) |
+| FWHM | Not available | Marginal moment widths (Gaussian approx.) |
 | Best use | Fast pre-filter at detection time | Candidate evaluation before PSF fitting |
 
 Note that moment-based morphological measures like the FWHM are biased when
 image cutouts contain many background-dominated pixels. For this reason we
 recommend the `half_width` keyword argument to `measure_star_shapes` should
 not be too large; $\mathrm{half\_width} = \mathrm{FWHM}$ is often a reasonable value.
+The returned `fwhm.y` and `fwhm.x` are row/column marginal widths, not
+principal-axis widths; for a rotated source, use `fwhm.theta` only as the
+covariance major-axis orientation.
 
 ```@docs
 measure_star_shape
