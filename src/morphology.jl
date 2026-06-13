@@ -14,13 +14,15 @@
 
 Compute raw (non-central) inverse-variance-weighted second moments of
 `max(0, image .- background)` about the reference point `(y0, x0)`.
+Mask invalid image pixels by setting their inverse variance to zero.
 
 The returned moments are **not** centralised — the caller must compute
 the centroid offset `μ_y = M10 / M00`, `μ_x = M01 / M00` and subtract
 to obtain central moments.
 
 # Returns
-`(; M00, M10, M01, M20, M02, M11, W00, W10, W01, W20, W02, W11, sum2, sum4)`
+`(; M00, M10, M01, M20, M02, M11, W00, W10, W01, W20, W02, W11,
+    sum2, sum4, aperture_sum, aperture_area, aperture_sum_err)`
 where each flux moment is
 ```math
 M_{pq} = \\sum_{y,x} w_{y,x} \\; \\max(0, z_{y,x}) \\; (y - y_0)^p \\; (x - x_0)^q
@@ -38,6 +40,12 @@ and fourfold normalization) computed over all valid pixels with
 ``w > 0``, using the reference point ``(y_0, x_0)`` as a proxy for the
 centroid.  The caller must divide ``2\\cdot\\mathrm{sum2}/\\mathrm{sum4}``
 to obtain the SROUND value.
+
+`aperture_sum` is the unweighted rectangular-cutout sum of
+``z = \\mathtt{image} - \\mathtt{background}`` over pixels with positive
+inverse variance.  `aperture_area` is the number of pixels in that sum,
+and `aperture_sum_err` is the formal propagated uncertainty
+``\\sqrt{\\sum 1/w}`` assuming independent pixel errors.
 """
 function _moments2(
         image::AbstractMatrix{T},
@@ -68,6 +76,10 @@ function _moments2(
     # SROUND accumulators (bilateral asymmetry sums).
     sum2 = zero(FT)
     sum4 = zero(FT)
+    # Unweighted rectangular aperture diagnostics over valid pixels.
+    aperture_sum = zero(FT)
+    aperture_area = 0
+    aperture_var = zero(FT)
     bg = FT(background)
     fy0 = FT(y0)
     fx0 = FT(x0)
@@ -76,6 +88,13 @@ function _moments2(
         w > 0 || continue
         fw = FT(w)
         z = FT(image[idx]) - bg
+
+        # Aperture sums keep signed residuals over the same unmasked cutout.
+        aperture_sum += z
+        aperture_area += 1
+        aperture_var += inv(fw)
+
+        # From here, moments only use pixels above background.
         z > 0 || continue
         dy = FT(idx[1]) - fy0
         dx = FT(idx[2]) - fx0
@@ -107,7 +126,8 @@ function _moments2(
         end
     end
     return (; M00, M10, M01, M20, M02, M11,
-             W00, W10, W01, W20, W02, W11, sum2, sum4)
+             W00, W10, W01, W20, W02, W11, sum2, sum4,
+             aperture_sum, aperture_area, aperture_sum_err = sqrt(aperture_var))
 end
 
 # ---------------------------------------------------------------------------
@@ -124,7 +144,7 @@ cutout using inverse-variance-weighted second central moments.
 - `image::AbstractMatrix`: image cutout of a single star.
 - `y0::Real, x0::Real`: approximate centroid around which raw moments
   are accumulated.  Integer pixel coordinates (e.g. the peak pixel) are
-  usually sufficient; the function computes the precise centre-of-mass
+  usually sufficient; the function computes the precise center-of-mass
   from the moments themselves.
 - `inv_var::AbstractMatrix`: per-pixel inverse variance, same size as
   `image`.  Defaults to `Fill(one(float(eltype(image))), size(image))`
@@ -136,7 +156,8 @@ cutout using inverse-variance-weighted second central moments.
   Defaults to ``2\sqrt{2\log 2} \approx 2.35482``.
 
 # Returns
-`(; fwhm, roundness1_aperture, roundness2_aperture, moment_norm, centroid)` where
+`(; fwhm, roundness1_aperture, roundness2_aperture, moment_norm,
+    aperture_sum, aperture_area, aperture_sum_err, centroid)` where
 
 - `fwhm::NamedTuple (; y, x, theta)`: moment-based, axis-aligned marginal
   full width at half maximum along the ``y`` (row) and ``x`` (column)
@@ -157,11 +178,17 @@ cutout using inverse-variance-weighted second central moments.
 - `moment_norm::T`: weighted zeroth moment ``M_{00}`` used to normalize
   the shape moments.  When `inv_var` is not uniform this is not a physical
   source flux and should not be used for photometric calibration.
-- `centroid::NamedTuple (; y, x, y_err, x_err, cov)`: centre-of-mass
+- `aperture_sum::T`: unweighted sum of `image - background` over unmasked
+  pixels in the rectangular cutout.
+- `aperture_area::Int`: number of pixels contributing to `aperture_sum`.
+- `aperture_sum_err::T`: formal inverse-variance propagated uncertainty
+  on `aperture_sum`, assuming independent pixel errors.
+- `centroid::NamedTuple (; y, x, y_err, x_err, cov)`: center-of-mass
   centroid, 1-σ uncertainties, and 2×2 `SMatrix` covariance.
 
-If ``M_{00} \le 0`` (all pixels at or below background), every field
-is `NaN`.  If ``\sigma^2_{yy} \le 0`` or ``\sigma^2_{xx} \le 0``
+If ``M_{00} \le 0`` (all pixels at or below background), shape and
+centroid fields are `NaN`; aperture-sum diagnostics are still reported.
+If ``\sigma^2_{yy} \le 0`` or ``\sigma^2_{xx} \le 0``
 (the distribution has no measurable width, e.g. a single bright pixel),
 `fwhm.y` and `fwhm.x` are `NaN` and `roundness2_aperture` is `0`
 (the denominator vanishes → degenerate, treated as isotropic).
@@ -202,10 +229,12 @@ function measure_star_shape(
 
     if FT_M00 <= zero(FT)
         n = FT(NaN)
-        zn = zero(FT)
         return (; fwhm = (; y = n, x = n, theta = n),
                  roundness1_aperture = n, roundness2_aperture = n,
                  moment_norm = FT_M00,
+                 aperture_sum = FT(mom.aperture_sum),
+                 aperture_area = mom.aperture_area,
+                 aperture_sum_err = FT(mom.aperture_sum_err),
                  centroid = (; y = n, x = n, y_err = n, x_err = n,
                               cov = @SMatrix [n n; n n]))
     end
@@ -276,6 +305,9 @@ function measure_star_shape(
     return (; fwhm = (; y = fwhm_y, x = fwhm_x, theta),
              roundness1_aperture, roundness2_aperture,
              moment_norm = FT_M00,
+             aperture_sum = FT(mom.aperture_sum),
+             aperture_area = mom.aperture_area,
+             aperture_sum_err = FT(mom.aperture_sum_err),
              centroid = (; y = fwhm_cen, x = fwhm_cen_x,
                           y_err = sqrt(max(zero(FT), cent_cov_yy)),
                           x_err = sqrt(max(zero(FT), cent_cov_xx)),
@@ -324,13 +356,13 @@ detected by [`matched_filter`](@ref).
 For each peak in `result.peaks`, this function:
 
 1. Extracts a square cutout of size ``(2 \\times \\mathtt{half\\_width} + 1)^2``
-   centred on the peak pixel from the original image.
+   centered on the peak pixel from the original image.
 2. Calls [`centroid_poly`](@ref) on the 3×3 core to obtain a sub-pixel
    centroid (polynomial and center-of-mass) and core diagnostics
    (normalized curvature, roundness).
 3. Calls [`choose_centroid`](@ref) to select the best centroid estimate.
 4. Calls [`measure_star_shape`](@ref) on the full cutout to compute
-   aperture-based morphology (FWHM, roundness, moment normalization).
+   aperture-based morphology and rectangular aperture sums.
 
 All coordinate fields in the returned NamedTuples are in **global**
 pixel coordinates of the original image.
@@ -370,7 +402,8 @@ has the following fields:
 - `centroid`: the chosen centroid `(; y, x, source)` from
   [`choose_centroid`](@ref) in global pixels.  `source` is `:poly` or `:com`.
 - `morphology`: the full [`measure_star_shape`](@ref) result — `(; fwhm,
-  roundness1_aperture, roundness2_aperture, moment_norm, centroid)` with
+  roundness1_aperture, roundness2_aperture, moment_norm, aperture_sum,
+  aperture_area, aperture_sum_err, centroid)` with
   coordinates in global pixels.
 
 !!! note
@@ -493,6 +526,9 @@ function measure_star_shapes(
             roundness1_aperture = morph_local.roundness1_aperture,
             roundness2_aperture = morph_local.roundness2_aperture,
             moment_norm = morph_local.moment_norm,
+            aperture_sum = morph_local.aperture_sum,
+            aperture_area = morph_local.aperture_area,
+            aperture_sum_err = morph_local.aperture_sum_err,
             centroid = (;
                 y = morph_local.centroid.y + dy_global,
                 x = morph_local.centroid.x + dx_global,

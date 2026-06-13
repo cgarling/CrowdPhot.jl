@@ -47,6 +47,17 @@ end
         @test mom.M00 ≈ 200.0 rtol=0.01
     end
 
+    @testset "rectangular aperture diagnostics" begin
+        # Aperture sums are signed residual sums over pixels with inv_var > 0.
+        img = [1.0 4.0; 3.0 5.0]
+        inv_var = [1.0 4.0; 1.0 0.0]
+        mom = _moments2(img, inv_var, 2.0, 1.0, 1.0)
+        @test mom.aperture_sum == 2.0
+        @test mom.aperture_area == 3
+        @test mom.aperture_sum_err ≈ sqrt(1.0 + 0.25 + 1.0)
+        @test mom.M00 == 9.0
+    end
+
     @testset "background subtraction" begin
         img, _ = _make_gaussian_cutout(; flux=100.0, fwhm=2.0)
         # All pixels > 0, so bg=0 and bg=50 should give different M00
@@ -126,17 +137,22 @@ end
     end
 
     @testset "constant image — NaN" begin
+        # Shape fields are undefined, but aperture diagnostics still report the cutout sum.
         img = fill(5.0, 7, 7)
         result = measure_star_shape(img, 4, 4; background=10)
         @test isnan(result.fwhm.y)
         @test isnan(result.fwhm.x)
         @test isnan(result.fwhm.theta)
         @test isnan(result.roundness2_aperture)
+        @test result.aperture_sum == -245.0
+        @test result.aperture_area == 49
+        @test result.aperture_sum_err ≈ 7.0
         @test isnan(result.centroid.y)
         @test isnan(result.centroid.x)
     end
 
     @testset "single bright pixel — near-zero width" begin
+        # A point-like source has zero moment width but a well-defined cutout sum.
         img = zeros(7, 7)
         img[4, 4] = 100.0
         result = measure_star_shape(img, 4, 4; background=0)
@@ -146,17 +162,24 @@ end
         # Zero-width → degenerate (denominator vanishes), treated as isotropic.
         @test result.roundness2_aperture == 0.0
         @test result.moment_norm == 100.0
+        @test result.aperture_sum == 100.0
+        @test result.aperture_area == 49
+        @test result.aperture_sum_err ≈ 7.0
         @test result.centroid.y ≈ 4.0
         @test result.centroid.x ≈ 4.0
     end
 
     @testset "zero-weight pixels" begin
+        # Masked pixels are excluded from both moment and aperture diagnostics.
         img, _ = _make_gaussian_cutout()
         w = ones(size(img))
         w[5, 5] = 0.0
         result_full = measure_star_shape(img, 5, 5)
         result_masked = measure_star_shape(img, 5, 5; inv_var=w)
         @test result_masked.moment_norm < result_full.moment_norm
+        @test result_masked.aperture_sum < result_full.aperture_sum
+        @test result_masked.aperture_area == result_full.aperture_area - 1
+        @test result_masked.aperture_sum_err ≈ sqrt(result_full.aperture_area - 1)
     end
 
     @testset "sub-pixel centroid via measure_star_shape convenience" begin
@@ -170,12 +193,15 @@ end
     end
 
     @testset "Float32 precision" begin
+        # Public scalar diagnostics preserve the floating-point type of the image.
         img_f32 = Float32[0.1 0.3 0.1; 0.3 1.0 0.3; 0.1 0.3 0.1]
         result = measure_star_shape(img_f32; background=0)
         @test result.fwhm.y > 0
         @test result.fwhm.x > 0
         @test result.roundness2_aperture isa Float32
         @test result.moment_norm isa Float32
+        @test result.aperture_sum isa Float32
+        @test result.aperture_sum_err isa Float32
     end
 
     @testset "shift invariance — integer pixel" begin
@@ -371,6 +397,9 @@ end
 
         # Moment normalization is positive for a valid source.
         @test r.morphology.moment_norm > 0
+        @test r.morphology.aperture_sum > 0
+        @test r.morphology.aperture_area > 0
+        @test r.morphology.aperture_sum_err > 0
         @test r.significance > 0
         @test r.matched_filter_flux > 0
 
