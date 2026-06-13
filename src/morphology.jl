@@ -417,9 +417,7 @@ function measure_star_shapes(
 
     H, W = size(result.image)
     FT = float(T)
-    results = Vector{NamedTuple}(undef, n)
-
-    for (idx, pidx) in enumerate(all_peak_idx)
+    return map(all_peak_idx) do pidx
         pixel = result.peaks[pidx]
         i0, j0 = Tuple(pixel)  # row, column
 
@@ -502,7 +500,7 @@ function measure_star_shapes(
             ),
         )
 
-        results[idx] = (;
+        return (;
             peak_index = pidx,
             pixel = pixel,
             significance = result.peak_significances[pidx],
@@ -512,6 +510,4 @@ function measure_star_shapes(
             morphology = morph_global,
         )
     end
-
-    return results
 end
