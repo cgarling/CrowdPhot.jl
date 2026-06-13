@@ -80,6 +80,9 @@ end
         @test mom.M20 == 0.0
         @test mom.M02 == 0.0
         @test mom.M11 == 0.0
+        @test mom.W00 == 1.0
+        @test mom.W20 == 0.0
+        @test mom.W02 == 0.0
     end
 end
 
