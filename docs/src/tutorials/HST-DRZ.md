@@ -161,20 +161,20 @@ h1 = hexbin!(ax1, mags, fwhm_y; bins = 80)
 Colorbar(fig[1, 2], h1; label = "Counts")
 
 # Panel 2: FWHM x vs magnitude
-ax2 = Axis(fig[2, 1]; xlabel = "Instrumental magnitude",
+ax2 = Axis(fig[1, 3]; xlabel = "Instrumental magnitude",
            ylabel = "FWHM x (pix)", title = "FWHM (x-axis)")
 h2 = hexbin!(ax2, mags, fwhm_x; bins = 80)
-Colorbar(fig[2, 2], h2; label = "Counts")
+Colorbar(fig[1, 4], h2; label = "Counts")
 
 # Panel 3: roundness1 (SROUND) vs magnitude
-ax3 = Axis(fig[1, 3]; xlabel = "Instrumental magnitude",
-           ylabel = "roundness1", title = "roundness1 (SROUND)")
+ax3 = Axis(fig[2, 1]; xlabel = "Instrumental magnitude",
+           ylabel = "roundness1", title = "roundness1_aperture (SROUND)")
 h3 = hexbin!(ax3, mags, round1; bins = 80)
-Colorbar(fig[1, 4], h3; label = "Counts")
+Colorbar(fig[2, 2], h3; label = "Counts")
 
 # Panel 4: roundness2 (GROUND) vs magnitude
 ax4 = Axis(fig[2, 3]; xlabel = "Instrumental magnitude",
-           ylabel = "roundness2", title = "roundness2 (GROUND)")
+           ylabel = "roundness2", title = "roundness2_aperture (GROUND)")
 h4 = hexbin!(ax4, mags, round2; bins = 80)
 Colorbar(fig[2, 4], h4; label = "Counts")
 
@@ -206,13 +206,15 @@ axislegend(ax6; position = :rt)
 
 # Panel 7: Core SROUND vs Aperture SROUND
 ax7 = Axis(fig[4, 1]; xlabel = "roundness1 aperture",
-           ylabel = "roundness1 core", title = "Core vs Aperture roundness1 (SROUND)")
+           ylabel = "roundness1 core", title = "Core vs Aperture roundness1 (SROUND)",
+           limits = ((-2, 2), (-2, 2)))
 h7 = hexbin!(ax7, round1, round1_core; bins = 80, colorscale=log10)
 Colorbar(fig[4, 2], h7; label = "Counts")
 
 # Panel 8: Core GROUND vs Aperture GROUND
 ax8 = Axis(fig[4, 3]; xlabel = "roundness2 aperture",
-           ylabel = "roundness2 core", title = "Core vs Aperture roundness2 (GROUND)")
+           ylabel = "roundness2 core", title = "Core vs Aperture roundness2 (GROUND)",
+           limits = ((-2, 2), (-2, 2)))
 h8 = hexbin!(ax8, round2, round2_core; bins = 80, colorscale=log10)
 Colorbar(fig[4, 4], h7; label = "Counts")
 
