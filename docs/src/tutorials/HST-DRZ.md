@@ -133,7 +133,7 @@ more due to noise.  We use 2-D histograms to visualize density in the
 crowded regions. For this HST example, the "core" morphology statistics
 (which are calculated on the 3x3 pixels surrounding the centroid) will
 be about equivalent to the aperture statistics because our aperture
-box size is only 4x4 pixels, so they do not add much information in this
+box size is only 5x5 pixels, so they do not add much information in this
 case.
 
 ```@example hst-drz
@@ -216,7 +216,7 @@ ax8 = Axis(fig[4, 3]; xlabel = "roundness2 aperture",
            ylabel = "roundness2 core", title = "Core vs Aperture roundness2 (GROUND)",
            limits = ((-2, 2), (-2, 2)))
 h8 = hexbin!(ax8, round2, round2_core; bins = 80, colorscale=log10)
-Colorbar(fig[4, 4], h7; label = "Counts")
+Colorbar(fig[4, 4], h8; label = "Counts")
 
 
 fig
