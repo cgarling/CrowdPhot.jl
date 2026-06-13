@@ -47,8 +47,6 @@ roundness2_core)`:
   ``2(\\sqrt{|d|} - \\sqrt{|f|})/(\\sqrt{|d|} + \\sqrt{|f|})``.
   0 = circular core, negative = extended in x (columns),
   positive = extended in y (rows).
-  When the curvature matrix is near-singular the regularization biases
-  this toward 0.
 
 The design matrix is fixed (local coordinates `{-1,0,1}²`), so the
 only free inputs are the 9 pixel values and 9 inverse-variance weights.

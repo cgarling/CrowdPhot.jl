@@ -76,9 +76,7 @@ nonzero values indicating asymmetry (SROUND) or ellipticity (GROUND).
 **SROUND** tests whether the light distribution has fourfold symmetry
 (the property of a circular Gaussian).  It sums pixel values along
 ``\pm 45^\circ`` axes: ``\Sigma_2`` measures the bilateral asymmetry
-and ``\Sigma_4`` provides fourfold normalization.  SROUND catches
-one-sided features like diffraction spikes and cosmic ray trails that
-GROUND may miss.
+and ``\Sigma_4`` provides fourfold normalization.
 
 **GROUND** compares the heights of best-fit marginal Gaussians in x and
 y.  For the quadratic fit in [`_centroid_poly3`](@ref), these heights
@@ -86,6 +84,16 @@ satisfy ``H_X \propto \sqrt{|d|}`` and ``H_Y \propto \sqrt{|f|}``, so
 GROUND can be computed directly from the quadratic coefficients without
 a separate marginal fit.  The aperture version derives the same
 quantity from the second central moments of the full cutout.
+
+For common asymmetries the two statistics correlate — an elliptical
+core or a one-sided spike changes both the second moments and the
+fourfold symmetry.  They diverge when flux is added symmetrically on
+opposite sides (e.g. left *and* right, or top *and* bottom).  This
+keeps ``\\sigma^2_{xx} \\approx \\sigma^2_{yy}`` so GROUND stays near
+zero, but breaks fourfold symmetry so SROUND becomes nonzero.
+Conversely, a feature aligned at exactly 45° can leave SROUND near zero
+while GROUND registers the ellipticity.  Measuring both allows us to
+catch failure modes that either statistic alone would miss.
 
 ### Normalized Curvature
 
