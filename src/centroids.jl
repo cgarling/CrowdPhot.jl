@@ -167,15 +167,17 @@ function _centroid_poly3(image::AbstractMatrix{T}, inv_var::AbstractMatrix{T}) w
 
     # Morphological diagnostics — roundness1_core (SROUND, bilateral vs.
     # fourfold symmetry) and roundness2_core (GROUND, marginal height ratio).
-    # Both use the 8 neighbour pixels already in registers from the 3×3 patch.
+    # Both operate on the 8 neighbour pixels.  SROUND uses the
+    # inverse-variance-weighted pixel values (wz) for consistency with the
+    # polynomial fit and with _moments2.
     # DAOPHOT convention: 0 = symmetric/circular, nonzero = asymmetric/elongated.
 
     # SROUND on the 3×3 patch (DAOPHOT / photutils roundness1).
     # SUM2 = +45° axis sum minus -45° axis sum (bilateral asymmetry).
     # SUM4 = sum of absolute values over all 8 neighbours (fourfold normalization).
-    sum2 = z12 + z32 - z21 - z23 + z11 + z33 - z31 - z13
-    sum4 = abs(z12) + abs(z32) + abs(z21) + abs(z23) +
-           abs(z11) + abs(z33) + abs(z31) + abs(z13)
+    sum2 = wz12 + wz32 - wz21 - wz23 + wz11 + wz33 - wz31 - wz13
+    sum4 = abs(wz12) + abs(wz32) + abs(wz21) + abs(wz23) +
+           abs(wz11) + abs(wz33) + abs(wz31) + abs(wz13)
     roundness1_core = if sum4 > eps(T)
         2 * sum2 / sum4
     else
