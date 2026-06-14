@@ -36,7 +36,7 @@ makedocs(;
         "Background Estimation" => "background.md",
         "Detection" => "detection.md",
         "Centroid Refinement and Morphology" => "morphology.md",
-        "Candidate Selection" => "picking.md",
+        # "Candidate Selection" => "picking.md",
         "PSFs" => [
             "PSF API" => "psf/psf_api.md",
             "Parametric PSF Models" => "psf/parametric_models.md",
