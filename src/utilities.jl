@@ -243,3 +243,20 @@ function calc_total_error(data::Real, bkg_error::Real, effective_gain::Real)
         return sqrt(bkg_error^2)  # abs(bkg_error), skips source Poisson term
     end
 end
+
+# ==============================================================================
+# Index utilities
+# ==============================================================================
+
+"""
+    _clamp_inds(inds::CartesianIndices{2}, image::AbstractMatrix)
+
+Clip `CartesianIndices{2}` to the axes of `image`, returning a new
+`CartesianIndices{2}` that lies entirely within the image bounds.
+"""
+function _clamp_inds(inds::CartesianIndices{2}, image::AbstractMatrix)
+    ay, ax = axes(image)
+    r1 = max(first(ay), first(inds)[1]):min(last(ay), last(inds)[1])
+    r2 = max(first(ax), first(inds)[2]):min(last(ax), last(inds)[2])
+    return CartesianIndices((r1, r2))
+end

@@ -20,4 +20,5 @@ import CrowdPhot
 @safetestset "Correlation" include("correlation_tests.jl")
 @safetestset "Detection" include("detection_tests.jl")
 @safetestset "Utilities" include("utilities/calc_total_error_tests.jl")
+@safetestset "Photometry" include("photometry/psf_photometry_single.jl")
 @safetestset "Doctests" include("doctests.jl")

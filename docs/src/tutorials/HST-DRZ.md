@@ -462,3 +462,64 @@ Colorbar(fig[1, 2], psf_hm; label = "relative flux", height = Relative(0.8), val
 
 fig
 ```
+
+## PSF Fitting Photometry
+
+We now run [`fit_all_stars`](@ref) on the brightest 500 quality-filtered
+stars, using the empirical PSF we just constructed.  A single pass with the
+background fixed at zero is sufficient for this background-subtracted image.
+
+```@example hst-drc
+# Select the brightest 500 quality-filtered stars
+n_phot = 500
+phot_idx = CrowdPhot.PSF.pick_psf_stars(results, n_phot)
+phot_sources = results[phot_idx]
+
+# Run single-pass PSF-fitting photometry
+phot_result = fit_all_stars(img_sub_f64, psf, phot_sources;
+    n_passes = 1, fixed = (; bkg = 0.0))
+
+n_good = sum(phot_result.valid)
+println("$n_good / $n_phot stars fitted successfully")
+```
+
+The [`MultiPassPhotResult`](@ref) stores the final residual image after
+all source models have been subtracted.  Below we compare the original
+image to the residual for the same 500×500 region shown earlier, with
+detection circles overlaid on both panels.  Subtracted sources appear as
+dark holes where the PSF model has been removed.
+
+```@example hst-drc
+# Same region as the detection plot
+y_range = 1500:min(ny, 1500 + region_width - 1)
+x_range = 1500:min(nx, 1500 + region_width - 1)
+
+orig_region = img_sub[y_range, x_range]
+resid_region = phot_result.residual[y_range, x_range]
+region_colorrange = zscale(orig_region[isfinite.(orig_region)])
+
+fig = Figure(size = (1200, 500))
+ax1 = Axis(fig[1, 1];
+    aspect = DataAspect(), yreversed = true,
+    title = "Original")
+ax2 = Axis(fig[1, 2];
+    aspect = DataAspect(), yreversed = true,
+    title = "Residual (500 stars subtracted)")
+
+hm1 = heatmap!(ax1, x_range, y_range, orig_region';
+    colorrange = region_colorrange, colorscale = LuptonAsinhScale(),
+    colormap = :grays, interpolate = false)
+hm2 = heatmap!(ax2, x_range, y_range, resid_region';
+    colorrange = region_colorrange, colorscale = LuptonAsinhScale(),
+    colormap = :grays, interpolate = false)
+
+# Overlay detection circles on both panels
+poly!(ax1, source_circles; color = (:limegreen, 0), strokecolor = :limegreen,
+    strokewidth = 1.2)
+poly!(ax2, source_circles; color = (:limegreen, 0), strokecolor = :limegreen,
+    strokewidth = 1.2)
+
+Colorbar(fig[1, 3], hm2; height = Relative(0.75), valign = :center)
+
+fig
+```

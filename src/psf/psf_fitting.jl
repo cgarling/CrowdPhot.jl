@@ -39,8 +39,11 @@ function _prepare_fit_star_inputs(model::AbstractPSFModel{T}, image::AbstractMat
         if size(inv_var) != size(image)
             throw(ArgumentError("`inv_var` must be the same size as `image`"))
         end
-        if !all(x -> isfinite(x) && x > 0, inv_var)
-            throw(ArgumentError("`inv_var` must be finite and > 0 everywhere"))
+        # Validate only the active pixel region so that non-finite values
+        # elsewhere in the full-frame inv_var (e.g. coverage edges) do not
+        # reject the fit.
+        if !all(x -> isfinite(x) && x > 0, view(inv_var, CartesianIndices(inds)))
+            throw(ArgumentError("`inv_var` must be finite and > 0 on the fitting indices"))
         end
     end
     if !(_has_deriv(model))

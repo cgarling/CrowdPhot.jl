@@ -13,6 +13,7 @@ export sigma_clip, sigma_clip!, calc_total_error
 export simulate_sources, simulate_image, make_gaussians_image, centroid_poly, choose_centroid
 export matched_filter, MatchedFilterResult
 export measure_star_shape, measure_star_shapes
+export MultiPassPhotResult, fit_all_stars
 
 include("correlation.jl")
 include("utilities.jl")
@@ -25,5 +26,6 @@ include("background/background.jl")
 using .Background
 include("centroids.jl")
 include("morphology.jl")
+include("photometry/psf_photometry_single.jl")
 
 end # module CrowdPhot

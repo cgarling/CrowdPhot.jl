@@ -1,0 +1,222 @@
+using CrowdPhot
+using CrowdPhot: CircularGaussianPSF, _clamp_inds
+using CrowdPhot.PSF: free_params
+using StableRNGs
+using Statistics: median
+using Test
+
+# ---------------------------------------------------------------------------
+# _clamp_inds
+# ---------------------------------------------------------------------------
+
+@testset "_clamp_inds" begin
+    img = zeros(10, 10)
+
+    @testset "fully inside" begin
+        inds = CartesianIndices((3:7, 3:7))
+        clamped = _clamp_inds(inds, img)
+        @test clamped == inds
+        @test length(clamped) == 25
+    end
+
+    @testset "partially outside" begin
+        inds = CartesianIndices((8:12, 8:12))
+        clamped = _clamp_inds(inds, img)
+        @test clamped == CartesianIndices((8:10, 8:10))
+        @test length(clamped) == 9
+    end
+
+    @testset "completely outside" begin
+        inds = CartesianIndices((11:15, 3:7))
+        clamped = _clamp_inds(inds, img)
+        @test length(clamped) == 0
+    end
+end
+
+# ---------------------------------------------------------------------------
+# _extract_source_catalog
+# ---------------------------------------------------------------------------
+
+@testset "_extract_source_catalog" begin
+    psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=2.0, flux=1.0, bkg=0.0)
+
+    @testset "NamedTuple with :y, :x" begin
+        sources = (; y=[10.0, 20.0], x=[30.0, 40.0], flux=[500.0, 600.0])
+        params, errors = CrowdPhot._extract_source_catalog(sources, psf, Float64)
+        @test size(params) == (5, 2)
+        @test params[1, :] == [10.0, 20.0]  # y
+        @test params[2, :] == [30.0, 40.0]  # x
+        @test params[4, :] == [500.0, 600.0] # flux
+        @test params[5, :] == [0.0, 0.0]     # bkg (default)
+    end
+
+    @testset "NamedTuple without optional fields" begin
+        sources = (; y=[5.0], x=[15.0])
+        params, errors = CrowdPhot._extract_source_catalog(sources, psf, Float64)
+        @test params[4, 1] == 1.0  # flux default
+        @test params[5, 1] == 0.0  # bkg default
+    end
+
+    @testset "NamedTuple with bkg" begin
+        sources = (; y=[5.0], x=[15.0], bkg=[3.0])
+        params, _ = CrowdPhot._extract_source_catalog(sources, psf, Float64)
+        @test params[5, 1] == 3.0
+    end
+
+    @testset "fwhm row filled from psf default" begin
+        sources = (; y=[5.0], x=[15.0])
+        params, _ = CrowdPhot._extract_source_catalog(sources, psf, Float64)
+        @test params[3, 1] == 2.0  # fwhm from psf
+    end
+
+    @testset "errors initialized to NaN" begin
+        sources = (; y=[5.0], x=[15.0])
+        _, errors = CrowdPhot._extract_source_catalog(sources, psf, Float64)
+        @test all(isnan, errors)
+    end
+end
+
+# ---------------------------------------------------------------------------
+# _extract_errors!
+# ---------------------------------------------------------------------------
+
+@testset "_extract_errors!" begin
+    T = Float64
+    errors = fill(T(NaN), 3, 1)
+    cov = T[4.0 0.5; 0.5 1.0]
+    free_idx = (1, 3)
+    is_fixed = (2,)
+
+    CrowdPhot._extract_errors!(errors, cov, free_idx, is_fixed, 1)
+    @test errors[1, 1] ≈ 2.0         # sqrt(4.0)
+    @test errors[2, 1] == 0.0         # fixed
+    @test errors[3, 1] ≈ 1.0         # sqrt(1.0)
+end
+
+# ---------------------------------------------------------------------------
+# fit_all_stars — integration
+# ---------------------------------------------------------------------------
+
+@testset "fit_all_stars" begin
+    rng = StableRNG(42)
+    T = Float64
+    truth_psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=2.0, flux=1.0, bkg=0.0)
+
+    @testset "noiseless single-pass recovery" begin
+        image, sources = simulate_image((128, 128), truth_psf, 5;
+            background = 20.0, noise = :none, flux = (600.0, 900.0),
+            min_separation = 7, border = 8, model_radius = 6, rng)
+        psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=2.0, flux=1.0, bkg=0.0)
+        result = fit_all_stars(image, psf, sources; n_passes = 1, max_iter = 100)
+
+        @test result.n_passes == 1
+        @test sum(result.valid) == 5
+        @test all(result.converged)
+        for i in 1:5
+            @test result.flux[i] ≈ sources.flux[i] rtol = 1e-10
+            @test result.y[i] ≈ sources.y[i] atol = 1e-10
+            @test result.x[i] ≈ sources.x[i] atol = 1e-10
+        end
+    end
+
+    @testset "fixed background" begin
+        image, sources = simulate_image((64, 64), truth_psf, 5;
+            background = 20.0, noise = :none, flux = (500.0, 800.0),
+            min_separation = 10, border = 8, model_radius = 5, rng)
+        psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=2.0, flux=1.0, bkg=0.0)
+        result = fit_all_stars(image, psf, sources;
+            fixed = (; bkg = 20.0), n_passes = 1, max_iter = 100)
+
+        @test all(x -> x ≈ 20.0, result.bkg)
+        @test all(iszero, result.bkg_err)
+        for i in 1:5
+            @test result.flux[i] ≈ sources.flux[i] rtol = 0.02
+        end
+    end
+
+    @testset "fixed positions" begin
+        image, sources = simulate_image((64, 64), truth_psf, 5;
+            background = 20.0, noise = :none, flux = (500.0, 800.0),
+            min_separation = 10, border = 8, model_radius = 5, rng)
+        psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=2.0, flux=1.0, bkg=0.0)
+        result = fit_all_stars(image, psf, sources;
+            fixed = (; x = 32.0, y = 32.0), n_passes = 1, max_iter = 100)
+
+        @test all(x -> x ≈ 32.0, result.x)
+        @test all(y -> y ≈ 32.0, result.y)
+        @test all(iszero, result.x_err)
+        @test all(iszero, result.y_err)
+        # Fixed-position errors are zero; flux and bkg errors may be NaN
+        # (no covariance_estimator) or near-zero (noiseless fit).
+        @test all(isfinite, result.y_err)
+        @test all(isfinite, result.x_err)
+    end
+
+    @testset "edge stars" begin
+        image, _ = simulate_image((64, 64), truth_psf, 2;
+            background = 20.0, noise = :none, flux = (500.0, 600.0),
+            min_separation = 30, border = 30, model_radius = 5, rng)
+        psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=2.0, flux=1.0, bkg=0.0)
+        # One star at the edge, one at center
+        sources = (; y = [1.0, 32.0], x = [32.0, 32.0], flux = [500.0, 500.0])
+        result = fit_all_stars(image, psf, sources; n_passes = 1, max_iter = 50)
+        # Edge star may or may not survive depending on cutout size
+        @test result.valid[2]  # center star should be valid
+    end
+
+    @testset "multi-pass does not error" begin
+        image, sources = simulate_image((64, 64), truth_psf, 5;
+            background = 20.0, noise = :none, flux = (400.0, 700.0),
+            min_separation = 5, border = 8, model_radius = 5, rng)
+        psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=2.0, flux=1.0, bkg=0.0)
+        result = fit_all_stars(image, psf, sources; n_passes = 3, max_iter = 100)
+        @test result.n_passes == 3
+        @test sum(result.valid) == 5
+        @test all(result.converged)
+    end
+
+    @testset "NamedTuple input with fluxes" begin
+        image, _ = simulate_image((64, 64), truth_psf, 3;
+            background = 20.0, noise = :none, flux = (500.0, 700.0),
+            min_separation = 15, border = 10, model_radius = 5, rng)
+        psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=2.0, flux=1.0, bkg=0.0)
+        sources = (; y = [20.0, 30.0, 40.0], x = [20.0, 30.0, 40.0],
+                    flux = [300.0, 500.0, 700.0], bkg = [1.0, 2.0, 3.0])
+        result = fit_all_stars(image, psf, sources; n_passes = 1, max_iter = 100)
+        @test length(result.y) == 3
+        @test all(result.converged)
+    end
+
+    @testset "return struct fields have correct types" begin
+        image, sources = simulate_image((64, 64), truth_psf, 3;
+            background = 20.0, noise = :none, flux = (500.0, 700.0),
+            min_separation = 15, border = 10, model_radius = 5, rng)
+        psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=2.0, flux=1.0, bkg=0.0)
+        result = fit_all_stars(image, psf, sources; n_passes = 1, max_iter = 100)
+
+        @test result.y isa Vector{Float64}
+        @test result.x isa Vector{Float64}
+        @test result.flux isa Vector{Float64}
+        @test result.bkg isa Vector{Float64}
+        @test result.y_err isa Vector{Float64}
+        @test result.flux_err isa Vector{Float64}
+        @test result.converged isa BitVector
+        @test result.valid isa BitVector
+        @test result.residual isa Matrix{Float64}
+        @test size(result.residual) == size(image)
+    end
+
+    @testset "invalid flux rejected between passes" begin
+        image, sources = simulate_image((64, 64), truth_psf, 5;
+            background = 20.0, noise = :none, flux = (400.0, 700.0),
+            min_separation = 10, border = 8, model_radius = 5, rng)
+        psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=2.0, flux=1.0, bkg=0.0)
+        # Include a source with negative flux that should be rejected
+        sources_bad = (; y = [sources.y; 50.0],
+                         x = [sources.x; 50.0],
+                         flux = [sources.flux; -100.0])
+        result = fit_all_stars(image, psf, sources_bad; n_passes = 2, max_iter = 100)
+        @test sum(result.valid) == 5  # 5 good + 1 bad rejected
+        @test !result.valid[6]
+    end
+end
