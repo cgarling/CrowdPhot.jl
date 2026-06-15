@@ -47,6 +47,7 @@ makedocs(;
         ],
         "Levenberg-Marquardt Fitter" => "lm_fitter.md",
         "Simulation" => "simulation.md",
+        "Utilities" => "utilities.md",
         "Index" => "doc_index.md",
         "References" => "refs.md",
         ],

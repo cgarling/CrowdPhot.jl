@@ -19,4 +19,5 @@ import CrowdPhot
 @safetestset "Morphology" include("morphology_tests.jl")
 @safetestset "Correlation" include("correlation_tests.jl")
 @safetestset "Detection" include("detection_tests.jl")
+@safetestset "Utilities" include("utilities/calc_total_error_tests.jl")
 @safetestset "Doctests" include("doctests.jl")

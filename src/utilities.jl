@@ -174,3 +174,72 @@ function sigma_clip(
     sigma_clip!(work, σ_low, σ_high; maxiters)
     return work
 end
+
+# ==============================================================================
+# Total error calculation
+# ==============================================================================
+
+"""
+    calc_total_error(data, bkg_error, effective_gain)
+
+Calculate the total 1-sigma error by combining a background-only error
+with the Poisson noise of sources.
+
+The total error in countable units (e.g., electrons) is
+
+```math
+\\sigma_{\\mathrm{tot, counts}}
+= \\sqrt{g_{\\mathrm{eff}}^2 \\sigma_{\\mathrm{bkg}}^2
+    + g_{\\mathrm{eff}} I}
+```
+
+where ``\\sigma_{\\mathrm{bkg}}`` is the background-only error,
+``I`` is the background-subtracted data, and ``g_{\\mathrm{eff}}`` is the
+effective gain (converting data units to counts).
+
+Converting back to data units gives
+
+```math
+\\sigma_{\\mathrm{tot}}
+= \\sqrt{\\sigma_{\\mathrm{bkg}}^2 + \\frac{I}{g_{\\mathrm{eff}}}}
+```
+
+If ``I \\leq 0`` or ``g_{\\mathrm{eff}} \\leq 0``, the source Poisson
+noise term is omitted and the total error is ``\\sigma_{\\mathrm{bkg}}``.
+
+This function operates on scalars; broadcast over arrays with
+`calc_total_error.(data, bkg_error, effective_gain)`.
+
+# Arguments
+
+- `data::Real`: background-subtracted pixel value.
+- `bkg_error::Real`: 1-sigma background-only error for that pixel.
+- `effective_gain::Real`: ratio of counts (e.g., electrons) to data units.
+  Must be non-negative.
+
+# Returns
+
+- `::Real`: the total 1-sigma error in the same units as ``\\sigma_{\\mathrm{bkg}}``.
+
+# Examples
+
+```jldoctest
+julia> calc_total_error(2.0, 1.0, 2.0) ≈ sqrt(1.0^2 + 2.0 / 2.0)
+true
+
+julia> calc_total_error(-1.0, 0.5, 2.0) ≈ 0.5
+true
+
+julia> calc_total_error(10.0, 2.0, 0.0) ≈ 2.0
+true
+```
+"""
+function calc_total_error(data::Real, bkg_error::Real, effective_gain::Real)
+    effective_gain >= 0 ||
+        throw(ArgumentError("effective_gain must be non-negative, got $effective_gain"))
+    if effective_gain > 0 && data > 0
+        return sqrt(bkg_error^2 + data / effective_gain)
+    else
+        return sqrt(bkg_error^2)  # abs(bkg_error), skips source Poisson term
+    end
+end
