@@ -1,4 +1,4 @@
-# HST DRX
+# HST DRC
 
 Here we will run photometry on an HST/ACS DRC file which 
 is a high-level data product that has been calibrated,
@@ -70,21 +70,23 @@ fig
 
 We detect point sources with [`matched_filter`](@ref) using a circular
 Gaussian kernel with FWHM = 2.0 pixels, the approximate width of the
-ACS/WFC PSF at F814W.  We provide the inverse-variance map from the
-background RMS so that noisier regions are properly down-weighted.
+ACS/WFC PSF at F814W.  For detection we use inverse-variance weights
+derived from the background RMS only; including source Poisson noise
+would make bright sources harder to detect by inflating their own noise
+estimate, which is incorrect for the detection null hypothesis.
 
 ```@example hst-drc
 # Convert to Float64 for consistency with the PSF kernel
 img_sub_f64 = Float64.(img_sub)
 
-# Inverse variance from background RMS; clip NaN regions to zero weight.
-inv_var = fill(0.0, size(img_sub_f64))
+# Inverse variance from background-only error; clip NaN regions to zero weight.
+inv_var_bkg = fill(0.0, size(img_sub_f64))
 valid = @. !isnan(bkg.background_rms) & (bkg.background_rms > 0)
-@. inv_var[valid] = 1 / bkg.background_rms[valid]^2
+@. inv_var_bkg[valid] = 1 / bkg.background_rms[valid]^2
 
 # PSF FWHM for HST/ACS F814W (~2 pix)
 psf_fwhm = 2.0
-mf = matched_filter(img_sub_f64, psf_fwhm; inv_var, sigma = 5.0)
+mf = matched_filter(img_sub_f64, psf_fwhm; inv_var = inv_var_bkg, sigma = 5.0)
 
 println("Detected $(length(mf.peaks)) sources at ≥ 5σ")
 ```
@@ -132,7 +134,34 @@ fig
 
 ## Morphological Measurements
 
-We feed the [`MatchedFilterResult`](@ref) directly to
+For morphological measurements the inverse-variance weights should include
+*all* error sources, not just the background.  The Poisson noise of a source
+contributes to the uncertainty in its own pixels and must be included for
+correct centroid and shape estimation.  We use
+[`calc_total_error`](@ref) to combine the background RMS with the source
+Poisson term.  The data are in ``\mathrm{e}^- / \mathrm{s}``
+(``\mathtt{BUNIT} = \mathrm{ELECTRONS}/\mathrm{S}``), so the effective
+gain is the exposure time, ``g_{\mathrm{eff}} = \mathtt{EXPTIME}``, which
+converts to countable units (electrons).
+
+```@example hst-drc
+# Extract exposure time from the primary header for the effective gain.
+exptime = hdr["EXPTIME"]
+
+# Compute total 1-sigma error including source Poisson noise.
+total_err = calc_total_error.(img_sub_f64, bkg.background_rms, exptime)
+
+# Build inverse-variance map with NaN regions clipped to zero weight.
+inv_var = fill(0.0, size(img_sub_f64))
+valid_total = @. isfinite(total_err) & (total_err > 0)
+@. inv_var[valid_total] = 1 / total_err[valid_total]^2
+
+# Use the same MatchedFilterResult but with corrected inv_var for morphology.
+using ConstructionBase
+mf_morph = ConstructionBase.setproperties(mf, (inv_var = inv_var,))
+```
+
+We feed the matched-filter result to
 [`measure_star_shapes`](@ref), which extracts a cutout around each peak,
 computes sub-pixel centroids via [`centroid_poly`](@ref), and measures
 aperture-based FWHM, roundness, moment normalization, and rectangular
@@ -145,7 +174,7 @@ for detection, which gives good results.
 
 ```@example hst-drc
 # Measure morphology for all detected sources
-results = measure_star_shapes(mf; half_width = 2)
+results = measure_star_shapes(mf_morph; half_width = 2)
 ```
 
 ### Flux Diagnostics
@@ -335,7 +364,10 @@ println("$(length(show_idx)) stars selected for PSF fitting (from $(length(resul
 ```
 
 We show image cutouts of the selected stars to visually confirm that the
-selection is reasonable.
+selection is reasonable. Note that the ePSF fitting routine includes
+mechanisms for rejecting provided PSF stars that do not help to improve
+the fit, so it is not as important to pre-filter the list of PSF stars
+as carefully as for other software.
 
 ```@example hst-drc
 # Extract cutouts with a 5-pixel half-width (11×11 pixels) for context
@@ -380,7 +412,7 @@ Stars outside the cutout boundary are dropped (`drop_edge=true`), and
 the ePSF is supersampled at 4× the detector pixel scale.
 
 ```@example hst-drc
-# Select 200 bright, morphologically-clean stars
+# Select bright, morphologically-clean stars
 n_psf = 400
 psf_idx = CrowdPhot.PSF.pick_psf_stars(results, n_psf)
 

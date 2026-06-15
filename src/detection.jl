@@ -62,6 +62,15 @@ PSF template.
 - `kernel` will be correlated with the image using [`CrowdPhot.correlate`](@ref)
   and must follow that function's requirements (namely, odd dimensions).
   This is typically a rendered PSF model.
+- `inv_var::Union{AbstractMatrix{<:AbstractFloat}, Nothing}`: optional
+  inverse-variance map with the same shape as `image`.  Pixels with zero or
+  `nothing`-suppressed weights are excluded from the significance
+  calculation.  **The weights should represent background-only error** (e.g.
+  ``1 / \\sigma_{\\mathrm{bkg}}^2``); do not include source Poisson noise,
+  which would inflate the noise estimate at source positions and reduce
+  detection sensitivity.  Source Poisson noise is correctly added later for
+  morphological measurements via [`calc_total_error`](@ref).  Defaults to
+  `nothing` (uniform weights).
 - `normalize_zerosum` controls whether the kernel is renormalized to have
   zero sum, which cancels any uniform background offset in the correlation.
   The default (`true`) is the safe choice and should be used whenever the
