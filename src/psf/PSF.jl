@@ -1,11 +1,12 @@
 module PSF
 
 import ..CrowdPhot: AbstractLMDamping, AbstractScaleEstimator, AbstractCovarianceEstimator, LMResult, MarquardtDamping, MADScale, FixedScale, MScale, estimate_scale, TukeyLoss, weight, KnownWeightsCovarianceEstimator, ReweightedCovarianceEstimator, LMProblem, lm_irls
+using ..CrowdPhot: sigma_clip, sigma_clip!
 import ConstructionBase
 import LossFunctions
 using SpecialFunctions: besselj, besselj0, besselj1, erf
 using StaticArrays: SA, SVector, MMatrix
-using Statistics: median, mean
+using Statistics: median, mean, quantile, std
 
 export AbstractPSFModel, AiryPSF, CircularGaussianPSF, GaussianPSF, CircularGaussianPRF, GaussianPRF, CircularMoffatPSF, MoffatPSF, ImagePSF
 export evaluate, evaluate_fg, centroid, integral, render, peak, amplitude, effective_area, fit_star, fit_psf
@@ -324,5 +325,6 @@ include("parametric_models.jl")
 include("empirical_models.jl")
 include("empirical_builder.jl")
 include("psf_fitting.jl")
+include("pick.jl")
 
 end # module PSF

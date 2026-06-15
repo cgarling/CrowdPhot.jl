@@ -5,7 +5,7 @@
 
 module Background
 
-using ..CrowdPhot: mad, mad!
+using ..CrowdPhot: mad, mad!, _compact_finite!, sigma_clip, sigma_clip!
 using FillArrays: Fill
 import Random
 using Statistics: mean, median, median!, std
@@ -49,20 +49,6 @@ function _float_copy(data::AbstractArray{T}) where {T}
     return eltype(work) === F ? work : F.(work)
 end
 
-function _compact_finite!(data::AbstractArray{T}) where {T <: AbstractFloat}
-    flat = vec(data)
-    n = 0
-    @inbounds for i in eachindex(flat)
-        # Move finite samples into the active prefix while preserving storage.
-        v = flat[i]
-        if isfinite(v)
-            n += 1
-            flat[n] = v
-        end
-    end
-    return n
-end
-
 # Fused float-copy, non-finite rejection, and mask application in a single pass.
 function _prepare_work(image::AbstractArray{<:Real}, ::Nothing)
     F = float(eltype(image))
@@ -89,77 +75,6 @@ end
 
 @inline _active_data(data::AbstractArray, n::Integer) =
     n == length(data) ? data : view(vec(data), 1:n)
-
-###############################################################################
-# Sigma clipping
-
-"""
-    sigma_clip(data, sigma; maxiters=10)
-    sigma_clip(data, sigma_low, sigma_high; maxiters=10)
-
-Return a mutable floating-point copy of `data` after iterative sigma clipping.
-The returned array has the **same shape and total number of elements** as `data`.
-Non-finite input values are replaced with `NaN`.
-
-Retained (finite, not clipped) samples are compacted to the front of the
-linear storage (`vec(result)[1:n]`) and are **partially sorted** — their
-original order is not preserved because `median!` rearranges elements during
-clipping.  Elements beyond the active prefix contain displaced values from
-the compaction process and should be ignored.
-
-Use [`sigma_clip!`](@ref) when the number of retained samples (`n`) is needed,
-or when operating in-place on a pre-allocated float array.
-"""
-function sigma_clip(
-        data::AbstractArray, σ_low::Real, σ_high::Real = σ_low;
-        maxiters::Integer = 10
-    )
-    work = _prepare_work(data, nothing)
-    sigma_clip!(work, σ_low, σ_high; maxiters)
-    return work
-end
-
-"""
-    sigma_clip!(data, sigma; maxiters=10)
-    sigma_clip!(data, sigma_low, sigma_high; maxiters=10)
-
-Iteratively sigma-clip `data` in place and return the number of retained
-finite samples.
-
-Rejected samples are removed from the active prefix of `vec(data)`.
-"""
-function sigma_clip!(
-        data::AbstractArray{T}, σ_low::Real, σ_high::Real = σ_low;
-        maxiters::Integer = 10
-    ) where {T <: AbstractFloat}
-    # vec shares storage with data (no copy); mutations through flat
-    # affect data in place, and vice versa.
-    flat = vec(data)
-    n = _compact_finite!(data)
-    for _ in 1:maxiters
-        n == 0 && break
-
-        # Estimate clipping bounds from the current active finite prefix.
-        active = view(flat, 1:n)
-        m = median!(active)
-        s = std(active; corrected = false)
-        s == 0 && break
-        lo, hi = m - σ_low * s, m + σ_high * s
-
-        # Compact retained values in place so each iteration reuses storage.
-        n_new = 0
-        @inbounds for i in 1:n
-            x = flat[i]
-            if lo ≤ x ≤ hi
-                n_new += 1
-                flat[n_new] = x
-            end
-        end
-        n_new == n && break
-        n = n_new
-    end
-    return n
-end
 
 # Biweight location (Tukey 1977; Beers, Flynn & Gebhardt 1990).
 function _biweight_location(data::AbstractArray{T}, c::Real = 6.0) where {T}

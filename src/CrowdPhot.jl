@@ -9,6 +9,7 @@ using StaticArrays: SMatrix, @SMatrix, @SVector
 using Statistics: median, median!, mean, std
 
 export Background2D
+export sigma_clip, sigma_clip!
 export simulate_sources, simulate_image, make_gaussians_image, centroid_poly, choose_centroid
 export matched_filter, MatchedFilterResult
 export measure_star_shape, measure_star_shapes

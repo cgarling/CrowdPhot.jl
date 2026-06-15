@@ -77,3 +77,100 @@ end
 # end
 # # mean_and_std(x::AbstractArray{<:Real}, ::Colon; corrected::Bool=true) =
 # #     mean_and_std(x; corrected=corrected)
+
+# ==============================================================================
+# Sigma clipping
+# ==============================================================================
+
+"""
+    _compact_finite!(data::AbstractArray{T}) where {T <: AbstractFloat} -> Int
+
+Move all finite elements of `data` to the front of its linear storage and
+return the count.  Non-finite elements beyond the returned prefix are
+left in an unspecified order.
+"""
+function _compact_finite!(data::AbstractArray{T}) where {T <: AbstractFloat}
+    flat = vec(data)
+    n = 0
+    @inbounds for i in eachindex(flat)
+        v = flat[i]
+        if isfinite(v)
+            n += 1
+            flat[n] = v
+        end
+    end
+    return n
+end
+
+"""
+    sigma_clip!(data, sigma; maxiters=10)
+    sigma_clip!(data, sigma_low, sigma_high; maxiters=10)
+
+Iteratively sigma-clip `data` in place and return the number of retained
+finite samples.
+
+Rejected samples are removed from the active prefix of `vec(data)`.
+"""
+function sigma_clip!(
+        data::AbstractArray{T}, σ_low::Real, σ_high::Real = σ_low;
+        maxiters::Integer = 10
+    ) where {T <: AbstractFloat}
+    # vec shares storage with data (no copy); mutations through flat
+    # affect data in place, and vice versa.
+    flat = vec(data)
+    n = _compact_finite!(data)
+    for _ in 1:maxiters
+        n == 0 && break
+
+        # Estimate clipping bounds from the current active finite prefix.
+        active = view(flat, 1:n)
+        m = median!(active)
+        s = std(active; corrected = false)
+        s == 0 && break
+        lo, hi = m - σ_low * s, m + σ_high * s
+
+        # Compact retained values in place so each iteration reuses storage.
+        n_new = 0
+        @inbounds for i in 1:n
+            x = flat[i]
+            if lo ≤ x ≤ hi
+                n_new += 1
+                flat[n_new] = x
+            end
+        end
+        n_new == n && break
+        n = n_new
+    end
+    return n
+end
+
+"""
+    sigma_clip(data, sigma; maxiters=10)
+    sigma_clip(data, sigma_low, sigma_high; maxiters=10)
+
+Return a mutable floating-point copy of `data` after iterative sigma clipping.
+The returned array has the **same shape and total number of elements** as `data`.
+Non-finite input values are replaced with `NaN`.
+
+Retained (finite, not clipped) samples are compacted to the front of the
+linear storage (`vec(result)[1:n]`) and are **partially sorted** — their
+original order is not preserved because `median!` rearranges elements during
+clipping.  Elements beyond the active prefix contain displaced values from
+the compaction process and should be ignored.
+
+Use [`sigma_clip!`](@ref) when the number of retained samples (`n`) is needed,
+or when operating in-place on a pre-allocated float array.
+"""
+function sigma_clip(
+        data::AbstractArray, σ_low::Real, σ_high::Real = σ_low;
+        maxiters::Integer = 10
+    )
+    F = float(eltype(data))
+    work = similar(data, F)
+    @inbounds for i in eachindex(work, data)
+        v = data[i]
+        work[i] = isfinite(v) ? F(v) : F(NaN)
+    end
+    sigma_clip!(work, σ_low, σ_high; maxiters)
+    return work
+end
