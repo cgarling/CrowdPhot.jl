@@ -46,6 +46,9 @@ makedocs(;
             ],
         ],
         "Levenberg-Marquardt Fitter" => "lm_fitter.md",
+        "Photometry" => [
+            "PSF Fitting Photometry" => "photometry/psf_fitting.md",
+        ],
         "Simulation" => "simulation.md",
         "Utilities" => "utilities.md",
         "Index" => "doc_index.md",
