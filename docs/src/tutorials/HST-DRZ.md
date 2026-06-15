@@ -317,3 +317,116 @@ Colorbar(fig[4, 4], h8; label = "Counts")
 
 fig
 ```
+
+## Pick Stars for PSF Fitting
+
+We select stars suitable for PSF fitting with
+`pick_psf_stars`.  The function clips
+the instrumental-magnitude distribution to exclude very bright (potentially
+saturated) and very faint stars, applies a hard constraint on normalized
+core curvature, and then sigma-clips morphological parameters
+(`fwhm.y`, `fwhm.x`, `roundness1_aperture`, `roundness2_aperture`,
+`normalized_curvature`) within five instrumental-magnitude bins.
+
+```@example hst-drc
+# Select the brightest 50 stars suitable for PSF fitting
+show_idx = CrowdPhot.PSF.pick_psf_stars(results, 50)
+println("$(length(show_idx)) stars selected for PSF fitting (from $(length(results)) total)")
+```
+
+We show image cutouts of the selected stars to visually confirm that the
+selection is reasonable.
+
+```@example hst-drc
+# Extract cutouts with a 5-pixel half-width (11×11 pixels) for context
+half = 5
+ny, nx = size(img_sub)
+cutouts = map(show_idx) do i
+    y, x = Tuple(results[i].pixel)
+    yr = max(1, y - half):min(ny, y + half)
+    xr = max(1, x - half):min(nx, x + half)
+    img_sub[yr, xr]
+end
+
+# Compact grid — no axis labels, colorbars, or other decorations
+ncols = 10
+nrows = cld(length(show_idx), ncols)
+fig = Figure(size = (ncols * 70, nrows * 70))
+
+for (k, cutout) in enumerate(cutouts)
+    # Per-cutout zscale for robust contrast
+    fin = cutout[isfinite.(cutout)]
+    zmin, zmax = isempty(fin) ? (0.0, 1.0) : zscale(fin)
+
+    row = (k - 1) ÷ ncols + 1
+    col = (k - 1) % ncols + 1
+    ax = Axis(fig[row, col]; aspect = DataAspect())
+    heatmap!(ax, cutout';
+        colorrange = (zmin, zmax), colormap = :grays, interpolate = false)
+    hidedecorations!(ax)
+end
+
+colgap!(fig.layout, 1)
+rowgap!(fig.layout, 1)
+fig
+```
+
+## Empirical PSF Construction
+
+We now build an empirical PSF from the selected stars using
+[`fit_psf`](@ref CrowdPhot.PSF.fit_psf) with the Anderson & King (2000)
+iterative residual-stacking method ([Anderson2000](@citet)).
+Stars outside the cutout boundary are dropped (`drop_edge=true`), and
+the ePSF is supersampled at 4× the detector pixel scale.
+
+```@example hst-drc
+# Select 200 bright, morphologically-clean stars
+n_psf = 400
+psf_idx = CrowdPhot.PSF.pick_psf_stars(results, n_psf)
+
+# Use sub-pixel centroids from the morphology measurements
+psf_y = [results[i].centroid.y for i in psf_idx]
+psf_x = [results[i].centroid.x for i in psf_idx]
+
+# Build the empirical PSF
+psf, fit_result = CrowdPhot.PSF.fit_psf(
+    CrowdPhot.PSF.ImagePSF, img_sub_f64, psf_y, psf_x;
+    psf_rad = 5,
+    fit_rad = 4,
+    oversampling = 4,
+    smooth = true,
+    recenter = true,
+)
+
+n_used = sum(fit_result.used)
+println("$(n_used) / $(n_psf) stars used in $(fit_result.iterations) iterations")
+```
+
+The returned `ImagePSF` stores the PSF on an oversampled grid.  We convert
+the grid axes to detector-pixel offsets from the PSF center for display.
+Note that we use a non-linear colorscale to accentuate the PSF features
+outside the core.
+
+```@example hst-drc
+os_y, os_x = psf.oversampling
+ny_os, nx_os = size(psf.data)
+
+# Oversampled grid indices relative to the PSF origin, scaled to detector pixels
+dy_os = (1:ny_os) .- psf.origin.y
+dx_os = (1:nx_os) .- psf.origin.x
+y_pix = dy_os ./ os_y
+x_pix = dx_os ./ os_x
+
+fig = Figure(size = (700, 600))
+ax = Axis(fig[1, 1];
+    aspect = DataAspect(),
+    xlabel = "Δx (pix)", ylabel = "Δy (pix)",
+    title = "Empirical PSF — $(n_used) stars, $(os_y)× oversampled")
+
+zmin, zmax = zscale(psf.data[psf.data .> 0])
+psf_hm = heatmap!(ax, x_pix, y_pix, psf.data;
+    colorrange = (zmin, zmax), colormap = :grays, interpolate = false, colorscale=LuptonAsinhScale(0.01, 5.0))
+Colorbar(fig[1, 2], psf_hm; label = "relative flux", height = Relative(0.8), valign = :center)
+
+fig
+```
