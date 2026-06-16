@@ -122,6 +122,9 @@ end
             @test isfinite(result.qfit[i])
             @test result.qfit[i] > 0
         end
+        # qfit_expected and qfit_z are NaN when inv_var is not provided.
+        @test all(isnan, result.qfit_expected)
+        @test all(isnan, result.qfit_z)
     end
 
     @testset "single-pass runs without error" begin
@@ -129,10 +132,14 @@ end
             background = 20.0, noise = :none, flux = (600.0, 900.0),
             min_separation = 10, border = 10, model_radius = 5, rng)
         psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=2.0, flux=1.0, bkg=0.0)
-        result = fit_all_stars(image, psf, sources, 5; n_passes = 1, max_iter = 100)
+        inv_var = fill(1.0, size(image))
+        result = fit_all_stars(image, psf, sources, 5; n_passes = 1, max_iter = 100, inv_var)
         @test result.n_passes == 1
         @test all(result.valid)
         @test all(result.converged)
+        @test all(isfinite, result.qfit_expected)
+        @test all(x -> x > 0, result.qfit_expected)
+        @test all(isfinite, result.qfit_z)
     end
 
     @testset "fixed background" begin
@@ -224,6 +231,8 @@ end
         @test result.valid isa BitVector
         @test result.n_iter isa Vector{Int}
         @test result.qfit isa Vector{Float64}
+        @test result.qfit_expected isa Vector{Float64}
+        @test result.qfit_z isa Vector{Float64}
         @test result.residual isa Matrix{Float64}
         @test size(result.residual) == size(image)
     end

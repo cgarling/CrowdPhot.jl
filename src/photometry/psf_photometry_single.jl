@@ -26,12 +26,47 @@ length (the number of input sources).
 - `bkg_err`: 1-sigma background error (`zero(T)` if background was fixed).
 - `converged::BitVector`: whether the final LM fit converged.
 - `valid::BitVector`: whether the source survived between-pass validation.
-- `chisq`: final reduced χ² for each source.
-- `qfit::Vector{T}`: quality-of-fit statistic (sum of absolute residuals over the
-  fitting aperture divided by flux).  `NaN` for invalid or failed sources.
 - `n_iter::Vector{Int}`: total LM iterations accumulated across all passes for each source.
 - `n_passes::Int`: number of passes actually performed.
 - `residual::Matrix{T}`: final residual image after all subtractions.
+
+# Goodness-of-fit diagnostics
+ - `chisq::Vector{T}`: final reduced χ² for each source.
+ - `qfit::Vector{T}`: sum of absolute residuals over the fitting aperture divided by flux.
+ - `qfit_expected::Vector{T}`: expected `qfit` under the noise model (see below).
+ - `qfit_z::Vector{T}`: noise-standardized excess absolute residual (see below).
+
+# Notes
+
+| Diagnostic | Single-pixel outliers | Persistent misfit | Null distribution |
+|---|---|---|---|
+| `chisq` (reduced χ²) | Yes (squared residuals) | Moderate | ``\\chi^2_{N-p}`` (approx.) |
+| `qfit` / `qfit_expected` | Moderate | Yes | None |
+| `qfit_z` | No | Yes | ``\\mathcal{N}(0,1)`` |
+
+- **`chisq`**: final reduced χ² for each source.  Uses squared residuals (L2 norm), so a
+  single bad pixel (cosmic ray, hot pixel) can dominate.  Best for catching
+  single-pixel excursions.
+- **`qfit::Vector{T}`**: sum of absolute residuals over the fitting aperture
+  divided by flux.  Uses L1 norm, so it is robust to single-pixel outliers and
+  sensitive to persistent misfit across many pixels (PSF mismatch, extended
+  sources).  `NaN` for invalid or failed sources.
+- **`qfit_expected::Vector{T}`**: expected `qfit` under the noise model
+  ``\\left(\\sqrt{2/\\pi} \\sum \\sigma_i \\,/\\, \\mathrm{F}\\right)``.
+  The difference and/or ratio between `qfit` and `qfit_expected` can be used to
+  identify stars whose fits are worse than the noise model predicts, though `qfit_z`
+  is likely to be more informative. `NaN` when `inv_var` was not provided.
+- **`qfit_z::Vector{T}`**: noise-standardized excess absolute residual:
+  ```math
+  q_{\\rm fit,z} =
+  \\frac{\\sum |r_i| - \\sqrt{2/\\pi}\\sum \\sigma_i}
+  {\\sqrt{(1 - 2/\\pi)\\sum \\sigma_i^2}},
+  \\qquad
+  r_i = P_i - s - F\\psi_i .
+  ```
+  Under the null hypothesis (correct PSF model, correct noise model), `qfit_z`
+  is approximately standard normal.  Large positive values indicate structured
+  residuals inconsistent with pure noise.  `NaN` when `inv_var` was not provided.
 """
 struct MultiPassPhotResult{T}
     y::Vector{T}
@@ -46,6 +81,8 @@ struct MultiPassPhotResult{T}
     valid::BitVector
     chisq::Vector{T}
     qfit::Vector{T}
+    qfit_expected::Vector{T}
+    qfit_z::Vector{T}
     n_iter::Vector{Int}
     n_passes::Int
     residual::Matrix{T}
@@ -202,6 +239,7 @@ function fit_all_stars(
         fit_rad::Real;
         n_passes::Integer = 3,
         fixed::NamedTuple = (;),
+        inv_var = nothing,
         kws...,
     ) where {T}
     FT = float(T)
@@ -213,7 +251,7 @@ function fit_all_stars(
     n_params, n_stars = size(params)
     n_stars == 0 && return MultiPassPhotResult(
         FT[], FT[], FT[], FT[], FT[], FT[], FT[], FT[],
-        BitVector[], BitVector[], FT[], FT[], Int[], Int(0), Matrix{FT}(undef, 0, 0),
+        BitVector[], BitVector[], FT[], FT[], FT[], FT[], Int[], Int(0), Matrix{FT}(undef, 0, 0),
     )
 
     # Map PSF property names to matrix row indices.
@@ -250,6 +288,8 @@ function fit_all_stars(
     converged = falses(n_stars)
     chisq = zeros(FT, n_stars)
     qfit = fill(convert(FT, NaN), n_stars)
+    qfit_expected = fill(convert(FT, NaN), n_stars)
+    qfit_z = fill(convert(FT, NaN), n_stars)
     n_iter = zeros(Int, n_stars)
 
     # -------------------------------------------------------------------
@@ -290,7 +330,7 @@ function fit_all_stars(
             try
                 best, result = PSF.fit_star(
                     m, residual, inds;
-                    fixed, kws...,
+                    fixed, inv_var, kws...,
                 )
 
                 # Update all parameter rows from the fitted model.
@@ -310,11 +350,30 @@ function fit_all_stars(
 
                 # Compute qfit on the final pass, before subtraction.
                 if pass == n_passes && best.flux > 0
+                    inv_flux = inv(best.flux)
                     qfit_val = zero(FT)
                     for pix in inds
                         qfit_val += abs(residual[pix] - evaluate(best, pix))
                     end
-                    qfit[idx] = qfit_val / best.flux
+                    qfit[idx] = qfit_val * inv_flux
+                    if !isnothing(inv_var)
+                        sigma_sum = zero(FT)
+                        sigma2_sum = zero(FT)
+                        for pix in inds
+                            iv = inv_var[pix]
+                            if isfinite(iv) && iv > 0
+                                sigma_i = inv(sqrt(iv))
+                                sigma_sum += sigma_i
+                                sigma2_sum += sigma_i^2
+                            end
+                        end
+                        qfit_expected[idx] = FT(sqrt(2 / T(π))) * sigma_sum * inv_flux
+                        if sigma2_sum > 0
+                            num = qfit_val - FT(sqrt(2 / T(π))) * sigma_sum
+                            den = FT(sqrt((1 - 2 / T(π)) * sigma2_sum))
+                            qfit_z[idx] = num / den
+                        end
+                    end
                 end
 
                 # Subtract the updated best-fit model.
@@ -353,6 +412,6 @@ function fit_all_stars(
 
     return MultiPassPhotResult(
         y, x, y_err, x_err, flux, flux_err, bkg, bkg_err,
-        converged, valid, chisq, qfit, n_iter, n_passes, residual,
+        converged, valid, chisq, qfit, qfit_expected, qfit_z, n_iter, n_passes, residual,
     )
 end
