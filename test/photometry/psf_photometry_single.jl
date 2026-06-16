@@ -105,12 +105,12 @@ end
     @testset "noiseless recovery" begin
         image, sources = simulate_image((128, 128), truth_psf, 5;
             background = 20.0, noise = :none, flux = (600.0, 900.0),
-            min_separation = 7, border = 8, model_radius = 6, rng)
+            min_separation = 7, border = 8, model_radius = 30, rng)
         psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=2.0, flux=1.0, bkg=0.0)
         # Sequentially fitting blended stars leaves residual crosstalk even
         # with multiple passes; DAOPHOT handles this via simultaneous group
         # fits.  Tolerances reflect what the sequential algorithm can achieve.
-        result = fit_all_stars(image, psf, sources, 5; n_passes = 3, max_iter = 100)
+        result = fit_all_stars(image, psf, sources, 5; n_passes = 3, max_iter = 100, fixed=(; bkg = 20.0))
 
         @test result.n_passes == 3
         @test sum(result.valid) == 5
@@ -119,6 +119,8 @@ end
             @test result.flux[i] ≈ sources.flux[i] rtol = 0.10
             @test result.y[i] ≈ sources.y[i] atol = 0.01
             @test result.x[i] ≈ sources.x[i] atol = 0.01
+            @test isfinite(result.qfit[i])
+            @test result.qfit[i] > 0
         end
     end
 
@@ -221,6 +223,7 @@ end
         @test result.converged isa BitVector
         @test result.valid isa BitVector
         @test result.n_iter isa Vector{Int}
+        @test result.qfit isa Vector{Float64}
         @test result.residual isa Matrix{Float64}
         @test size(result.residual) == size(image)
     end

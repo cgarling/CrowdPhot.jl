@@ -27,6 +27,8 @@ length (the number of input sources).
 - `converged::BitVector`: whether the final LM fit converged.
 - `valid::BitVector`: whether the source survived between-pass validation.
 - `chisq`: final reduced χ² for each source.
+- `qfit::Vector{T}`: quality-of-fit statistic (sum of absolute residuals over the
+  fitting aperture divided by flux).  `NaN` for invalid or failed sources.
 - `n_iter::Vector{Int}`: total LM iterations accumulated across all passes for each source.
 - `n_passes::Int`: number of passes actually performed.
 - `residual::Matrix{T}`: final residual image after all subtractions.
@@ -43,6 +45,7 @@ struct MultiPassPhotResult{T}
     converged::BitVector
     valid::BitVector
     chisq::Vector{T}
+    qfit::Vector{T}
     n_iter::Vector{Int}
     n_passes::Int
     residual::Matrix{T}
@@ -210,7 +213,7 @@ function fit_all_stars(
     n_params, n_stars = size(params)
     n_stars == 0 && return MultiPassPhotResult(
         FT[], FT[], FT[], FT[], FT[], FT[], FT[], FT[],
-        BitVector[], BitVector[], FT[], Int[], Int(0), Matrix{FT}(undef, 0, 0),
+        BitVector[], BitVector[], FT[], FT[], Int[], Int(0), Matrix{FT}(undef, 0, 0),
     )
 
     # Map PSF property names to matrix row indices.
@@ -246,6 +249,7 @@ function fit_all_stars(
     valid = trues(n_stars)
     converged = falses(n_stars)
     chisq = zeros(FT, n_stars)
+    qfit = fill(convert(FT, NaN), n_stars)
     n_iter = zeros(Int, n_stars)
 
     # -------------------------------------------------------------------
@@ -304,6 +308,15 @@ function fit_all_stars(
                 chisq[idx] = result.chisq
                 n_iter[idx] += result.iterations
 
+                # Compute qfit on the final pass, before subtraction.
+                if pass == n_passes && best.flux > 0
+                    qfit_val = zero(FT)
+                    for pix in inds
+                        qfit_val += abs(residual[pix] - evaluate(best, pix))
+                    end
+                    qfit[idx] = qfit_val / best.flux
+                end
+
                 # Subtract the updated best-fit model.
                 PSF.subtract_star!(residual, best, inds)
             catch
@@ -340,6 +353,6 @@ function fit_all_stars(
 
     return MultiPassPhotResult(
         y, x, y_err, x_err, flux, flux_err, bkg, bkg_err,
-        converged, valid, chisq, n_iter, n_passes, residual,
+        converged, valid, chisq, qfit, n_iter, n_passes, residual,
     )
 end
