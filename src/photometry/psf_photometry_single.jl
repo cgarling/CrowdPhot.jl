@@ -148,7 +148,7 @@ end
 # ==============================================================================
 
 """
-    fit_all_stars(image, psf, sources; kws...) -> MultiPassPhotResult
+    fit_all_stars(image, psf, sources, fit_rad; kws...) -> MultiPassPhotResult
 
 Perform multi-pass PSF-fitting photometry on all sources in `image`.
 
@@ -168,19 +168,22 @@ re-fitted, and re-subtracted, progressively refining all measurements.
   - `Vector{<:NamedTuple}` — output of [`measure_star_shapes`](@ref).
   - `NamedTuple` with `(:y, :x)` fields and optional `(:flux, :bkg)`.
   - [`MatchedFilterResult`](@ref).
+- `fit_rad::Real`: fitting radius in detector pixels.  A ±`fit_rad`
+  rectangular cutout is extracted around each star's current position.
 
 # Keyword arguments
 
 - `n_passes::Integer = 3`: number of full subtract/add-back/re-fit cycles.
-- `inv_var`: inverse-variance map with the same shape as `image`.  Must be
-  finite and positive on the fitting indices of each source.
 - `fixed::NamedTuple = (;)`: parameters frozen for ALL stars, e.g.
   `(; bkg)` or `(; x, y)`.
-- `fit_rad::Real = 5`: fitting radius in detector pixels.  A ±`fit_rad`
-  rectangular cutout is extracted around each star's current position.
-- Remaining keywords (`max_iter`, `x_tol`, `f_tol`, `g_tol`, `show_trace`,
-  `reweight`, `covariance_estimator`, `scale_estimator`, `damping`) are
-  forwarded to [`fit_star`](@ref CrowdPhot.PSF.fit_star).
+- `inv_var`: per-pixel inverse variance for weighted fitting.  Must be the same
+  shape as `image`.  Forwarded to [`fit_star`](@ref CrowdPhot.PSF.fit_star),
+  where non-positive or non-finite values are treated as masked pixels.  Stars
+  with too few valid pixels are marked invalid and skipped.
+- All other keyword arguments (`max_iter`, `x_tol`, `f_tol`,
+  `g_tol`, `show_trace`, `reweight`, `covariance_estimator`,
+  `scale_estimator`, `damping`, etc.) are forwarded to
+  [`fit_star`](@ref CrowdPhot.PSF.fit_star).
 
 # Returns
 
@@ -190,20 +193,11 @@ convergence flags, and the final residual image.
 function fit_all_stars(
         image::AbstractMatrix{T},
         psf::AbstractPSFModel,
-        sources;
+        sources,
+        fit_rad::Real;
         n_passes::Integer = 3,
-        inv_var = nothing,
         fixed::NamedTuple = (;),
-        fit_rad::Real = 5,
-        max_iter::Integer = 200,
-        x_tol::Real = 1.0e-8,
-        f_tol::Real = 1.0e-8,
-        g_tol::Real = 1.0e-8,
-        show_trace::Bool = false,
-        reweight = nothing,
-        scale_estimator = nothing,
-        covariance_estimator = nothing,
-        damping::AbstractLMDamping = MarquardtDamping(),
+        kws...,
     ) where {T}
     FT = float(T)
 
@@ -283,32 +277,40 @@ function fit_all_stars(
                 PSF.add_star!(residual, m, inds)
             end
 
-            # Fit the star on the residual image.
-            best, result = PSF.fit_star(
-                m, residual, inds;
-                fixed, inv_var,
-                max_iter, x_tol, f_tol, g_tol,
-                show_trace, reweight,
-                scale_estimator, covariance_estimator,
-                damping,
-            )
+            # Fit the star on the residual image.  A failed fit (e.g. too
+            # few valid inv_var pixels) marks the star invalid and continues
+            # to the next source without crashing the full run.
+            local best, result
+            try
+                best, result = PSF.fit_star(
+                    m, residual, inds;
+                    fixed, kws...,
+                )
 
-            # Update all parameter rows from the fitted model.
-            best_props = ConstructionBase.getproperties(best)
-            for k in 1:n_params
-                params[k, idx] = FT(getfield(best_props, prop_names[k]))
+                # Update all parameter rows from the fitted model.
+                best_props = ConstructionBase.getproperties(best)
+                for k in 1:n_params
+                    params[k, idx] = FT(getfield(best_props, prop_names[k]))
+                end
+
+                # Extract errors from the covariance matrix.
+                if result.cov !== nothing
+                    _extract_errors!(errors, result.cov, free_idx, is_fixed, idx)
+                end
+
+                converged[idx] = result.converged
+                chisq[idx]     = result.chisq
+
+                # Subtract the updated best-fit model.
+                PSF.subtract_star!(residual, best, inds)
+            catch
+                # Undo the add-back so the residual stays consistent.
+                if pass > 1
+                    PSF.subtract_star!(residual, m, inds)
+                end
+                valid[idx] = false
+                continue
             end
-
-            # Extract errors from the covariance matrix.
-            if result.cov !== nothing
-                _extract_errors!(errors, result.cov, free_idx, is_fixed, idx)
-            end
-
-            converged[idx] = result.converged
-            chisq[idx]     = result.chisq
-
-            # Subtract the updated best-fit model.
-            PSF.subtract_star!(residual, best, inds)
         end
 
         # Between-pass validation: reject non-positive / NaN flux,
