@@ -495,7 +495,7 @@ region_sources = results[region_idx]
 println("$(length(region_sources)) sources in the display region")
 
 # Run single-pass PSF-fitting photometry
-phot_result = fit_all_stars(img_sub_f64, psf, region_sources;
+phot_result = fit_all_stars(img_sub_f64, psf, region_sources, 5;
     n_passes = 1, inv_var, fixed = (; bkg = 0.0))
 
 n_good = sum(phot_result.valid)

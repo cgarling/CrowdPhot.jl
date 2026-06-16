@@ -110,7 +110,7 @@ end
         # Sequentially fitting blended stars leaves residual crosstalk even
         # with multiple passes; DAOPHOT handles this via simultaneous group
         # fits.  Tolerances reflect what the sequential algorithm can achieve.
-        result = fit_all_stars(image, psf, sources; n_passes = 3, max_iter = 100)
+        result = fit_all_stars(image, psf, sources, 5; n_passes = 3, max_iter = 100)
 
         @test result.n_passes == 3
         @test sum(result.valid) == 5
@@ -127,7 +127,7 @@ end
             background = 20.0, noise = :none, flux = (600.0, 900.0),
             min_separation = 10, border = 10, model_radius = 5, rng)
         psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=2.0, flux=1.0, bkg=0.0)
-        result = fit_all_stars(image, psf, sources; n_passes = 1, max_iter = 100)
+        result = fit_all_stars(image, psf, sources, 5; n_passes = 1, max_iter = 100)
         @test result.n_passes == 1
         @test all(result.valid)
         @test all(result.converged)
@@ -138,7 +138,7 @@ end
             background = 20.0, noise = :none, flux = (500.0, 800.0),
             min_separation = 10, border = 8, model_radius = 5, rng)
         psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=2.0, flux=1.0, bkg=0.0)
-        result = fit_all_stars(image, psf, sources;
+        result = fit_all_stars(image, psf, sources, 5;
             fixed = (; bkg = 20.0), n_passes = 1, max_iter = 100)
 
         @test all(x -> x ≈ 20.0, result.bkg)
@@ -153,7 +153,7 @@ end
             background = 20.0, noise = :none, flux = (500.0, 800.0),
             min_separation = 10, border = 8, model_radius = 5, rng)
         psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=2.0, flux=1.0, bkg=0.0)
-        result = fit_all_stars(image, psf, sources;
+        result = fit_all_stars(image, psf, sources, 5;
             fixed = (; x = 32.0, y = 32.0), n_passes = 1, max_iter = 100)
 
         @test all(x -> x ≈ 32.0, result.x)
@@ -173,7 +173,7 @@ end
         psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=2.0, flux=1.0, bkg=0.0)
         # One star at the edge, one at center
         sources = (; y = [1.0, 32.0], x = [32.0, 32.0], flux = [500.0, 500.0])
-        result = fit_all_stars(image, psf, sources; n_passes = 1, max_iter = 50)
+        result = fit_all_stars(image, psf, sources, 5; n_passes = 1, max_iter = 50)
         # Edge star may or may not survive depending on cutout size
         @test result.valid[2]  # center star should be valid
     end
@@ -183,7 +183,7 @@ end
             background = 20.0, noise = :none, flux = (400.0, 700.0),
             min_separation = 5, border = 8, model_radius = 5, rng)
         psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=2.0, flux=1.0, bkg=0.0)
-        result = fit_all_stars(image, psf, sources; n_passes = 3, max_iter = 100)
+        result = fit_all_stars(image, psf, sources, 5; n_passes = 3, max_iter = 100)
         @test result.n_passes == 3
         @test sum(result.valid) == 5
         @test all(result.converged)
@@ -197,7 +197,7 @@ end
         # Use the actual source positions from the simulation, with reasonable
         # initial flux guesses.
         cat = (; y = sources.y, x = sources.x, flux = fill(400.0, 3))
-        result = fit_all_stars(image, psf, cat; n_passes = 1, max_iter = 200)
+        result = fit_all_stars(image, psf, cat, 5; n_passes = 1, max_iter = 200)
         @test length(result.y) == 3
         @test all(result.converged)
         for i in 1:3
@@ -210,7 +210,7 @@ end
             background = 20.0, noise = :none, flux = (500.0, 700.0),
             min_separation = 15, border = 10, model_radius = 5, rng)
         psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=2.0, flux=1.0, bkg=0.0)
-        result = fit_all_stars(image, psf, sources; n_passes = 1, max_iter = 100)
+        result = fit_all_stars(image, psf, sources, 5; n_passes = 1, max_iter = 100)
 
         @test result.y isa Vector{Float64}
         @test result.x isa Vector{Float64}
@@ -233,7 +233,7 @@ end
         sources_bad = (; y = [sources.y; 50.0],
                          x = [sources.x; 50.0],
                          flux = [sources.flux; -100.0])
-        result = fit_all_stars(image, psf, sources_bad; n_passes = 2, max_iter = 100)
+        result = fit_all_stars(image, psf, sources_bad, 5; n_passes = 2, max_iter = 100)
         @test sum(result.valid) == 5  # 5 good + 1 bad rejected
         @test !result.valid[6]
     end
