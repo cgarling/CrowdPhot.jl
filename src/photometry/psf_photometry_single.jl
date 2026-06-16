@@ -28,16 +28,22 @@ length (the number of input sources).
 - `valid::BitVector`: whether the source survived between-pass validation.
 - `n_iter::Vector{Int}`: total LM iterations accumulated across all passes for each source.
 - `n_passes::Int`: number of passes actually performed.
+- `n_failed::Int`: number of stars whose fits threw exceptions and were marked
+  invalid.  A non-zero count indicates systematic problems (e.g. shape
+  mismatches in `inv_var`) and a warning is emitted.
+- `failure_msgs::Vector{String}`: first few exception messages from failed fits,
+  for diagnosis.  Empty when `n_failed == 0`.
 - `residual::Matrix{T}`: final residual image after all subtractions.
 
 # Goodness-of-fit diagnostics
 - `chisq::Vector{T}`: final reduced χ² for each source.  Uses squared residuals (L2 norm), so a
   single bad pixel (cosmic ray, hot pixel) can dominate.  Best for catching
   single-pixel excursions.
-- `qfit::Vector{T}`: sum of absolute residuals over the fitting aperture
-  divided by flux.  Uses L1 norm, so it is robust to single-pixel outliers and
-  sensitive to persistent misfit across many pixels (PSF mismatch, extended
-  sources).  `NaN` for invalid or failed sources. Same statistic as in
+- `qfit::Vector{T}`: sum of absolute residuals over valid-weight pixels in the
+  fitting aperture divided by flux.  Uses L1 norm, so it is robust to single-pixel
+  outliers and sensitive to persistent misfit across many pixels (PSF mismatch,
+  extended sources).  Computed on the final pass from the best-fit model;
+  check `valid` and `converged` before interpreting.  Same statistic as in
   ``\\texttt{hst1pass}``, see [Anderson2022hst1pass](@citet) page 10.
 - `qfit_expected::Vector{T}`: expected `qfit` under the noise model
   ``\\left(\\sqrt{2/\\pi} \\sum \\sigma_i \\,/\\, \\mathrm{F}\\right)``.
@@ -52,8 +58,8 @@ length (the number of input sources).
   \\qquad
   r_i = P_i - s - F\\psi_i .
   ```
-  where ``p`` is the number of free parameters and ``N = |\\mathrm{AP}|`` is
-  the number of pixels in the fitting aperture.  The ``\\sqrt{1 - p/N}``
+  where ``p`` is the number of free parameters and ``N`` is the number of
+  valid-weight pixels in the fitting aperture.  The ``\\sqrt{1 - p/N}``
   factors correct for the reduction in residual variance due to fitting:
   with ``p`` parameters estimated from ``N`` data points, each residual's
   variance is reduced by approximately ``(1 - p/N)`` (average leverage
@@ -63,13 +69,15 @@ length (the number of input sources).
   Under the null hypothesis, ``q_{\\rm fit,z} \\sim \\mathcal{N}(0,1)`` to
   within ``\\mathcal{O}(p^2/N^2)``.  Large positive values indicate
   structured residuals inconsistent with pure noise.  `NaN` when `inv_var`
-  was not provided or when the aperture has fewer pixels than free parameters.
+  was not provided or when the aperture has fewer valid-weight pixels than
+  free parameters.
 - `crowding::Vector{T}`: DOLPHOT-like blend-contamination diagnostic:
   ``2.5 \\log_{10}(F_{\\rm dirty} / F_{\\rm clean})`` where ``F_{\\rm clean}``
   is measured on the neighbor-subtracted image and ``F_{\\rm dirty}`` is
   measured on the original image with all neighbors present.  Values near zero
-   indicate an isolated source; positive values indicate contamination by
-  neighbor light.  `NaN` for invalid or failed sources.
+  indicate an isolated source; positive values indicate contamination by
+  neighbor light.  Computed on the final pass; check `valid` and `converged`
+  before interpreting.
 """
 struct MultiPassPhotResult{T}
     y::Vector{T}
@@ -89,6 +97,8 @@ struct MultiPassPhotResult{T}
     crowding::Vector{T}
     n_iter::Vector{Int}
     n_passes::Int
+    n_failed::Int
+    failure_msgs::Vector{String}
     residual::Matrix{T}
 end
 
@@ -124,8 +134,7 @@ end
 
 Extract initial source parameters from the output of
 [`measure_star_shapes`](@ref).  Uses `centroid.y`, `centroid.x`,
-`matched_filter_flux` (or `morphology.aperture_sum`) as the initial
-guesses; `bkg` defaults to zero.
+`matched_filter_flux` as the initial flux guess; `bkg` defaults to zero.
 """
 function _extract_source_catalog(sources::Vector{<:NamedTuple}, psf, ::Type{T}) where {T}
     n = length(sources)
@@ -247,6 +256,7 @@ function fit_all_stars(
         kws...,
     ) where {T}
     FT = float(T)
+    n_passes > 0 || throw(ArgumentError("n_passes must be positive, got $n_passes"))
 
     # -------------------------------------------------------------------
     # 1. Extract source catalog into contiguous params/errors matrices
@@ -255,7 +265,7 @@ function fit_all_stars(
     n_params, n_stars = size(params)
     n_stars == 0 && return MultiPassPhotResult(
         FT[], FT[], FT[], FT[], FT[], FT[], FT[], FT[],
-        BitVector[], BitVector[], FT[], FT[], FT[], FT[], FT[], Int[], Int(0), Matrix{FT}(undef, 0, 0),
+        falses(0), falses(0), FT[], FT[], FT[], FT[], FT[], Int[], Int(0), Int(0), String[], Matrix{FT}(undef, 0, 0),
     )
 
     # Map PSF property names to matrix row indices.
@@ -296,6 +306,8 @@ function fit_all_stars(
     qfit_z = fill(convert(FT, NaN), n_stars)
     crowding = fill(convert(FT, NaN), n_stars)
     n_iter = zeros(Int, n_stars)
+    n_failed = 0
+    failure_msgs = String[]
 
     # -------------------------------------------------------------------
     # 5. Multi-pass loop
@@ -321,18 +333,18 @@ function fit_all_stars(
             inds = _clamp_inds(CartesianIndices((yr, xr)), residual)
             length(inds) < 3 && (valid[idx] = false; continue)
 
-            # On passes 2+, add this star's previous model back so it is
-            # fitted against data containing only its own signal (plus
-            # noise); all neighbors are already subtracted.
-            if pass > 1
-                PSF.add_star!(residual, m, inds)
-            end
-
             # Fit the star on the residual image.  A failed fit (e.g. too
             # few valid inv_var pixels) marks the star invalid and continues
             # to the next source without crashing the full run.
             local best, result
             try
+                # On passes 2+, add this star's previous model back so it is
+                # fitted against data containing only its own signal (plus
+                # noise); all neighbors are already subtracted.
+                if pass > 1
+                    PSF.add_star!(residual, m, inds)
+                end
+
                 best, result = PSF.fit_star(
                     m, residual, inds;
                     fixed, inv_var, kws...,
@@ -364,11 +376,11 @@ function fit_all_stars(
                     den_crowd = zero(FT)
                     for pix in inds
                         model_val = evaluate(best, pix)
-                        qfit_val += abs(residual[pix] - model_val)
-                        # Unit-flux PSF kernel: Pp = (model - bkg) / flux.
-                        Pp = (model_val - best.bkg) * inv_flux
                         wp = inv_var !== nothing ? inv_var[pix] : one(FT)
                         if isfinite(wp) && wp > 0
+                            qfit_val += abs(residual[pix] - model_val)
+                            # Unit-flux PSF kernel for crowding calculation.
+                            Pp = (model_val - best.bkg) * inv_flux
                             wP = wp * Pp
                             num_clean += wP * (residual[pix] - best.bkg)
                             num_dirty += wP * (image[pix] - best.bkg)
@@ -383,20 +395,21 @@ function fit_all_stars(
                     if !isnothing(inv_var)
                         sigma_sum = zero(FT)
                         sigma2_sum = zero(FT)
+                        n_pix_good = 0
                         for pix in inds
                             iv = inv_var[pix]
                             if isfinite(iv) && iv > 0
                                 sigma_i = inv(sqrt(iv))
                                 sigma_sum += sigma_i
                                 sigma2_sum += sigma_i^2
+                                n_pix_good += 1
                             end
                         end
-                        qfit_expected[idx] = FT(sqrt(2 / T(π))) * sigma_sum * inv_flux
-                        if sigma2_sum > 0 && length(inds) > length(free_idx)
-                            n_pix = length(inds)
-                            dof_factor = FT(sqrt(1 - length(free_idx) / n_pix))
-                            num = qfit_val - FT(sqrt(2 / T(π))) * dof_factor * sigma_sum
-                            den = FT(sqrt((1 - 2 / T(π)) * sigma2_sum)) * dof_factor
+                        qfit_expected[idx] = FT(sqrt(2 / FT(π))) * sigma_sum * inv_flux
+                        if sigma2_sum > 0 && n_pix_good > length(free_idx)
+                            dof_factor = FT(sqrt(1 - length(free_idx) / n_pix_good))
+                            num = qfit_val - FT(sqrt(2 / FT(π))) * dof_factor * sigma_sum
+                            den = FT(sqrt((1 - 2 / FT(π)) * sigma2_sum)) * dof_factor
                             qfit_z[idx] = num / den
                         end
                     end
@@ -404,23 +417,37 @@ function fit_all_stars(
 
                 # Subtract the updated best-fit model.
                 PSF.subtract_star!(residual, best, inds)
-            catch
+            catch e
                 # Undo the add-back so the residual stays consistent.
                 if pass > 1
                     PSF.subtract_star!(residual, m, inds)
                 end
                 valid[idx] = false
+                n_failed += 1
+                if length(failure_msgs) < 5
+                    push!(failure_msgs, "star $idx (pass $pass): " * sprint(showerror, e))
+                end
                 continue
             end
         end
 
-        # Between-pass validation: reject non-positive / NaN flux,
-        # non-converged fits.
+        # Between-pass validation: reject non-finite positions,
+        # non-positive / NaN flux, non-converged fits.
         for idx in 1:n_stars
             valid[idx] &= converged[idx] &&
+                          isfinite(params[row_y, idx]) &&
+                          isfinite(params[row_x, idx]) &&
                           isfinite(params[row_flux, idx]) &&
                           params[row_flux, idx] > 0
         end
+    end
+
+    if n_failed > 0
+        msg = "$n_failed / $n_stars star fits threw exceptions and were marked invalid"
+        if !isempty(failure_msgs)
+            msg *= ". Examples: " * join(failure_msgs, "; ")
+        end
+        @warn msg
     end
 
     # -------------------------------------------------------------------
@@ -438,6 +465,6 @@ function fit_all_stars(
 
     return MultiPassPhotResult(
         y, x, y_err, x_err, flux, flux_err, bkg, bkg_err,
-        converged, valid, chisq, qfit, qfit_expected, qfit_z, crowding, n_iter, n_passes, residual,
+        converged, valid, chisq, qfit, qfit_expected, qfit_z, crowding, n_iter, Int(n_passes), n_failed, failure_msgs, residual,
     )
 end
