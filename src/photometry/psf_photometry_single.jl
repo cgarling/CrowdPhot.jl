@@ -176,8 +176,8 @@ re-fitted, and re-subtracted, progressively refining all measurements.
   finite and positive on the fitting indices of each source.
 - `fixed::NamedTuple = (;)`: parameters frozen for ALL stars, e.g.
   `(; bkg)` or `(; x, y)`.
-- `fwhm_factor::Real = 5`: controls the pixel footprint around each star
-  via `CartesianIndices(model, fwhm_factor)`.
+- `fit_rad::Real = 5`: fitting radius in detector pixels.  A ±`fit_rad`
+  rectangular cutout is extracted around each star's current position.
 - Remaining keywords (`max_iter`, `x_tol`, `f_tol`, `g_tol`, `show_trace`,
   `reweight`, `covariance_estimator`, `scale_estimator`, `damping`) are
   forwarded to [`fit_star`](@ref CrowdPhot.PSF.fit_star).
@@ -194,18 +194,17 @@ function fit_all_stars(
         n_passes::Integer = 3,
         inv_var = nothing,
         fixed::NamedTuple = (;),
-        fwhm_factor::Real = 5,
-        kws...) where {T}
-    #     max_iter::Integer = 200,
-    #     x_tol::Real = 1.0e-8,
-    #     f_tol::Real = 1.0e-8,
-    #     g_tol::Real = 1.0e-8,
-    #     show_trace::Bool = false,
-    #     reweight = nothing,
-    #     scale_estimator = nothing,
-    #     covariance_estimator = nothing,
-    #     damping::AbstractLMDamping = MarquardtDamping(),
-    # ) where {T}
+        fit_rad::Real = 5,
+        max_iter::Integer = 200,
+        x_tol::Real = 1.0e-8,
+        f_tol::Real = 1.0e-8,
+        g_tol::Real = 1.0e-8,
+        show_trace::Bool = false,
+        reweight = nothing,
+        scale_estimator = nothing,
+        covariance_estimator = nothing,
+        damping::AbstractLMDamping = MarquardtDamping(),
+    ) where {T}
     FT = float(T)
 
     # -------------------------------------------------------------------
@@ -268,8 +267,13 @@ function fit_all_stars(
             all_vals = NamedTuple{Tuple(prop_names)}(ntuple(k -> params[k, idx], Val(n_params)))
             m = ConstructionBase.setproperties(psf, all_vals)
 
-            # Pixel footprint, clamped to image bounds.
-            inds = _clamp_inds(CartesianIndices(m, fwhm_factor), residual)
+            # Pixel footprint of ±fit_rad around the star centre, clamped
+            # to image bounds.  Direct range computation works for any
+            # model type and matches the DAOPHOT / DOLPHOT convention.
+            FT_fit = FT(fit_rad)
+            yr = floor(Int, m.y - FT_fit):ceil(Int, m.y + FT_fit)
+            xr = floor(Int, m.x - FT_fit):ceil(Int, m.x + FT_fit)
+            inds = _clamp_inds(CartesianIndices((yr, xr)), residual)
             length(inds) < 3 && (valid[idx] = false; continue)
 
             # On passes 2+, add this star's previous model back so it is
@@ -282,15 +286,12 @@ function fit_all_stars(
             # Fit the star on the residual image.
             best, result = PSF.fit_star(
                 m, residual, inds;
-                kws...
-                # fixed, inv_var,
-                # max_iter, x_tol, f_tol, g_tol,
-                # show_trace, reweight,
-                # scale_estimator, covariance_estimator,
-                # damping,
+                fixed, inv_var,
+                max_iter, x_tol, f_tol, g_tol,
+                show_trace, reweight,
+                scale_estimator, covariance_estimator,
+                damping,
             )
-
-            return best, result
 
             # Update all parameter rows from the fitted model.
             best_props = ConstructionBase.getproperties(best)

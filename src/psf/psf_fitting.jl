@@ -56,7 +56,10 @@ function _prepare_fit_star_inputs(model::AbstractPSFModel{T}, image::AbstractMat
     end
 
     # Convert fit indices and determine which model parameters remain free.
-    fit_inds = CartesianIndices(inds)
+    # CartesianIndices(::CartesianIndices) normalizes offset ranges to 1-based,
+    # which would break any fit using pixel indices that don't start at 1.
+    # Preserve CartesianIndices as-is; convert tuples / other index types.
+    fit_inds = inds isa CartesianIndices ? inds : CartesianIndices(inds)
     free_names, free_idx, x0 = free_params(model, fixed)
     n = length(x0)
     n > 0 || throw(ArgumentError("all model parameters are fixed; nothing to fit"))

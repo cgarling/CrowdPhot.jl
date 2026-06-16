@@ -31,7 +31,7 @@ makedocs(;
             "Pixel Coordinate Conventions" => "pixel_conventions.md",
         ],
         "Tutorials" => [
-            "HST ACS DRZ" => "tutorials/HST-DRZ.md",
+            "HST ACS DRC" => "tutorials/HST-DRC.md",
         ],
         "Background Estimation" => "background.md",
         "Detection" => "detection.md",
