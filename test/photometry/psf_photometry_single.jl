@@ -113,6 +113,8 @@ end
         result = fit_all_stars(image, psf, sources, 5; n_passes = 3, max_iter = 100, fixed=(; bkg = 20.0))
 
         @test result.n_passes == 3
+        @test result.n_failed == 0
+        @test isempty(result.failure_msgs)
         @test sum(result.valid) == 5
         @test all(result.converged)
         for i in 1:5
@@ -237,6 +239,8 @@ end
         @test result.qfit_expected isa Vector{Float64}
         @test result.qfit_z isa Vector{Float64}
         @test result.crowding isa Vector{Float64}
+        @test result.n_failed isa Int
+        @test result.failure_msgs isa Vector{String}
         @test result.residual isa Matrix{Float64}
         @test size(result.residual) == size(image)
     end
