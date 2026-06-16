@@ -125,6 +125,9 @@ end
         # qfit_expected and qfit_z are NaN when inv_var is not provided.
         @test all(isnan, result.qfit_expected)
         @test all(isnan, result.qfit_z)
+        # Crowding: finite, non-negative (may be positive due to blending).
+        @test all(isfinite, result.crowding)
+        @test all(x -> x >= 0, result.crowding)
     end
 
     @testset "single-pass runs without error" begin
@@ -233,6 +236,7 @@ end
         @test result.qfit isa Vector{Float64}
         @test result.qfit_expected isa Vector{Float64}
         @test result.qfit_z isa Vector{Float64}
+        @test result.crowding isa Vector{Float64}
         @test result.residual isa Matrix{Float64}
         @test size(result.residual) == size(image)
     end
