@@ -408,7 +408,7 @@ has the following fields:
 
 !!! note
     If a peak is so close to the image border that no full 3×3
-    neighbourhood exists, all fields in `core` are `NaN` and
+    neighborhood exists, all fields in `core` are `NaN` and
     `centroid.source` is `:poly` (degenerate).  The `morphology` fields
     are computed from the available (clipped) cutout and may still be
     valid.

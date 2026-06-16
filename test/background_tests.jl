@@ -333,7 +333,7 @@ end
         mesh[2:3, 2:3] .= NaN
         _fill_nans!(mesh)
         @test all(isfinite, mesh)
-        # Filled values should be close to 1.0 (neighbour average).
+        # Filled values should be close to 1.0 (neighbor average).
         @test all(≈(1), mesh)
     end
 end

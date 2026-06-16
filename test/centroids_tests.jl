@@ -305,7 +305,7 @@ end
     end
 
     @testset "roundness1_core masks zero-weighted pixels" begin
-        # Masked neighbour pixels must not influence the SROUND numerator or denominator.
+        # Masked neighbor pixels must not influence the SROUND numerator or denominator.
         patch = [0.1 0.3 0.1;
                  0.3 1.0 0.3;
                  0.1 0.3 0.1]
@@ -345,7 +345,7 @@ end
         # Crop to a 3×3 corner of the original 11×11 image.  The true
         # centroid is at (5.3, 5.7) — far from this corner window — so
         # the brightest pixel in the crop lands on the crop border and
-        # no full 3×3 neighbourhood can be extracted.  Both the two-arg
+        # no full 3×3 neighborhood can be extracted.  Both the two-arg
         # and four-arg forms must return NaN. Max is index (3, 3).
         img3 = img2[1:3, 1:3]
         result3 = centroid_poly(img3)

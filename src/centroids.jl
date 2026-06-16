@@ -42,7 +42,7 @@ roundness2_core)`:
   lower values than cosmic rays and hot pixels.
 - `roundness1_core`: DAOPHOT SROUND / photutils `roundness1` convention:
   ``2\\cdot\\Sigma_2/\\Sigma_4`` — ratio of bilateral (2-fold) to fourfold
-  symmetry of the 8 neighbour pixels.  0 = symmetric, nonzero = asymmetric.
+  symmetry of the 8 neighbor pixels.  0 = symmetric, nonzero = asymmetric.
 - `roundness2_core`: DAOPHOT GROUND / photutils `roundness2` convention:
   ``2(\\sqrt{|d|} - \\sqrt{|f|})/(\\sqrt{|d|} + \\sqrt{|f|})``.
   0 = circular core, negative = extended in x (columns),
@@ -65,7 +65,7 @@ make the two diagnostics differ substantially.
 
 !!! note
     This function assumes the inputs are valid 3×3 matrices.  Border
-    checking (whether a full 3×3 neighbourhood exists around the peak
+    checking (whether a full 3×3 neighborhood exists around the peak
     pixel) is the caller's responsibility — see [`centroid_poly`](@ref).
     `NaN` and `Inf` pixel values are not checked; they should be handled by
     a higher-level function.  Bad or saturated pixels can be masked by
@@ -187,14 +187,14 @@ function _centroid_poly3(image::AbstractMatrix, inv_var::AbstractMatrix)
 
     # Morphological diagnostics — roundness1_core (SROUND, bilateral vs.
     # fourfold symmetry) and roundness2_core (GROUND, marginal height ratio).
-    # Both operate on the 8 neighbour pixels.  SROUND uses the
+    # Both operate on the 8 neighbor pixels.  SROUND uses the
     # inverse-variance-weighted pixel values (wz) for consistency with the
     # polynomial fit and with _moments2.
     # DAOPHOT convention: 0 = symmetric/circular, nonzero = asymmetric/elongated.
 
     # SROUND on the 3×3 patch (DAOPHOT / photutils roundness1).
     # SUM2 = +45° axis sum minus -45° axis sum (bilateral asymmetry).
-    # SUM4 = sum of absolute values over all 8 neighbours (fourfold normalization).
+    # SUM4 = sum of absolute values over all 8 neighbors (fourfold normalization).
     sum2 = wz12 + wz32 - wz21 - wz23 + wz11 + wz33 - wz31 - wz13
     sum4 = abs(wz12) + abs(wz32) + abs(wz21) + abs(wz23) +
            abs(wz11) + abs(wz33) + abs(wz31) + abs(wz13)
@@ -297,7 +297,7 @@ roundness2_core)` where
   This flux-independent statistic is useful for distinguishing stars from
   cosmic rays and hot pixels.
 - `roundness1_core` — DAOPHOT SROUND / photutils `roundness1`:
-  ``2\\cdot\\Sigma_2/\\Sigma_4`` from the 8 neighbour pixels.
+  ``2\\cdot\\Sigma_2/\\Sigma_4`` from the 8 neighbor pixels.
   0 = symmetric, nonzero = asymmetric.
 - `roundness2_core` — DAOPHOT GROUND / photutils `roundness2`:
   ``2(\\sqrt{|d|} - \\sqrt{|f|})/(\\sqrt{|d|} + \\sqrt{|f|})``.
@@ -305,7 +305,7 @@ roundness2_core)` where
   positive = extended in y (rows).
 
 If the brightest pixel lies on the image border (no full 3×3
-neighbourhood), every field is `NaN`:
+neighborhood), every field is `NaN`:
 
 ```julia
 (; poly = (; y = NaN, x = NaN, peak = NaN,
@@ -359,7 +359,7 @@ function centroid_poly(
         j0::Int,
         inv_var::AbstractMatrix = Fill(one(float(T)), size(image)),
     ) where {T <: Real}
-    # check that a full 3×3 neighbourhood exists
+    # check that a full 3×3 neighborhood exists
     FT = float(promote_type(T, eltype(inv_var)))
     if i0 < 2 || i0 > size(image, 1) - 1 || j0 < 2 || j0 > size(image, 2) - 1
         nan = FT(NaN)
