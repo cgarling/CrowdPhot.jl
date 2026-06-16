@@ -11,14 +11,6 @@ on:
         default: "previews/PR8"
         type: string
 
-  workflow_dispatch:
-    inputs:
-      preview_dir:
-        description: "Preview directory to delete, e.g. previews/PR8"
-        required: true
-        default: "previews/PR8"
-        type: string
-
 concurrency:
   group: doc-preview-cleanup
   cancel-in-progress: false
