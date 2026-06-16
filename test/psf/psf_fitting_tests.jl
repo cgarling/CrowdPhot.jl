@@ -128,8 +128,8 @@ end
     m = CircularGaussianPSF(x = 5.5, y = 5.2, fwhm = 3.0, flux = 100.0, bkg = 1.0)
     img = evaluate.(m, 1:10, (1:10)')
     init = CircularGaussianPSF(x = 5.8, y = 4.9, fwhm = 3.2, flux = 95.0, bkg = 1.1)
-    @test_throws ArgumentError fit_star(init, img; inv_var = zeros(size(img)))
-    @test_throws ArgumentError fit_star(init, img; inv_var = fill(-1.0, size(img)))
+    @test_throws ArgumentError fit_star(init, img; inv_var = zeros(size(img))) # all masked → too few pixels
+    @test_throws ArgumentError fit_star(init, img; inv_var = fill(-1.0, size(img))) # all masked → too few pixels
     @test_throws ArgumentError fit_star(init, img; inv_var = fill(1.0, (11, 10)))
 end
 
@@ -385,11 +385,41 @@ end
     m = CircularGaussianPSF(x = 5.5, y = 5.2, fwhm = 3.0, flux = 100.0, bkg = 1.0)
     img = evaluate.(m, 1:10, (1:10)')
     init = CircularGaussianPSF(x = 5.8, y = 4.9, fwhm = 3.2, flux = 95.0, bkg = 1.1)
-    @test_throws ArgumentError fit_star(init, img; inv_var = zeros(size(img)))
-    @test_throws ArgumentError fit_star(init, img; inv_var = fill(-1.0, size(img)))
+    @test_throws ArgumentError fit_star(init, img; inv_var = zeros(size(img))) # all masked → too few pixels
+    @test_throws ArgumentError fit_star(init, img; inv_var = fill(-1.0, size(img))) # all masked → too few pixels
     @test_throws ArgumentError fit_star(init, img; inv_var = fill(1.0, (11, 10)))
     @test_throws ArgumentError fit_star(init, img; fixed = (x = 1.0, y = 2.0, fwhm = 3.0, flux = 100.0, bkg = 1.0))
-    @test_throws ArgumentError fit_star(init, img; inv_var = fill(NaN, size(img)))
-    @test_throws ArgumentError fit_star(init, img; inv_var = fill(Inf, size(img)))
+    @test_throws ArgumentError fit_star(init, img; inv_var = fill(NaN, size(img))) # all masked → too few pixels
+    @test_throws ArgumentError fit_star(init, img; inv_var = fill(Inf, size(img))) # all masked → too few pixels
     @test_throws ArgumentError fit_star(init, img, (1:2, 1:2)) # dof < 0
+end
+
+@testset "inv_var masking" begin
+    # Zero / non-finite inv_var values should act as a pixel mask, excluding
+    # those pixels from the fit without throwing an error.
+    truth = CircularGaussianPSF(x=15.0, y=15.0, fwhm=4.0, flux=200.0, bkg=5.0)
+    inds = (1:30, 1:30)
+    img = evaluate.(truth, inds[1], inds[2]')
+    init = CircularGaussianPSF(x=15.5, y=14.5, fwhm=3.5, flux=180.0, bkg=5.5)
+
+    # Mask one corner of the cutout with zero weight.
+    inv_var = ones(size(img))
+    inv_var[1:5, 1:5] .= 0.0
+
+    best, result = fit_star(init, img, inds; inv_var, max_iter=100)
+    @test result.converged
+    @test best.x ≈ truth.x rtol=1e-3
+    @test best.y ≈ truth.y rtol=1e-3
+    @test best.flux ≈ truth.flux rtol=1e-3
+    @test best.bkg ≈ truth.bkg rtol=1e-3
+    # Fewer pixels should be used than the full cutout.
+    @test result.chisq > 0
+
+    # Mask every other pixel with NaN; fit should still converge.
+    inv_var2 = ones(size(img))
+    inv_var2[1:2:end, 1:2:end] .= NaN
+    best2, result2 = fit_star(init, img, inds; inv_var=inv_var2, max_iter=100)
+    @test result2.converged
+    @test best2.x ≈ truth.x rtol=1e-3
+    @test best2.flux ≈ truth.flux rtol=1e-3
 end

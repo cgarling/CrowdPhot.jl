@@ -222,8 +222,8 @@ function fit_all_stars(
     @assert length(prop_names) == n_params
 
     # Identify which rows hold y, x, flux, bkg for sorting and validation.
-    row_y    = findfirst(==(:y), prop_names)
-    row_x    = findfirst(==(:x), prop_names)
+    row_y = findfirst(==(:y), prop_names)
+    row_x = findfirst(==(:x), prop_names)
     row_flux = findfirst(==(:flux), prop_names)
     row_bkg  = findfirst(==(:bkg), prop_names)
 
@@ -247,9 +247,9 @@ function fit_all_stars(
     # -------------------------------------------------------------------
     # 4. Per-star state vectors
     # -------------------------------------------------------------------
-    valid     = trues(n_stars)
+    valid = trues(n_stars)
     converged = falses(n_stars)
-    chisq     = zeros(FT, n_stars)
+    chisq = zeros(FT, n_stars)
 
     # -------------------------------------------------------------------
     # 5. Multi-pass loop

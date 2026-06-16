@@ -44,6 +44,7 @@ makedocs(;
                 "ePSF Overview" => "psf/empirical/epsf_overview.md",
                 "ImagePSF" => "psf/empirical/image_psf.md",
             ],
+            "Picking PSF Stars" => "psf/picking.md",
         ],
         "Levenberg-Marquardt Fitter" => "lm_fitter.md",
         "Photometry" => [

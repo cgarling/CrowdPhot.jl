@@ -410,11 +410,12 @@ We now build an empirical PSF from the selected stars using
 iterative residual-stacking method ([Anderson2000](@citet)).
 Stars outside the cutout boundary are dropped (`drop_edge=true`), and
 the ePSF is supersampled at 4× the detector pixel scale.
+Thick contours show ePSF levels of 0.001, 0.01, and 0.1.
 
 ```@example hst-drc
 # Select bright, morphologically-clean stars
 n_psf = 400
-psf_idx = CrowdPhot.PSF.pick_psf_stars(results, n_psf)
+psf_idx = CrowdPhot.PSF.pick_psf_stars(results, n_psf; mag_quantiles=(0.05, 0.95))
 
 # Use sub-pixel centroids from the morphology measurements
 psf_y = [results[i].centroid.y for i in psf_idx]
@@ -423,7 +424,7 @@ psf_x = [results[i].centroid.x for i in psf_idx]
 # Build the empirical PSF
 psf, fit_result = CrowdPhot.PSF.fit_psf(
     CrowdPhot.PSF.ImagePSF, img_sub_f64, psf_y, psf_x;
-    psf_rad = 7,
+    psf_rad = 6,
     fit_rad = 4,
     oversampling = 4,
     smooth = true,
@@ -453,11 +454,16 @@ fig = Figure(size = (700, 600))
 ax = Axis(fig[1, 1];
     aspect = DataAspect(),
     xlabel = "Δx (pix)", ylabel = "Δy (pix)",
-    title = "Empirical PSF — $(n_used) stars, $(os_y)× oversampled")
+    title = "Empirical PSF — $(n_used) stars, $(os_y)× oversampled",
+    yreversed = true)
 
 zmin, zmax = zscale(psf.data[psf.data .> 0]; contrast=0.05)
-psf_hm = heatmap!(ax, x_pix, y_pix, psf.data;
+psf_hm = heatmap!(ax, x_pix, y_pix, psf.data';
     colorrange = (zmin, zmax), colormap = :grays, interpolate = false, colorscale=LuptonAsinhScale(0.0025, 5.0))
+contour!(ax, x_pix, y_pix, psf.data'; 
+    levels = logrange(1e-3,1e-1;length=3), color=:red, linewidth = 3)
+contour!(ax, x_pix, y_pix, psf.data'; 
+    levels = logrange(1e-3,1e-1;length=9), color=:red, linewidth = 1)
 Colorbar(fig[1, 2], psf_hm; label = "relative flux", height = Relative(0.8), valign = :center)
 
 fig
@@ -490,7 +496,7 @@ println("$(length(region_sources)) sources in the display region")
 
 # Run single-pass PSF-fitting photometry
 phot_result = fit_all_stars(img_sub_f64, psf, region_sources;
-    n_passes = 2, fixed = (; bkg = 0.0))
+    n_passes = 1, inv_var, fixed = (; bkg = 0.0))
 
 n_good = sum(phot_result.valid)
 println("$n_good / $(length(region_sources)) stars fitted successfully")
@@ -566,6 +572,9 @@ fit_x_err = phot_result.x_err[good]
 # Centroid offset between the two measurement techniques
 centroid_offset = @. hypot(morph_y - fit_y, morph_x - fit_x)
 
+# Reduced χ²
+chisq = phot_result.chisq[good]
+
 fig = Figure(size = (900, 800))
 
 # Panel 1: magnitude error vs magnitude
@@ -580,14 +589,23 @@ ax2 = Axis(fig[1, 2];
     title = "Centroid errors")
 scatter!(ax2, psf_mags, fit_y_err; markersize = 4, color = :royalblue, label = "y")
 scatter!(ax2, psf_mags, fit_x_err; markersize = 4, color = :crimson, label = "x")
-axislegend(ax2; position = :rt)
+axislegend(ax2; position = :lt)
 
 # Panel 3: centroid offset (morphology vs PSF fit) vs magnitude
-ax3 = Axis(fig[2, 1:2];
+ax3 = Axis(fig[2, 1];
     xlabel = "PSF-fit ST magnitude",
     ylabel = "Centroid offset (pix)",
     title = "Centroid offset: quadratic (`measure_star_shapes`) vs PSF (`fit_all_stars`)")
 scatter!(ax3, psf_mags, centroid_offset; markersize = 4, color = :black)
+ylims!(ax3, 0.0, 0.5)
+
+# Panel 4: Reduced χ² vs magnitude
+ax4 = Axis(fig[2,2];
+    xlabel = "PSF-fit ST magnitude",
+    ylabel = "Reduced χ²",
+    title = "Reduced χ²")
+scatter!(ax4, psf_mags, chisq; markersize=4, color = :black)
+ylims!(ax4, 0.0, 5.0)
 
 fig
 ```

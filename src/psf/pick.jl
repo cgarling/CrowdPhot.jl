@@ -20,53 +20,62 @@ end
     pick_psf_stars(results; kws...) -> Vector{Int}
 
 Select stars suitable for PSF fitting from the morphological measurements
-returned by [`measure_star_shapes`](@ref).
+returned by [`measure_star_shapes`](@ref CrowdPhot.measure_star_shapes).
 
 The selection proceeds in three stages:
 
-1. **Magnitude clipping**: instrumental magnitudes are computed from
-   `morphology.aperture_sum` and clipped to the quantile range specified
-   by `mag_quantiles`, excluding extremely bright (potentially saturated)
-   and very faint stars.
+1. **Faint-end magnitude clipping**: instrumental magnitudes are computed
+   from `morphology.aperture_sum` and the faintest stars (above
+   `mag_quantiles[2]`) are excluded.  There is no bright-end clip by
+   default -- saturation is detected via the core curvature constraint
+   (stage 2), which is independent of brightness and does not discard
+   good bright stars that are valuable for measuring the PSF wings.
 
 2. **Hard curvature constraint**: stars with `core.normalized_curvature`
    outside `[curvature_min, curvature_max]` are rejected before sigma
-   clipping.
+   clipping.  Saturated stars have flat cores with curvature near zero;
+   unsaturated PSF cores have positive curvature (e.g. ≈ 1.5 for a
+   Gaussian with FWHM = 2 pix).  Cosmic rays produce anomalously high
+   curvature.
 
 3. **Sigma clipping by magnitude bin**: stars are partitioned into `nbins`
    magnitude bins via quantiles, and within each bin sequential
    sigma-clipping is applied to `fwhm.y`, `fwhm.x`,
    `roundness1_aperture`, `roundness2_aperture`, and
-   `normalized_curvature`.  Only stars within `σ_low`–`σ_high` standard
+   `normalized_curvature`.  Only stars within `σ_low`--`σ_high` standard
    deviations of the clipped median for each parameter are retained.
 
 # Arguments
 
 - `results::AbstractVector{<:NamedTuple}`: output of
-  [`measure_star_shapes`](@ref).
+  [`measure_star_shapes`](@ref CrowdPhot.measure_star_shapes).
 
-- `mag_quantiles::NTuple{2,<:Number} = (0.05, 0.95)`: lower and upper
-  quantiles for instrumental-magnitude clipping.
+# Keyword Arguments
 
+- `mag_quantiles::NTuple{2,<:Number} = (0.0, 0.95)`: lower and upper
+  quantiles for instrumental-magnitude clipping.  The default lower bound
+  of `0.0` disables the bright-end clip; saturation is detected via the
+  curvature constraint instead.
 - `nbins::Int = 5`: number of instrumental-magnitude bins.
-
-- `σ_low::Real = 3.0`: lower sigma threshold for clipping.
-- `σ_high::Real = σ_low`: upper sigma threshold for clipping.
-- `maxiters::Integer = 10`: maximum iterations for sigma clipping.
-
-- `curvature_min::Real = -1.0`: hard lower bound on
-  `core.normalized_curvature`.
+- `σ_low::Real = 3.0, σ_high::Real = σ_low`: lower and upper sigma
+  thresholds for clipping.
+- `maxiters::Integer = 10`: maximum iterations for sigma clipping in each
+  magnitude bin.
+- `curvature_min::Real = 0.1`: hard lower bound on
+  `core.normalized_curvature`.  Values ≤ 0.1 indicate a flat or
+  saturated core.
 - `curvature_max::Real = 5.0`: hard upper bound on
-  `core.normalized_curvature`.
+  `core.normalized_curvature`.  Values ≫ 5 indicate a cosmic ray or
+  other sharp spike.
 
 # Returns
 
 A `Vector{Int}` of indices into `results` for the stars that passed all
 cuts, sorted by instrumental magnitude so brighter stars appear first.
 """
-function pick_psf_stars(results; mag_quantiles::NTuple{2,<:Number}=(0.05, 0.95), nbins::Int=5,
+function pick_psf_stars(results; mag_quantiles::NTuple{2,<:Number}=(0.0, 0.95), nbins::Int=5,
         σ_low::Real = 3.0, σ_high::Real = σ_low, maxiters::Integer = 10,
-        curvature_min::Real = -1.0, curvature_max::Real = 5.0)
+        curvature_min::Real = 0.1, curvature_max::Real = 5.0)
 
     # -----------------------------------------------------------------------
     # Stage 1: Instrumental magnitude clipping
