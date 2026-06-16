@@ -495,7 +495,7 @@ region_sources = results[region_idx]
 println("$(length(region_sources)) sources in the display region")
 
 # Run single-pass PSF-fitting photometry
-phot_result = fit_all_stars(img_sub_f64, psf, region_sources, 5;
+phot_result = fit_all_stars(img_sub_f64, psf, region_sources, 2;
     n_passes = 1, inv_var, fixed = (; bkg = 0.0))
 
 n_good = sum(phot_result.valid)
@@ -564,18 +564,19 @@ psf_mag_errs = (2.5 / log(10)) .* phot_result.flux_err[good] ./ phot_result.flux
 # Centroids from measure_star_shapes for the same sources
 morph_y = [results[region_idx[i]].centroid.y for i in findall(good)]
 morph_x = [results[region_idx[i]].centroid.x for i in findall(good)]
-fit_y   = phot_result.y[good]
-fit_x   = phot_result.x[good]
+fit_y = phot_result.y[good]
+fit_x = phot_result.x[good]
 fit_y_err = phot_result.y_err[good]
 fit_x_err = phot_result.x_err[good]
 
 # Centroid offset between the two measurement techniques
 centroid_offset = @. hypot(morph_y - fit_y, morph_x - fit_x)
 
-# Reduced χ²
+# Fitting statistics returned from `fit_all_stars`
 chisq = phot_result.chisq[good]
+qfit = phot_result.qfit[good]
 
-fig = Figure(size = (900, 800))
+fig = Figure(size = (900, 1200))
 
 # Panel 1: magnitude error vs magnitude
 ax1 = Axis(fig[1, 1];
@@ -606,6 +607,14 @@ ax4 = Axis(fig[2,2];
     title = "Reduced χ²")
 scatter!(ax4, psf_mags, chisq; markersize=4, color = :black)
 ylims!(ax4, 0.0, 5.0)
+
+# Panel 5: qfit
+ax4 = Axis(fig[3,1];
+    xlabel = "PSF-fit ST magnitude",
+    ylabel = "qfit",
+    title = "qfit")
+scatter!(ax4, psf_mags, qfit; markersize=4, color = :black)
+# ylims!(ax4, 0.0, 5.0)
 
 fig
 ```
