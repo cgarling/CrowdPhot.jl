@@ -34,17 +34,9 @@ function _has_deriv(model::AbstractPSFModel)
 end
 
 function _prepare_fit_star_inputs(model::AbstractPSFModel{T}, image::AbstractMatrix, inds, fixed::NamedTuple, inv_var) where {T}
-    # Validate weights and model capabilities before allocating LM work buffers.
-    if !isnothing(inv_var)
-        if size(inv_var) != size(image)
-            throw(ArgumentError("`inv_var` must be the same size as `image`"))
-        end
-        # Validate only the active pixel region so that non-finite values
-        # elsewhere in the full-frame inv_var (e.g. coverage edges) do not
-        # reject the fit.
-        if !all(x -> isfinite(x) && x > 0, view(inv_var, CartesianIndices(inds)))
-            throw(ArgumentError("`inv_var` must be finite and > 0 on the fitting indices"))
-        end
+    # Validate model capabilities and weight-map shape before allocating LM buffers.
+    if !isnothing(inv_var) && size(inv_var) != size(image)
+        throw(ArgumentError("`inv_var` must be the same size as `image`"))
     end
     if !(_has_deriv(model))
         throw(
@@ -63,28 +55,38 @@ function _prepare_fit_star_inputs(model::AbstractPSFModel{T}, image::AbstractMat
     free_names, free_idx, x0 = free_params(model, fixed)
     n = length(x0)
     n > 0 || throw(ArgumentError("all model parameters are fixed; nothing to fit"))
-    dof = length(fit_inds) - n
-    if dof < 0
-        throw(
-            ArgumentError(
-                "degrees of freedom must be positive; " *
-                    "too many free parameters ($n) for the number of pixels ($(length(fit_inds)))"
-            )
-        )
-    end
 
-    # Restrict inverse-variance weights to the fit pixels once for compact LM accumulation.
     FT = float(T)
-    base_weights = if isnothing(inv_var)
-        nothing
+
+    # When inv_var is provided, zero or non-finite values act as a pixel mask.
+    # Weights for masked pixels are set to zero so they contribute nothing to
+    # the normal equations or the cost, preserving CartesianIndices iteration.
+    if isnothing(inv_var)
+        base_weights = nothing
+        dof = length(fit_inds) - n
     else
+        n_valid = 0
         weights = Vector{FT}(undef, length(fit_inds))
         base_k = 0
         @inbounds for idx in fit_inds
             base_k += 1
-            weights[base_k] = FT(inv_var[idx])
+            w = inv_var[idx]
+            wgt = if isfinite(w) && w > 0
+                n_valid += 1
+                FT(w)
+            else
+                zero(FT)
+            end
+            weights[base_k] = wgt
         end
-        weights
+        n_valid > n || throw(
+            ArgumentError(
+                "too few valid inv_var pixels ($n_valid) " *
+                "for $n free parameters"
+            )
+        )
+        base_weights = weights
+        dof = n_valid - n
     end
 
     return (
