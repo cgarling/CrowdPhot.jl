@@ -575,6 +575,7 @@ centroid_offset = @. hypot(morph_y - fit_y, morph_x - fit_x)
 # Fitting statistics returned from `fit_all_stars`
 chisq = phot_result.chisq[good]
 qfit = phot_result.qfit[good]
+qfit_z = phot_result.qfit_z[good]
 
 fig = Figure(size = (900, 1200))
 
@@ -609,12 +610,19 @@ scatter!(ax4, psf_mags, chisq; markersize=4, color = :black)
 ylims!(ax4, 0.0, 5.0)
 
 # Panel 5: qfit
-ax4 = Axis(fig[3,1];
+ax5 = Axis(fig[3,1];
     xlabel = "PSF-fit ST magnitude",
     ylabel = "qfit",
     title = "qfit")
-scatter!(ax4, psf_mags, qfit; markersize=4, color = :black)
-# ylims!(ax4, 0.0, 5.0)
+scatter!(ax5, psf_mags, qfit; markersize=4, color = :black)
+hlines!(ax5, 0.2; linestyle = :dash, color = :red)
+
+# Panel 5: qfit_z
+ax6 = Axis(fig[3,2];
+    xlabel = "PSF-fit ST magnitude",
+    ylabel = "qfit_z",
+    title = "qfit_z")
+scatter!(ax6, psf_mags, qfit_z; markersize=4, color = :black)
 
 fig
 ```
