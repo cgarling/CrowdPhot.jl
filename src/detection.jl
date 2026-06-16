@@ -218,7 +218,7 @@ matched_filter(image::AbstractMatrix, fwhm::Tuple{<:Number, <:Number}; kws...) =
 
 Return the coordinates of all local maxima in `img`.  A pixel is a local
 maximum if its value is strictly greater than all 8 of its immediate
-neighbours (3×3 window).  If `edges=false`, pixels on the image boundary
+neighbors (3×3 window).  If `edges=false`, pixels on the image boundary
 are excluded from consideration.  Each returned `CartesianIndex(row, col)`
 has `row` corresponding to the `y` (first array dimension) coordinate and
 `col` corresponding to the `x` (second array dimension) coordinate.

@@ -4,7 +4,7 @@
 # brightness and fitted one at a time against a residual image from which
 # all brighter (and, on later passes, all other) stars have been subtracted.
 # On passes 2+, each star is added back before re-fitting so it sees the
-# original data minus only its neighbours.
+# original data minus only its neighbors.
 
 # ==============================================================================
 # Result type
@@ -110,7 +110,7 @@ end
     _extract_source_catalog(mf::MatchedFilterResult, psf, T)
 
 Extract initial source parameters from a [`MatchedFilterResult`](@ref).
-Uses `Tuple.(peaks)` for pixel-centre `(y, x)`, `peak_fluxes` for initial
+Uses `Tuple.(peaks)` for pixel-center `(y, x)`, `peak_fluxes` for initial
 flux, and zero background.
 """
 function _extract_source_catalog(mf::MatchedFilterResult, psf, ::Type{T}) where {T}
@@ -154,7 +154,7 @@ Perform multi-pass PSF-fitting photometry on all sources in `image`.
 
 Stars are sorted by brightness and fitted one at a time against a
 progressive residual image.  Each fitted model is subtracted before the
-next star is processed, so fainter neighbours are measured after brighter
+next star is processed, so fainter neighbors are measured after brighter
 stars have been removed.  On subsequent passes each star is added back,
 re-fitted, and re-subtracted, progressively refining all measurements.
 
@@ -256,7 +256,7 @@ function fit_all_stars(
     # -------------------------------------------------------------------
     for pass in 1:n_passes
         # Sort by flux descending (brightest first) so brighter stars
-        # are subtracted before fainter neighbours are fitted.
+        # are subtracted before fainter neighbors are fitted.
         order = sortperm(view(params, row_flux, :); rev = true)
 
         for idx in order
@@ -267,7 +267,7 @@ function fit_all_stars(
             all_vals = NamedTuple{Tuple(prop_names)}(ntuple(k -> params[k, idx], Val(n_params)))
             m = ConstructionBase.setproperties(psf, all_vals)
 
-            # Pixel footprint of ±fit_rad around the star centre, clamped
+            # Pixel footprint of ±fit_rad around the star center, clamped
             # to image bounds.  Direct range computation works for any
             # model type and matches the DAOPHOT / DOLPHOT convention.
             FT_fit = FT(fit_rad)
@@ -278,7 +278,7 @@ function fit_all_stars(
 
             # On passes 2+, add this star's previous model back so it is
             # fitted against data containing only its own signal (plus
-            # noise); all neighbours are already subtracted.
+            # noise); all neighbors are already subtracted.
             if pass > 1
                 PSF.add_star!(residual, m, inds)
             end

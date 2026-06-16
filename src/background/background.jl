@@ -621,7 +621,7 @@ function _median_filter2d(arr::AbstractMatrix{T}, fh::Int, fw::Int) where {T <: 
 end
 
 ###############################################################################
-# Mesh NaN filling by iterative nearest-neighbour propagation
+# Mesh NaN filling by iterative nearest-neighbor propagation
 
 function _fill_nans!(mesh::AbstractMatrix{T}) where {T <: AbstractFloat}
     any(isnan, mesh) || return mesh
@@ -696,7 +696,7 @@ bicubic Catmull-Rom interpolator.
 does not need to be a multiple of the image dimensions; partial edge boxes
 are included in the mesh.
 
-A box is excluded from the mesh (and filled by interpolation from neighbours)
+A box is excluded from the mesh (and filled by interpolation from neighbors)
 when the fraction of valid (unmasked, finite, not sigma-clipped) pixels falls
 below `exclude_percentile / 100 * box_npixels`.
 
@@ -709,7 +709,7 @@ when the image contains non-finite values that are not covered by `mask` or
 - `rms_estimator`: background RMS estimator (default [`StdRMS`](@ref)).
 - `mask`: `AbstractMatrix{Bool}` where `true` marks pixels to exclude
   (contaminated pixels — stars, cosmic rays, bad pixels).  Mesh cells excluded
-  due to `mask` are filled by interpolation from neighbouring cells.
+  due to `mask` are filled by interpolation from neighboring cells.
 - `coverage_mask`: `AbstractMatrix{Bool}` where `true` marks pixels outside
   the data region (e.g., blank areas in a mosaic, corners of a rotated image).
   These pixels are excluded from estimation, and mesh cells with zero
@@ -840,7 +840,7 @@ function Background2D(
         )
     )
 
-    # Fill excluded (NaN) mesh cells by iterative nearest-neighbour propagation.
+    # Fill excluded (NaN) mesh cells by iterative nearest-neighbor propagation.
     _fill_nans!(mesh_bkg)
     _fill_nans!(mesh_rms)
 
