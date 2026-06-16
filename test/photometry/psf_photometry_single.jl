@@ -220,6 +220,7 @@ end
         @test result.flux_err isa Vector{Float64}
         @test result.converged isa BitVector
         @test result.valid isa BitVector
+        @test result.n_iter isa Vector{Int}
         @test result.residual isa Matrix{Float64}
         @test size(result.residual) == size(image)
     end

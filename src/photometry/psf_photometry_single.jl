@@ -27,6 +27,7 @@ length (the number of input sources).
 - `converged::BitVector`: whether the final LM fit converged.
 - `valid::BitVector`: whether the source survived between-pass validation.
 - `chisq`: final reduced χ² for each source.
+- `n_iter::Vector{Int}`: total LM iterations accumulated across all passes for each source.
 - `n_passes::Int`: number of passes actually performed.
 - `residual::Matrix{T}`: final residual image after all subtractions.
 """
@@ -42,6 +43,7 @@ struct MultiPassPhotResult{T}
     converged::BitVector
     valid::BitVector
     chisq::Vector{T}
+    n_iter::Vector{Int}
     n_passes::Int
     residual::Matrix{T}
 end
@@ -208,7 +210,7 @@ function fit_all_stars(
     n_params, n_stars = size(params)
     n_stars == 0 && return MultiPassPhotResult(
         FT[], FT[], FT[], FT[], FT[], FT[], FT[], FT[],
-        BitVector[], BitVector[], FT[], Int(0), Matrix{FT}(undef, 0, 0),
+        BitVector[], BitVector[], FT[], Int[], Int(0), Matrix{FT}(undef, 0, 0),
     )
 
     # Map PSF property names to matrix row indices.
@@ -219,7 +221,7 @@ function fit_all_stars(
     row_y = findfirst(==(:y), prop_names)
     row_x = findfirst(==(:x), prop_names)
     row_flux = findfirst(==(:flux), prop_names)
-    row_bkg  = findfirst(==(:bkg), prop_names)
+    row_bkg = findfirst(==(:bkg), prop_names)
 
     # -------------------------------------------------------------------
     # 2. Free-parameter metadata (computed once)
@@ -244,6 +246,7 @@ function fit_all_stars(
     valid = trues(n_stars)
     converged = falses(n_stars)
     chisq = zeros(FT, n_stars)
+    n_iter = zeros(Int, n_stars)
 
     # -------------------------------------------------------------------
     # 5. Multi-pass loop
@@ -262,8 +265,7 @@ function fit_all_stars(
             m = ConstructionBase.setproperties(psf, all_vals)
 
             # Pixel footprint of ±fit_rad around the star center, clamped
-            # to image bounds.  Direct range computation works for any
-            # model type and matches the DAOPHOT / DOLPHOT convention.
+            # to image bounds.
             FT_fit = FT(fit_rad)
             yr = floor(Int, m.y - FT_fit):ceil(Int, m.y + FT_fit)
             xr = floor(Int, m.x - FT_fit):ceil(Int, m.x + FT_fit)
@@ -294,12 +296,13 @@ function fit_all_stars(
                 end
 
                 # Extract errors from the covariance matrix.
-                if result.cov !== nothing
+                if ~isnothing(result.cov)
                     _extract_errors!(errors, result.cov, free_idx, is_fixed, idx)
                 end
 
                 converged[idx] = result.converged
-                chisq[idx]     = result.chisq
+                chisq[idx] = result.chisq
+                n_iter[idx] += result.iterations
 
                 # Subtract the updated best-fit model.
                 PSF.subtract_star!(residual, best, inds)
@@ -325,18 +328,18 @@ function fit_all_stars(
     # -------------------------------------------------------------------
     # 6. Assemble result
     # -------------------------------------------------------------------
-    y  = params[row_y, :]
-    x  = params[row_x, :]
+    y = params[row_y, :]
+    x = params[row_x, :]
     flux = params[row_flux, :]
-    bkg  = params[row_bkg, :]
+    bkg = params[row_bkg, :]
 
-    y_err  = errors[row_y, :]
-    x_err  = errors[row_x, :]
+    y_err = errors[row_y, :]
+    x_err = errors[row_x, :]
     flux_err = errors[row_flux, :]
-    bkg_err  = errors[row_bkg, :]
+    bkg_err = errors[row_bkg, :]
 
     return MultiPassPhotResult(
         y, x, y_err, x_err, flux, flux_err, bkg, bkg_err,
-        converged, valid, chisq, n_passes, residual,
+        converged, valid, chisq, n_iter, n_passes, residual,
     )
 end

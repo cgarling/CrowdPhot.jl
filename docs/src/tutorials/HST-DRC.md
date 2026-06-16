@@ -472,7 +472,7 @@ fig
 ## PSF Fitting Photometry
 
 We now run [`fit_all_stars`](@ref) on every source in a 250×250 region,
-using the empirical PSF we just constructed.  By photometering all sources
+using the empirical PSF we just constructed.  After measuring all sources
 in this region and subtracting their models, the residual image should be
 nearly empty -- only noise should remain where the sources used to be. We will
 fix the background to 0 since we have already subtracted a background model.
