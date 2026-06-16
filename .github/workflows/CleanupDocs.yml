@@ -1,4 +1,3 @@
-# This workflow was based on CliMA/ClimaTimeSteppers.jl (Apache License 2.0).
 name: Doc Preview Cleanup
 
 on:
@@ -12,7 +11,14 @@ on:
         default: "previews/PR8"
         type: string
 
-# Ensure that only one "Doc Preview Cleanup" workflow is force pushing at a time
+  workflow_dispatch:
+    inputs:
+      preview_dir:
+        description: "Preview directory to delete, e.g. previews/PR8"
+        required: true
+        default: "previews/PR8"
+        type: string
+
 concurrency:
   group: doc-preview-cleanup
   cancel-in-progress: false
@@ -22,20 +28,48 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+
     steps:
       - name: Checkout gh-pages branch
         uses: actions/checkout@v6
         with:
           ref: gh-pages
+
       - name: Delete preview and history + push changes
+        env:
+          MANUAL_PREVIEW_DIR: ${{ inputs.preview_dir }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+              preview_dir="${MANUAL_PREVIEW_DIR}"
+          else
+              preview_dir="previews/PR${PR_NUMBER}"
+          fi
+
+          echo "Checked out gh-pages commit: $(git rev-parse HEAD)"
+          echo "Looking for preview_dir=${preview_dir}"
+
+          echo "Preview directories currently present:"
+          find . -maxdepth 3 -type d | sort | sed 's#^\./##' | grep -E '(^|/)previews(/|$)|PR[0-9]+' || true
+
+          case "${preview_dir}" in
+            previews/PR[0-9]*)
+              ;;
+            *)
+              echo "Refusing to delete non-preview path: ${preview_dir}"
+              exit 1
+              ;;
+          esac
+
           if [ -d "${preview_dir}" ]; then
               git config user.name "Documenter.jl"
               git config user.email "documenter@juliadocs.github.io"
+
               git rm -rf "${preview_dir}"
-              git commit -m "delete preview"
-              git branch gh-pages-new $(echo "delete history" | git commit-tree HEAD^{tree})
+              git commit -m "delete preview ${preview_dir}"
+              git branch gh-pages-new "$(echo "delete history" | git commit-tree "HEAD^{tree}")"
               git push --force origin gh-pages-new:gh-pages
+          else
+              echo "No preview directory found at ${preview_dir}; nothing to delete."
+              exit 1
           fi
-        env:
-          preview_dir: previews/PR${{ github.event.number }}
