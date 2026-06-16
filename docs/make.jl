@@ -46,10 +46,10 @@ makedocs(;
             ],
             "Picking PSF Stars" => "psf/picking.md",
         ],
-        "Levenberg-Marquardt Fitter" => "lm_fitter.md",
         "Photometry" => [
             "PSF Fitting Photometry" => "photometry/psf_fitting.md",
         ],
+        "Levenberg-Marquardt Fitter" => "lm_fitter.md",
         "Simulation" => "simulation.md",
         "Utilities" => "utilities.md",
         "Index" => "doc_index.md",

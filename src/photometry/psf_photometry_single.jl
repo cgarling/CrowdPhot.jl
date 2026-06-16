@@ -31,42 +31,39 @@ length (the number of input sources).
 - `residual::Matrix{T}`: final residual image after all subtractions.
 
 # Goodness-of-fit diagnostics
- - `chisq::Vector{T}`: final reduced χ² for each source.
- - `qfit::Vector{T}`: sum of absolute residuals over the fitting aperture divided by flux.
- - `qfit_expected::Vector{T}`: expected `qfit` under the noise model (see below).
- - `qfit_z::Vector{T}`: noise-standardized excess absolute residual (see below).
-
-# Notes
-
-| Diagnostic | Single-pixel outliers | Persistent misfit | Null distribution |
-|---|---|---|---|
-| `chisq` (reduced χ²) | Yes (squared residuals) | Moderate | ``\\chi^2_{N-p}`` (approx.) |
-| `qfit` / `qfit_expected` | Moderate | Yes | None |
-| `qfit_z` | No | Yes | ``\\mathcal{N}(0,1)`` |
-
-- **`chisq`**: final reduced χ² for each source.  Uses squared residuals (L2 norm), so a
+- `chisq::Vector{T}`: final reduced χ² for each source.  Uses squared residuals (L2 norm), so a
   single bad pixel (cosmic ray, hot pixel) can dominate.  Best for catching
   single-pixel excursions.
-- **`qfit::Vector{T}`**: sum of absolute residuals over the fitting aperture
+- `qfit::Vector{T}`: sum of absolute residuals over the fitting aperture
   divided by flux.  Uses L1 norm, so it is robust to single-pixel outliers and
   sensitive to persistent misfit across many pixels (PSF mismatch, extended
-  sources).  `NaN` for invalid or failed sources.
-- **`qfit_expected::Vector{T}`**: expected `qfit` under the noise model
+  sources).  `NaN` for invalid or failed sources. Same statistic as in
+  ``\\texttt{hst1pass}``, see [Anderson2022hst1pass](@citet) page 10.
+- `qfit_expected::Vector{T}`: expected `qfit` under the noise model
   ``\\left(\\sqrt{2/\\pi} \\sum \\sigma_i \\,/\\, \\mathrm{F}\\right)``.
   The difference and/or ratio between `qfit` and `qfit_expected` can be used to
   identify stars whose fits are worse than the noise model predicts, though `qfit_z`
   is likely to be more informative. `NaN` when `inv_var` was not provided.
-- **`qfit_z::Vector{T}`**: noise-standardized excess absolute residual:
+- `qfit_z::Vector{T}`: noise-standardized excess absolute residual:
   ```math
   q_{\\rm fit,z} =
-  \\frac{\\sum |r_i| - \\sqrt{2/\\pi}\\sum \\sigma_i}
-  {\\sqrt{(1 - 2/\\pi)\\sum \\sigma_i^2}},
+  \\frac{\\sum |r_i| - \\sqrt{\\frac{2}{\\pi}(1 - p/N)} \\sum \\sigma_i}
+  {\\sqrt{(1 - \\frac{2}{\\pi})(1 - p/N) \\sum \\sigma_i^2}},
   \\qquad
   r_i = P_i - s - F\\psi_i .
   ```
-  Under the null hypothesis (correct PSF model, correct noise model), `qfit_z`
-  is approximately standard normal.  Large positive values indicate structured
-  residuals inconsistent with pure noise.  `NaN` when `inv_var` was not provided.
+  where ``p`` is the number of free parameters and ``N = |\\mathrm{AP}|`` is
+  the number of pixels in the fitting aperture.  The ``\\sqrt{1 - p/N}``
+  factors correct for the reduction in residual variance due to fitting:
+  with ``p`` parameters estimated from ``N`` data points, each residual's
+  variance is reduced by approximately ``(1 - p/N)`` (average leverage
+  ``h_{ii} \\approx p/N``).  The expectation of ``|r_i|`` for a half-normal
+  scales with the standard deviation, so both the numerator expectation and
+  the denominator standard deviation are multiplied by ``\\sqrt{1 - p/N}``.
+  Under the null hypothesis, ``q_{\\rm fit,z} \\sim \\mathcal{N}(0,1)`` to
+  within ``\\mathcal{O}(p^2/N^2)``.  Large positive values indicate
+  structured residuals inconsistent with pure noise.  `NaN` when `inv_var`
+  was not provided or when the aperture has fewer pixels than free parameters.
 """
 struct MultiPassPhotResult{T}
     y::Vector{T}
@@ -368,9 +365,11 @@ function fit_all_stars(
                             end
                         end
                         qfit_expected[idx] = FT(sqrt(2 / T(π))) * sigma_sum * inv_flux
-                        if sigma2_sum > 0
-                            num = qfit_val - FT(sqrt(2 / T(π))) * sigma_sum
-                            den = FT(sqrt((1 - 2 / T(π)) * sigma2_sum))
+                        if sigma2_sum > 0 && length(inds) > length(free_idx)
+                            n_pix = length(inds)
+                            dof_factor = FT(sqrt(1 - length(free_idx) / n_pix))
+                            num = qfit_val - FT(sqrt(2 / T(π))) * dof_factor * sigma_sum
+                            den = FT(sqrt((1 - 2 / T(π)) * sigma2_sum)) * dof_factor
                             qfit_z[idx] = num / den
                         end
                     end
