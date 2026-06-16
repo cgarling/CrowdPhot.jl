@@ -423,7 +423,7 @@ psf_x = [results[i].centroid.x for i in psf_idx]
 # Build the empirical PSF
 psf, fit_result = CrowdPhot.PSF.fit_psf(
     CrowdPhot.PSF.ImagePSF, img_sub_f64, psf_y, psf_x;
-    psf_rad = 5,
+    psf_rad = 7,
     fit_rad = 4,
     oversampling = 4,
     smooth = true,
@@ -455,9 +455,9 @@ ax = Axis(fig[1, 1];
     xlabel = "Δx (pix)", ylabel = "Δy (pix)",
     title = "Empirical PSF — $(n_used) stars, $(os_y)× oversampled")
 
-zmin, zmax = zscale(psf.data[psf.data .> 0])
+zmin, zmax = zscale(psf.data[psf.data .> 0]; contrast=0.05)
 psf_hm = heatmap!(ax, x_pix, y_pix, psf.data;
-    colorrange = (zmin, zmax), colormap = :grays, interpolate = false, colorscale=LuptonAsinhScale(0.01, 5.0))
+    colorrange = (zmin, zmax), colormap = :grays, interpolate = false, colorscale=LuptonAsinhScale(0.0025, 5.0))
 Colorbar(fig[1, 2], psf_hm; label = "relative flux", height = Relative(0.8), valign = :center)
 
 fig
@@ -465,61 +465,129 @@ fig
 
 ## PSF Fitting Photometry
 
-We now run [`fit_all_stars`](@ref) on the brightest 500 quality-filtered
-stars, using the empirical PSF we just constructed.  A single pass with the
-background fixed at zero is sufficient for this background-subtracted image.
+We now run [`fit_all_stars`](@ref) on every source in a 250×250 region,
+using the empirical PSF we just constructed.  By photometering all sources
+in this region and subtracting their models, the residual image should be
+nearly empty -- only noise should remain where the sources used to be. We will
+fix the background to 0 since we have already subtracted a background model.
+We will only do one pass of photometry, since this field is not very crowded
+($\sim2$ stars per square arcsecond).
 
 ```@example hst-drc
-# Select the brightest 500 quality-filtered stars
-n_phot = 500
-phot_idx = CrowdPhot.PSF.pick_psf_stars(results, n_phot)
-phot_sources = results[phot_idx]
+# Select a 250×250 sub-region (lower-right corner of the earlier 500×500 region)
+y1, y2 = 1750, min(ny, 1999)
+x1, x2 = 1750, min(nx, 1999)
+phot_y_range = y1:y2
+phot_x_range = x1:x2
+
+# Select all sources whose pixel positions fall within this region
+region_idx = findall(eachindex(results)) do i
+    y, x = Tuple(results[i].pixel)
+    y in phot_y_range && x in phot_x_range
+end
+region_sources = results[region_idx]
+println("$(length(region_sources)) sources in the display region")
 
 # Run single-pass PSF-fitting photometry
-phot_result = fit_all_stars(img_sub_f64, psf, phot_sources;
-    n_passes = 1, fixed = (; bkg = 0.0))
+phot_result = fit_all_stars(img_sub_f64, psf, region_sources;
+    n_passes = 2, fixed = (; bkg = 0.0))
 
 n_good = sum(phot_result.valid)
-println("$n_good / $n_phot stars fitted successfully")
+println("$n_good / $(length(region_sources)) stars fitted successfully")
 ```
 
 The [`MultiPassPhotResult`](@ref) stores the final residual image after
 all source models have been subtracted.  Below we compare the original
-image to the residual for the same 500×500 region shown earlier, with
-detection circles overlaid on both panels.  Subtracted sources appear as
-dark holes where the PSF model has been removed.
+image to the residual for this 250×250 region.  Where sources have been
+successfully subtracted, the residual shows only noise.
 
 ```@example hst-drc
-# Same region as the detection plot
-y_range = 1500:min(ny, 1500 + region_width - 1)
-x_range = 1500:min(nx, 1500 + region_width - 1)
-
-orig_region = img_sub[y_range, x_range]
-resid_region = phot_result.residual[y_range, x_range]
+orig_region = img_sub[phot_y_range, phot_x_range]
+resid_region = phot_result.residual[phot_y_range, phot_x_range]
 region_colorrange = zscale(orig_region[isfinite.(orig_region)])
 
-fig = Figure(size = (1200, 500))
+# Recompute detection circles for this sub-region
+phot_circles = map(filter(mf.peaks) do peak
+    y, x = Tuple(peak)
+    y in phot_y_range && x in phot_x_range
+end) do peak
+    y, x = Tuple(peak)
+    Circle(Point2f(x, y), 2)
+end
+
+fig = Figure(size = (500, 900))
 ax1 = Axis(fig[1, 1];
     aspect = DataAspect(), yreversed = true,
     title = "Original")
-ax2 = Axis(fig[1, 2];
+ax2 = Axis(fig[2, 1];
     aspect = DataAspect(), yreversed = true,
-    title = "Residual (500 stars subtracted)")
+    title = "Residual ($n_good stars subtracted)")
 
-hm1 = heatmap!(ax1, x_range, y_range, orig_region';
+hm1 = heatmap!(ax1, phot_x_range, phot_y_range, orig_region';
     colorrange = region_colorrange, colorscale = LuptonAsinhScale(),
     colormap = :grays, interpolate = false)
-hm2 = heatmap!(ax2, x_range, y_range, resid_region';
+hm2 = heatmap!(ax2, phot_x_range, phot_y_range, resid_region';
     colorrange = region_colorrange, colorscale = LuptonAsinhScale(),
     colormap = :grays, interpolate = false)
 
 # Overlay detection circles on both panels
-poly!(ax1, source_circles; color = (:limegreen, 0), strokecolor = :limegreen,
-    strokewidth = 1.2)
-poly!(ax2, source_circles; color = (:limegreen, 0), strokecolor = :limegreen,
-    strokewidth = 1.2)
+# poly!(ax1, phot_circles; color = (:limegreen, 0), strokecolor = :limegreen,
+#     strokewidth = 1.2)
+# poly!(ax2, phot_circles; color = (:limegreen, 0), strokecolor = :limegreen,
+#     strokewidth = 1.2)
 
-Colorbar(fig[1, 3], hm2; height = Relative(0.75), valign = :center)
+Colorbar(fig[1, 2], hm1; height = Relative(0.8), valign = :center)
+Colorbar(fig[2, 2], hm2; height = Relative(0.8), valign = :center)
+rowgap!(fig.layout, 0)
+
+fig
+```
+
+We now examine the photometric quality of the PSF-fit results.  Instrumental
+magnitudes are computed from the fitted fluxes and placed on the STMAG system
+using the PHOTFLAM and PHOTZPT header keywords. Note that again we have *not*
+done aperture corrections, so the magnitudes here are somewhat fainter than
+they would be after applying proper aperture corrections.
+
+```@example hst-drc
+# Compute ST magnitudes from PSF-fit fluxes
+good = phot_result.valid
+psf_mags = -2.5 .* log10.(phot_result.flux[good]) .+ stmag_zeropoint
+psf_mag_errs = (2.5 / log(10)) .* phot_result.flux_err[good] ./ phot_result.flux[good]
+
+# Centroids from measure_star_shapes for the same sources
+morph_y = [results[region_idx[i]].centroid.y for i in findall(good)]
+morph_x = [results[region_idx[i]].centroid.x for i in findall(good)]
+fit_y   = phot_result.y[good]
+fit_x   = phot_result.x[good]
+fit_y_err = phot_result.y_err[good]
+fit_x_err = phot_result.x_err[good]
+
+# Centroid offset between the two measurement techniques
+centroid_offset = @. hypot(morph_y - fit_y, morph_x - fit_x)
+
+fig = Figure(size = (900, 800))
+
+# Panel 1: magnitude error vs magnitude
+ax1 = Axis(fig[1, 1];
+    xlabel = "PSF-fit ST magnitude", ylabel = "σ_mag",
+    title = "Photometric errors")
+scatter!(ax1, psf_mags, psf_mag_errs; markersize = 4, color = :black)
+
+# Panel 2: centroid errors vs magnitude
+ax2 = Axis(fig[1, 2];
+    xlabel = "PSF-fit ST magnitude", ylabel = "σ (pix)",
+    title = "Centroid errors")
+scatter!(ax2, psf_mags, fit_y_err; markersize = 4, color = :royalblue, label = "y")
+scatter!(ax2, psf_mags, fit_x_err; markersize = 4, color = :crimson, label = "x")
+axislegend(ax2; position = :rt)
+
+# Panel 3: centroid offset (morphology vs PSF fit) vs magnitude
+ax3 = Axis(fig[2, 1:2];
+    xlabel = "PSF-fit ST magnitude",
+    ylabel = "Centroid offset (pix)",
+    title = "Centroid offset: quadratic (`measure_star_shapes`) vs PSF (`fit_all_stars`)")
+scatter!(ax3, psf_mags, centroid_offset; markersize = 4, color = :black)
 
 fig
 ```
