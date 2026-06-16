@@ -4,6 +4,13 @@ name: Doc Preview Cleanup
 on:
   pull_request:
     types: [closed]
+  workflow_dispatch:
+    inputs:
+      preview_dir:
+        description: "Preview directory to delete on gh-pages, e.g. previews/PR8"
+        required: true
+        default: "previews/PR8"
+        type: string
 
 # Ensure that only one "Doc Preview Cleanup" workflow is force pushing at a time
 concurrency:
