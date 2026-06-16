@@ -64,6 +64,12 @@ length (the number of input sources).
   within ``\\mathcal{O}(p^2/N^2)``.  Large positive values indicate
   structured residuals inconsistent with pure noise.  `NaN` when `inv_var`
   was not provided or when the aperture has fewer pixels than free parameters.
+- `crowding::Vector{T}`: DOLPHOT-like blend-contamination diagnostic:
+  ``2.5 \\log_{10}(F_{\\rm dirty} / F_{\\rm clean})`` where ``F_{\\rm clean}``
+  is measured on the neighbor-subtracted image and ``F_{\\rm dirty}`` is
+  measured on the original image with all neighbors present.  Values near zero
+   indicate an isolated source; positive values indicate contamination by
+  neighbor light.  `NaN` for invalid or failed sources.
 """
 struct MultiPassPhotResult{T}
     y::Vector{T}
@@ -80,6 +86,7 @@ struct MultiPassPhotResult{T}
     qfit::Vector{T}
     qfit_expected::Vector{T}
     qfit_z::Vector{T}
+    crowding::Vector{T}
     n_iter::Vector{Int}
     n_passes::Int
     residual::Matrix{T}
@@ -248,7 +255,7 @@ function fit_all_stars(
     n_params, n_stars = size(params)
     n_stars == 0 && return MultiPassPhotResult(
         FT[], FT[], FT[], FT[], FT[], FT[], FT[], FT[],
-        BitVector[], BitVector[], FT[], FT[], FT[], FT[], Int[], Int(0), Matrix{FT}(undef, 0, 0),
+        BitVector[], BitVector[], FT[], FT[], FT[], FT[], FT[], Int[], Int(0), Matrix{FT}(undef, 0, 0),
     )
 
     # Map PSF property names to matrix row indices.
@@ -287,6 +294,7 @@ function fit_all_stars(
     qfit = fill(convert(FT, NaN), n_stars)
     qfit_expected = fill(convert(FT, NaN), n_stars)
     qfit_z = fill(convert(FT, NaN), n_stars)
+    crowding = fill(convert(FT, NaN), n_stars)
     n_iter = zeros(Int, n_stars)
 
     # -------------------------------------------------------------------
@@ -345,14 +353,33 @@ function fit_all_stars(
                 chisq[idx] = result.chisq
                 n_iter[idx] += result.iterations
 
-                # Compute qfit on the final pass, before subtraction.
+                # Compute qfit and crowding in one pixel pass on the final
+                # pass, before subtraction.  The unit-flux PSF kernel is
+                # extracted from the already-evaluated model value.
                 if pass == n_passes && best.flux > 0
                     inv_flux = inv(best.flux)
                     qfit_val = zero(FT)
+                    num_clean = zero(FT)
+                    num_dirty = zero(FT)
+                    den_crowd = zero(FT)
                     for pix in inds
-                        qfit_val += abs(residual[pix] - evaluate(best, pix))
+                        model_val = evaluate(best, pix)
+                        qfit_val += abs(residual[pix] - model_val)
+                        # Unit-flux PSF kernel: Pp = (model - bkg) / flux.
+                        Pp = (model_val - best.bkg) * inv_flux
+                        wp = inv_var !== nothing ? inv_var[pix] : one(FT)
+                        if isfinite(wp) && wp > 0
+                            wP = wp * Pp
+                            num_clean += wP * (residual[pix] - best.bkg)
+                            num_dirty += wP * (image[pix] - best.bkg)
+                            den_crowd += wP * Pp
+                        end
                     end
                     qfit[idx] = qfit_val * inv_flux
+                    if den_crowd > 0 && num_clean > 0 && num_dirty > 0
+                        crowding[idx] = FT(2.5) * log10(num_dirty / num_clean)
+                    end
+                    # qfit_expected and qfit_z (no evaluate, separate loop).
                     if !isnothing(inv_var)
                         sigma_sum = zero(FT)
                         sigma2_sum = zero(FT)
@@ -411,6 +438,6 @@ function fit_all_stars(
 
     return MultiPassPhotResult(
         y, x, y_err, x_err, flux, flux_err, bkg, bkg_err,
-        converged, valid, chisq, qfit, qfit_expected, qfit_z, n_iter, n_passes, residual,
+        converged, valid, chisq, qfit, qfit_expected, qfit_z, crowding, n_iter, n_passes, residual,
     )
 end

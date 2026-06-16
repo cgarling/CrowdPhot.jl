@@ -410,7 +410,6 @@ We now build an empirical PSF from the selected stars using
 iterative residual-stacking method ([Anderson2000](@citet)).
 Stars outside the cutout boundary are dropped (`drop_edge=true`), and
 the ePSF is supersampled at 4× the detector pixel scale.
-Thick contours show ePSF levels of 0.001, 0.01, and 0.1.
 
 ```@example hst-drc
 # Select bright, morphologically-clean stars
@@ -438,7 +437,7 @@ println("$(n_used) / $(n_psf) stars used in $(fit_result.iterations) iterations"
 The returned `ImagePSF` stores the PSF on an oversampled grid.  We convert
 the grid axes to detector-pixel offsets from the PSF center for display.
 Note that we use a non-linear colorscale to accentuate the PSF features
-outside the core.
+outside the core. Thick contours show ePSF levels of 0.001, 0.01, and 0.1.
 
 ```@example hst-drc
 os_y, os_x = psf.oversampling
@@ -553,7 +552,8 @@ We now examine the photometric quality of the PSF-fit results.  Instrumental
 magnitudes are computed from the fitted fluxes and placed on the STMAG system
 using the PHOTFLAM and PHOTZPT header keywords. Note that again we have *not*
 done aperture corrections, so the magnitudes here are somewhat fainter than
-they would be after applying proper aperture corrections.
+they would be after applying proper aperture corrections. For descriptions
+of the goodness-of-fit statistics, see [`CrowdPhot.MultiPassPhotResult`](@ref).
 
 ```@example hst-drc
 # Compute ST magnitudes from PSF-fit fluxes
@@ -576,8 +576,9 @@ centroid_offset = @. hypot(morph_y - fit_y, morph_x - fit_x)
 chisq = phot_result.chisq[good]
 qfit = phot_result.qfit[good]
 qfit_z = phot_result.qfit_z[good]
+crowding = phot_result.crowding[good]
 
-fig = Figure(size = (900, 1200))
+fig = Figure(size = (900, 1500))
 
 # Panel 1: magnitude error vs magnitude
 ax1 = Axis(fig[1, 1];
@@ -617,12 +618,19 @@ ax5 = Axis(fig[3,1];
 scatter!(ax5, psf_mags, qfit; markersize=4, color = :black)
 hlines!(ax5, 0.2; linestyle = :dash, color = :red)
 
-# Panel 5: qfit_z
+# Panel 6: qfit_z
 ax6 = Axis(fig[3,2];
     xlabel = "PSF-fit ST magnitude",
     ylabel = "qfit_z",
     title = "qfit_z")
 scatter!(ax6, psf_mags, qfit_z; markersize=4, color = :black)
+
+# Panel 7: Crowding
+ax7 = Axis(fig[4,1];
+    xlabel = "PSF-fit ST magnitude",
+    ylabel = "crowding",
+    title = "DOLPHOT crowding")
+scatter!(ax7, psf_mags, crowding; markersize=4, color = :black)
 
 fig
 ```
