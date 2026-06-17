@@ -390,3 +390,113 @@ function _monotonic_prefix(x::AbstractVector, y::AbstractVector)
     end
     return x[1:k], y[1:k]
 end
+
+# ==============================================================================
+# Reference encircled-energy curves
+# ==============================================================================
+
+"""
+    reference_cog(instrument::Symbol, filter::Symbol) -> CurveOfGrowth
+
+Load a reference encircled-energy curve for HST/ACS.
+
+Data are from [Bohlin2016](@citet) for WFC and HRC, and [Avila (2016)](https://www.stsci.edu/files/live/sites/www/files/home/hst/instrumentation/acs/documentation/instrument-science-reports-isrs/_documents/isr1605.pdf) for SBC,
+sourced from the [STScI aperture-correction
+page](https://www.stsci.edu/hst/instrumentation/acs/data-analysis/aperture-corrections).
+
+# Available instruments and filters
+
+| `instrument` | `filter` |
+|:------------:|:---------|
+| `:WFC` | `:F435W`, `:F475W`, `:F502N`, `:F555W`, `:F550M`, `:F606W`, `:F625W`, `:F658N`, `:F660N`, `:F775W`, `:F814W`, `:F892N`, `:F850LP` |
+| `:HRC` | `:F220W`, `:F250W`, `:F330W`, `:F344N`, `:F435W`, `:F475W`, `:F502N`, `:F555W`, `:F550M`, `:F606W`, `:F625W`, `:F658N`, `:F660N`, `:F775W`, `:F814W`, `:F892N`, `:F850LP` |
+| `:SBC` | `:F125LP`, `:F140LP`, `:F150LP` |
+
+# Returns
+
+A [`CurveOfGrowth`](@ref) whose `radii` are in detector pixels and whose
+`flux` values are encircled-energy fractions (dimensionless, 0 to 1).  The
+infinite-aperture endpoint (5.5″ for WFC/HRC, 4″ for SBC) is appended with
+``\\mathrm{EE} = 1`` so that [`normalize`](@ref) and
+[`encircled_flux`](@ref) work correctly across the full range.
+
+`flux_err` is empty; `y` and `x` are zero.
+
+# Examples
+
+```julia
+ref = reference_cog(:WFC, :F814W)
+ee_at_3px = encircled_flux(ref, 3.0)
+r80 = radius_at_flux(ref, 0.80)
+```
+"""
+function reference_cog(instrument::Symbol, filter::Symbol)
+    # Map instrument to file name, pixel scale (arcsec/pix), and
+    # infinite-aperture radius in arcseconds.
+    files = Dict(
+        :WFC => ("bohlin2016_wfc_ee-1.txt", 0.05, 5.5),
+        :HRC => ("bohlin2016_hrc_ee-1.txt", 0.025, 5.5),
+        :SBC => ("avila2016_sbc_ee-1.txt", 0.03, 4.0),  # TODO: verify SBC pixel scale
+    )
+    entry = get(files, instrument) do
+        throw(ArgumentError(
+            "unknown instrument: $instrument. " *
+            "Valid: $(join(keys(files), ", "))"))
+    end
+    fname, pix_scale, inf_radius_arcsec = entry
+    data_dir = joinpath(dirname(@__DIR__), "data")
+    radii, filters, ee_matrix = _parse_ee_file(joinpath(data_dir, fname))
+
+    row = findfirst(==(string(filter)), filters)
+    row === nothing && throw(ArgumentError(
+        "filter $filter not found in $instrument table. " *
+        "Available: $(join(filters, ", "))"))
+
+    r = Float64.(radii)
+    ee = Float64.(ee_matrix[row, :])
+
+    # SBC table is in arcseconds; convert to pixels.
+    if instrument == :SBC
+        r ./= pix_scale
+    end
+
+    r_inf = inf_radius_arcsec / pix_scale
+
+    # Trim radii beyond the infinite-aperture calibration radius.
+    # These points have EE > 1.0 relative to the calibration
+    # normalization — physically valid but outside the calibrated
+    # magnitude system where EE(r_inf) ≡ 1.
+    keep = r .<= r_inf
+    r = r[keep]
+    ee = ee[keep]
+
+    # Append the infinite-aperture endpoint if not already present.
+    if r[end] < r_inf
+        r = [r; r_inf]
+        ee = [ee; 1.0]
+    end
+
+    return CurveOfGrowth{Float64}(r, ee, Float64[], π .* r.^2, 0.0, 0.0)
+end
+
+function _parse_ee_file(path)
+    lines = filter(readlines(path)) do l
+        s = strip(l)
+        return !isempty(s) && !startswith(s, "#")
+    end
+    isempty(lines) && error("empty reference file: $path")
+    # Radii row starts with the -999.0 sentinel.
+    radii = parse.(Float64, split(lines[1])[2:end])
+    filters = String[]
+    ee_rows = Float64[]
+    for line in lines[2:end]
+        parts = split(line)
+        isempty(parts) && continue
+        push!(filters, parts[1])
+        append!(ee_rows, parse.(Float64, parts[2:end]))
+    end
+    n_filt = length(filters)
+    n_rad = length(radii)
+    ee_matrix = reshape(ee_rows, n_rad, n_filt)'
+    return radii, filters, ee_matrix
+end

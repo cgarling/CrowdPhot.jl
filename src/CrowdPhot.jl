@@ -14,7 +14,7 @@ export simulate_sources, simulate_image, make_gaussians_image, centroid_poly, ch
 export matched_filter, MatchedFilterResult
 export measure_star_shape, measure_star_shapes
 export MultiPassPhotResult, fit_all_stars
-export CurveOfGrowth, curve_of_growth, encircled_flux, radius_at_flux, normalize
+export CurveOfGrowth, curve_of_growth, encircled_flux, radius_at_flux, normalize, reference_cog
 
 include("correlation.jl")
 include("utilities.jl")
