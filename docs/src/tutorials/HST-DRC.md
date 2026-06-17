@@ -487,10 +487,10 @@ cog_norm = normalize(cog; method = :sum)
 ref = reference_cog(:WFC, :F814W)
 
 # Key encircled-energy radii from our measured PSF.
-rhalf = radius_at_flux(cog_norm, 0.5)
-r80 = radius_at_flux(cog_norm, 0.80)
-rhalf_ref = radius_at_flux(ref, 0.5)
-r80_ref = radius_at_flux(ref, 0.80)
+rhalf = radius_at_energy(cog_norm, 0.5)
+r80 = radius_at_energy(cog_norm, 0.80)
+rhalf_ref = radius_at_energy(ref, 0.5)
+r80_ref = radius_at_energy(ref, 0.80)
 println("Half-light radius: measured $(round(rhalf; digits=2)) pix, reference $(round(rhalf_ref; digits=2)) pix")
 println("80% EE radius: measured $(round(r80; digits=2)) pix, reference $(round(r80_ref; digits=2)) pix")
 ```
@@ -503,7 +503,7 @@ so their shapes can be more easily compared visually.
 
 ```@example hst-drc
 # Reference EE at last radius value
-max_rad_EE = encircled_flux(reference_cog(:WFC, :F814W), last(radii))
+max_rad_EE = encircled_energy(reference_cog(:WFC, :F814W), last(radii))
 
 fig = Figure(size = (600, 450))
 ax = Axis(fig[1, 1];
@@ -524,10 +524,12 @@ fig
 After renormalizing to match the reference EE curve in the last radial bin,
 our EE curve for our ePSF fit matches the reference well. We can now calculate
 the aperture correction to put our measured PSF magnitudes onto the correct
-infinite-aperture convention for which the HST zeropoints are defined:
+infinite-aperture convention for which the HST zeropoints are defined. We evaluate
+the reference EE curve at `psf_rad` here because this is radius to which the flux
+of our ePSF model has been normalized.
 
 ```@example hst-drc
-aper_corr = 2.5 * log10(encircled_flux(reference_cog(:WFC, :F814W), psf_rad))
+aper_corr = 2.5 * log10(encircled_energy(reference_cog(:WFC, :F814W), psf_rad))
 ```
 
 ## PSF Fitting Photometry

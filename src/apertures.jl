@@ -3,8 +3,7 @@
 # (row) first, x (column) second.
 #
 # Exact pixel-circle overlap math is adapted from astropy/photutils under the
-# BSD 3-clause license.  See Photometry.jl/src/aperture/overlap.jl for the
-# original derivation.
+# BSD 3-clause license and Photometry.jl under the MIT license.
 
 # ==============================================================================
 # Overlap classification — cheap fast-path discriminant
@@ -90,10 +89,6 @@ Classify pixel `(i, j)` (row, col in image-index convention) relative to `ap`.
 
 Returns `inside` when the pixel is wholly inside the circle, `outside` when it
 is wholly outside, and `partial` when it straddles the boundary.
-
-This uses squared distances to avoid a per-pixel `sqrt`: the worst-case and
-best-case corner distances ``(r \\pm d_r)^2`` are computed once from `r` and
-the fixed pixel half-diagonal `_HALF_PIXEL_DIAG`.
 """
 @inline function _overlap_flag(ap::CircularAperture{T}, i::Integer, j::Integer) where {T}
     FT = float(T)

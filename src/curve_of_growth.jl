@@ -137,7 +137,7 @@ with closed-form integrals.
 
 - `method = ExactOverlap()`: the aperture-weight method.
 
-See also [`encircled_flux`](@ref) for querying a single radius without
+See also [`encircled_energy`](@ref) for querying a single radius without
 materializing the full curve.
 """
 function curve_of_growth(
@@ -211,18 +211,18 @@ function curve_of_growth(
 end
 
 # ==============================================================================
-# encircled_flux — single-radius query
+# encircled_energy — single-radius query
 # ==============================================================================
 
 """
-    encircled_flux(cog::CurveOfGrowth, r::Real) -> T
+    encircled_energy(cog::CurveOfGrowth, r::Real) -> T
 
 Return the encircled flux at radius `r` by linear interpolation of the
 `cog` data.  Returns `NaN` for radii outside the range of the sampled radii.
 
-See also [`curve_of_growth`](@ref), [`radius_at_flux`](@ref).
+See also [`curve_of_growth`](@ref), [`radius_at_energy`](@ref).
 """
-function encircled_flux(cog::CurveOfGrowth{T}, r::Real) where {T}
+function encircled_energy(cog::CurveOfGrowth{T}, r::Real) where {T}
     FT = float(T)
     rr = FT(r)
     # Trim to the monotonically-increasing prefix of the profile.
@@ -239,7 +239,7 @@ function encircled_flux(cog::CurveOfGrowth{T}, r::Real) where {T}
 end
 
 """
-    encircled_flux(model::AbstractPSFModel, r::Real; method=ExactOverlap()) -> T
+    encircled_energy(model::AbstractPSFModel, r::Real; method=ExactOverlap()) -> T
 
 Compute the encircled flux within radius `r` for a PSF model directly,
 without materializing the full curve of growth.
@@ -247,7 +247,7 @@ without materializing the full curve of growth.
 Models with analytic radial profiles override this with closed-form
 formulas.  The generic method integrates over aperture pixels.
 """
-function encircled_flux(
+function encircled_energy(
         model::AbstractPSFModel{T},
         r::Real;
         method = ExactOverlap(),
@@ -265,8 +265,8 @@ function encircled_flux(
     return total
 end
 
-# Analytic specializations for encircled_flux
-function encircled_flux(
+# Analytic specializations for encircled_energy
+function encircled_energy(
         model::CircularGaussianPSF{T},
         r::Real;
         kws...
@@ -278,7 +278,7 @@ function encircled_flux(
     return FT(integral(model)) * (1 - exp(γ * rr^2 / fwhm²))
 end
 
-function encircled_flux(
+function encircled_energy(
         model::CircularMoffatPSF{T},
         r::Real;
         kws...
@@ -291,19 +291,19 @@ function encircled_flux(
 end
 
 # ==============================================================================
-# radius_at_flux — inverse query
+# radius_at_energy — inverse query
 # ==============================================================================
 
 """
-    radius_at_flux(cog::CurveOfGrowth, target_flux::Real) -> T
+    radius_at_energy(cog::CurveOfGrowth, target_flux::Real) -> T
 
 Return the radius enclosing `target_flux` by linear interpolation of the
 monotonically-increasing prefix of the `cog` data.  Returns `NaN` if
 `target_flux` lies outside the range of the profile.
 
-See also [`encircled_flux`](@ref).
+See also [`encircled_energy`](@ref).
 """
-function radius_at_flux(cog::CurveOfGrowth{T}, target_flux::Real) where {T}
+function radius_at_energy(cog::CurveOfGrowth{T}, target_flux::Real) where {T}
     FT = float(T)
     ff = FT(target_flux)
     radii, flux = _monotonic_prefix(cog.radii, cog.flux)
@@ -418,7 +418,7 @@ A [`CurveOfGrowth`](@ref) whose `radii` are in detector pixels and whose
 `flux` values are encircled-energy fractions (dimensionless, 0 to 1).  The
 infinite-aperture endpoint (5.5″ for WFC/HRC, 4″ for SBC) is appended with
 ``\\mathrm{EE} = 1`` so that [`normalize`](@ref) and
-[`encircled_flux`](@ref) work correctly across the full range.
+[`encircled_energy`](@ref) work correctly across the full range.
 
 `flux_err` is empty; `y` and `x` are zero.
 
@@ -426,8 +426,8 @@ infinite-aperture endpoint (5.5″ for WFC/HRC, 4″ for SBC) is appended with
 
 ```julia
 ref = reference_cog(:WFC, :F814W)
-ee_at_3px = encircled_flux(ref, 3.0)
-r80 = radius_at_flux(ref, 0.80)
+ee_at_3px = encircled_energy(ref, 3.0)
+r80 = radius_at_energy(ref, 0.80)
 ```
 """
 function reference_cog(instrument::Symbol, filter::Symbol)
