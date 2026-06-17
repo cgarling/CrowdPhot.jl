@@ -61,7 +61,7 @@ function _flatten_results!(flat, group, prefix)
     end
 end
 
-const SUITE_NAMES = ["parametric", "fitting", "empirical", "background", "centroids", "correlation", "peakfinding", "morphology"]
+const SUITE_NAMES = ["parametric", "fitting", "empirical", "background", "centroids", "correlation", "peakfinding", "morphology", "apertures"]
 const SUITE_TITLES = Dict(
     "parametric" => "Parametric Suite",
     "fitting" => "Fitting Suite",
@@ -71,6 +71,7 @@ const SUITE_TITLES = Dict(
     "correlation" => "Correlation Suite",
     "peakfinding" => "Peak Finding Suite",
     "morphology" => "Morphology Suite",
+    "apertures" => "Aperture Suite",
 )
 
 function selected_suite_names(args)
@@ -298,6 +299,119 @@ for n in (5, 11, 21)
         SUITE["morphology"]["measure_star_shape ($sz×$sz)"] =
             @benchmarkable measure_star_shape($img)
     end
+end
+
+# ---------------------------------------------------------------------------
+# Aperture benchmarks — CrowdPhot.jl vs Photometry.jl
+# ---------------------------------------------------------------------------
+SUITE["apertures"] = BenchmarkGroup()
+
+using CrowdPhot: CircularAperture, bounding_axes, _overlap_flag, aperture_weight, ExactOverlap, CenterOverlap, WholePixelOverlap
+using Photometry
+
+# Set up equivalent apertures with coordinate swap.
+# CrowdPhot: CircularAperture(y, x, r) — image-index convention.
+# Photometry: CircularAperture(x, y, r) — matrix-index convention, ap[row=x, col=y].
+const _CP_AP = CircularAperture(20.0, 20.0, 8.0)
+const _PH_AP = Photometry.Aperture.CircularAperture(20.0, 20.0, 8.0)
+
+# Collect pixel positions for per-pixel benchmarks.
+# inside: pixel wholly inside the circle.
+# partial: pixel crossing the boundary.
+# outside: pixel wholly outside but in bounding box.
+const _CP_YR, _CP_XR = bounding_axes(_CP_AP)
+const _INSIDE_PIX  = (20, 20)       # center pixel
+const _PARTIAL_PIX = (12, 20)       # near edge
+const _OUTSIDE_PIX = (8, 8)         # well outside (but may be in box for r=8)
+
+# Per-pixel weight evaluation — ExactOverlap
+SUITE["apertures"]["ExactOverlap, inside pixel, CrowdPhot.jl"] =
+    @benchmarkable aperture_weight($_CP_AP, 20, 20, ExactOverlap())
+SUITE["apertures"]["ExactOverlap, inside pixel, Photometry.jl"] =
+    @benchmarkable $_PH_AP[20, 20]
+
+SUITE["apertures"]["ExactOverlap, partial pixel, CrowdPhot.jl"] =
+    @benchmarkable aperture_weight($_CP_AP, 12, 20, ExactOverlap())
+SUITE["apertures"]["ExactOverlap, partial pixel, Photometry.jl"] =
+    @benchmarkable $_PH_AP[20, 12]  # coordinate swap: Photometry ap[row=x, col=y]
+
+SUITE["apertures"]["ExactOverlap, outside pixel, CrowdPhot.jl"] =
+    @benchmarkable aperture_weight($_CP_AP, 1, 1, ExactOverlap())
+SUITE["apertures"]["ExactOverlap, outside pixel, Photometry.jl"] =
+    @benchmarkable $_PH_AP[1, 1]
+
+# Per-pixel weight evaluation — CenterOverlap
+SUITE["apertures"]["CenterOverlap, CrowdPhot.jl"] =
+    @benchmarkable aperture_weight($_CP_AP, 20, 20, CenterOverlap())
+SUITE["apertures"]["CenterOverlap, manual"] =
+    @benchmarkable ((20 - _CP_AP.x)^2 + (20 - _CP_AP.y)^2 < _CP_AP.r^2)
+
+# Per-pixel weight evaluation — WholePixelOverlap
+SUITE["apertures"]["WholePixelOverlap, inside pixel, CrowdPhot.jl"] =
+    @benchmarkable aperture_weight($_CP_AP, 20, 20, WholePixelOverlap())
+SUITE["apertures"]["WholePixelOverlap, partial pixel, CrowdPhot.jl"] =
+    @benchmarkable aperture_weight($_CP_AP, 12, 20, WholePixelOverlap())
+
+# _overlap_flag (fast-path discriminant)
+SUITE["apertures"]["_overlap_flag, inside pixel, CrowdPhot.jl"] =
+    @benchmarkable _overlap_flag($_CP_AP, 20, 20)
+SUITE["apertures"]["overlap, inside pixel, Photometry.jl"] =
+    @benchmarkable Photometry.Aperture.overlap($_PH_AP, 20, 20)
+
+SUITE["apertures"]["_overlap_flag, partial pixel, CrowdPhot.jl"] =
+    @benchmarkable _overlap_flag($_CP_AP, 12, 20)
+SUITE["apertures"]["overlap, partial pixel, Photometry.jl"] =
+    @benchmarkable Photometry.Aperture.overlap($_PH_AP, 20, 12)  # coord swap
+
+# Bounding-box computation
+SUITE["apertures"]["bounding_axes, CrowdPhot.jl"] =
+    @benchmarkable bounding_axes($_CP_AP)
+SUITE["apertures"]["bounds, Photometry.jl"] =
+    @benchmarkable Photometry.Aperture.bounds($_PH_AP)
+
+# Full-aperture weight sum — the curve-of-growth / aperture-photometry workhorse.
+# CrowdPhot: loop over bounding_axes, call aperture_weight per pixel.
+SUITE["apertures"]["full sum ExactOverlap, CrowdPhot.jl"] = @benchmarkable begin
+    total = zero(Float64)
+    for j in $_CP_XR, i in $_CP_YR
+        w = aperture_weight($_CP_AP, i, j, ExactOverlap())
+        total += w
+    end
+    total
+end
+
+# Photometry: iterate axes and sum getindex.  Fair comparison: both use lazy
+# per-pixel evaluation, no allocation.
+SUITE["apertures"]["full sum getindex, Photometry.jl"] = @benchmarkable begin
+    total = zero(Float64)
+    for idx in CartesianIndices(axes($_PH_AP))
+        total += $_PH_AP[idx]
+    end
+    total
+end
+
+# Full-aperture binary mask sum (CenterOverlap) — fitting-region use case.
+SUITE["apertures"]["full sum CenterOverlap, CrowdPhot.jl"] = @benchmarkable begin
+    total = zero(Float64)
+    for j in $_CP_XR, i in $_CP_YR
+        w = aperture_weight($_CP_AP, i, j, CenterOverlap())
+        total += w
+    end
+    total
+end
+
+# Manual inline distance check — best-case handwritten loop.
+SUITE["apertures"]["full sum manual distance check"] = @benchmarkable begin
+    total = zero(Float64)
+    r2 = Float64(_CP_AP.r)^2
+    yc = Float64(_CP_AP.y)
+    xc = Float64(_CP_AP.x)
+    for j in $_CP_XR, i in $_CP_YR
+        if (Float64(i) - yc)^2 + (Float64(j) - xc)^2 < r2
+            total += 1.0
+        end
+    end
+    total
 end
 
 # If not on CI, we'll show a nice table

@@ -25,6 +25,7 @@ include("simulation.jl")
 include("background/background.jl")
 using .Background
 include("centroids.jl")
+include("apertures.jl")
 include("morphology.jl")
 include("photometry/psf_photometry_single.jl")
 
