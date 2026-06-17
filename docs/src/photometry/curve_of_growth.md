@@ -45,6 +45,12 @@ radius_at_flux
 normalize(::CurveOfGrowth)
 ```
 
+## Reference encircled-energy curves
+
+```@docs
+reference_cog
+```
+
 ## Apertures
 
 !!! warning "Internal API"

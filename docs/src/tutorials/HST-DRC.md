@@ -175,6 +175,7 @@ for detection, which gives good results.
 ```@example hst-drc
 # Measure morphology for all detected sources
 results = measure_star_shapes(mf_morph; half_width = 2)
+keys(results[1])
 ```
 
 ### Flux Diagnostics
@@ -190,11 +191,8 @@ The `morphology.aperture_sum` is the unweighted sum of `image - background`
 over the small rectangular cutout used for shape measurement. It is useful
 because it is simple and tied to exactly the pixels used for the morphology,
 but it is not a robust circular aperture measurement. We have not performed
-any aperture correction here: ACS/WFC zeropoints are defined for an
-"infinite" aperture of radius 5.5", much larger than this 5x5-pixel cutout.
-See the
-[ACS docs](https://hst-docs.stsci.edu/acsdhb/chapter-5-acs-data-analysis/5-1-photometry#id-5.1Photometry-5.1.25.1.2ApertureandColorCorrections)
-for further information on aperture corrections.
+any aperture correction here; it is calculated below after we construct
+a PSF model.
 
 ```@example hst-drc
 # Compute instrumental magnitudes from the rectangular count-rate aperture sum,
@@ -421,9 +419,10 @@ psf_y = [results[i].centroid.y for i in psf_idx]
 psf_x = [results[i].centroid.x for i in psf_idx]
 
 # Build the empirical PSF
+psf_rad = 6
 psf, fit_result = CrowdPhot.PSF.fit_psf(
     CrowdPhot.PSF.ImagePSF, img_sub_f64, psf_y, psf_x;
-    psf_rad = 6,
+    psf_rad = psf_rad,
     fit_rad = 4,
     oversampling = 4,
     smooth = true,
@@ -472,58 +471,64 @@ fig
 
 We compute the encircled-energy curve from the empirical PSF using
 [`curve_of_growth`](@ref).  The radii are chosen to stay within the
-PSF support (``\pm 6`` detector pixels from center).  Normalizing
-to the largest radius gives the encircled-energy fraction.
+PSF support (``\pm 6`` detector pixels from center).  We also load the
+[`reference_cog`](@ref) for ACS/WFC F814W from [Bohlin2016](@citet) to compare
+our measured PSF against the standard reference.
 
 ```@example hst-drc
 # Radii in detector pixels, staying within the PSF cutout extent (psf_rad = 6).
 radii = 0.5:0.25:5.5
 
-# Compute and normalize the curve of growth.
+# Compute and normalize the curve of growth from our empirical PSF.
 cog = curve_of_growth(psf, radii)
 cog_norm = normalize(cog; method = :sum)
 
-# The half-light radius and 80% encircled-energy radius.
+# Load the reference encircled-energy curve for ACS/WFC F814W.
+ref = reference_cog(:WFC, :F814W)
+
+# Key encircled-energy radii from our measured PSF.
 rhalf = radius_at_flux(cog_norm, 0.5)
 r80 = radius_at_flux(cog_norm, 0.80)
-println("Half-light radius: $(round(rhalf; digits=2)) pix")
-println("80% encircled-energy radius: $(round(r80; digits=2)) pix")
+rhalf_ref = radius_at_flux(ref, 0.5)
+r80_ref = radius_at_flux(ref, 0.80)
+println("Half-light radius: measured $(round(rhalf; digits=2)) pix, reference $(round(rhalf_ref; digits=2)) pix")
+println("80% EE radius: measured $(round(r80; digits=2)) pix, reference $(round(r80_ref; digits=2)) pix")
 ```
 
-The encircled-energy curve tells us what fraction of a source's total
-flux is enclosed by an aperture of a given radius.  For aperture
-corrections we need the inverse: given a measured flux at some small
-radius, what factor converts it to total flux?
+The reference curve is a time-averaged PSF model.  Comparing our measured
+EE to the reference tells us whether the PSF in our drizzle-interpolated image
+is broader or sharper than the reference. We multiply our
+measured EE by the value of the reference EE in the last radial bin
+so their shapes can be more easily compared visually.
 
 ```@example hst-drc
+# Reference EE at last radius value
+max_rad_EE = encircled_flux(reference_cog(:WFC, :F814W), last(radii))
+
 fig = Figure(size = (600, 450))
 ax = Axis(fig[1, 1];
     xlabel = "Radius (pixels)", ylabel = "Encircled energy fraction",
-    title = "Empirical PSF Encircled Energy",
+    title = "Encircled Energy — ACS/WFC F814W",
     limits = ((0, 6), (0, 1.05)))
 
-lines!(ax, cog_norm.radii, cog_norm.flux; linewidth = 2, color = :black)
+lines!(ax, cog_norm.radii, cog_norm.flux .* max_rad_EE;
+    linewidth = 2, color = :black, label = "Measured ePSF")
+lines!(ax, ref.radii, ref.flux;
+    linewidth = 2, color = :red, linestyle = :dash, label = "Bohlin (2016)")
 
-# Mark key encircled-energy radii
-vlines!(ax, [rhalf]; color = :blue, linestyle = :dash, linewidth = 1.2)
-vlines!(ax, [r80]; color = :red, linestyle = :dash, linewidth = 1.2)
-hlines!(ax, [0.5]; color = :blue, linestyle = :dash, linewidth = 1.2)
-hlines!(ax, [0.8]; color = :red, linestyle = :dash, linewidth = 1.2)
-
-text!(ax, rhalf + 0.15, 0.08; text = "50% EE\n($(round(rhalf; digits=2)) pix)",
-    color = :blue, fontsize = 11, align = (:left, :center))
-text!(ax, r80 + 0.15, 0.65; text = "80% EE\n($(round(r80; digits=2)) pix)",
-    color = :red, fontsize = 11, align = (:left, :center))
+axislegend(ax; position = :rb)
 
 fig
 ```
 
-The 50% and 80% encircled-energy radii are useful for planning aperture
-sizes.  For aperture photometry, the correction factor to go from a
-finite-radius measurement to total flux is the inverse of the encircled
-energy at that radius.  For example, a measurement at ``r = 2`` pixels
-would need to be divided by ``\approx`` the encircled energy at that
-radius to correct to total flux.
+After renormalizing to match the reference EE curve in the last radial bin,
+our EE curve for our ePSF fit matches the reference well. We can now calculate
+the aperture correction to put our measured PSF magnitudes onto the correct
+infinite-aperture convention for which the HST zeropoints are defined:
+
+```@example hst-drc
+aper_corr = 2.5 * log10(encircled_flux(reference_cog(:WFC, :F814W), psf_rad))
+```
 
 ## PSF Fitting Photometry
 
@@ -607,15 +612,14 @@ fig
 
 We now examine the photometric quality of the PSF-fit results.  Instrumental
 magnitudes are computed from the fitted fluxes and placed on the STMAG system
-using the PHOTFLAM and PHOTZPT header keywords. Note that again we have *not*
-done aperture corrections, so the magnitudes here are somewhat fainter than
-they would be after applying proper aperture corrections. For descriptions
+using the PHOTFLAM and PHOTZPT header keywords and the aperture correction
+derived above is applied. For descriptions
 of the goodness-of-fit statistics, see [`CrowdPhot.MultiPassPhotResult`](@ref).
 
 ```@example hst-drc
 # Compute ST magnitudes from PSF-fit fluxes
 good = phot_result.valid
-psf_mags = -2.5 .* log10.(phot_result.flux[good]) .+ stmag_zeropoint
+psf_mags = -2.5 .* log10.(phot_result.flux[good]) .+ stmag_zeropoint .+ aper_corr
 psf_mag_errs = (2.5 / log(10)) .* phot_result.flux_err[good] ./ phot_result.flux[good]
 
 # Centroids from measure_star_shapes for the same sources

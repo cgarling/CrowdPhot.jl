@@ -1,0 +1,1 @@
+avila2016_sbc_ee-1.txt, bohlin2016_hrc_ee-1.txt, bohlin2016_wfc_ee-1.txt are encircled energy curves for HST/ACS SBC, HRC, and WFC respectively, sourced from https://www.stsci.edu/hst/instrumentation/acs/data-analysis/aperture-corrections on 06/17/2026.
