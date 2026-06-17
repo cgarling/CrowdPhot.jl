@@ -7,7 +7,8 @@ using CrowdPhot:
     ExactOverlap,
     CenterOverlap,
     WholePixelOverlap,
-    SubpixelOverlap
+    SubpixelOverlap,
+    inside, outside, partial, OverlapFlag
 using OffsetArrays
 using Test
 
@@ -123,22 +124,22 @@ end
 
     @testset "inside classification" begin
         # Center pixel is always inside for r > 0
-        @test _overlap_flag(ap, 10, 15) == CrowdPhot.inside
+        @test _overlap_flag(ap, 10, 15) == inside
         # Pixel well within circle
-        @test _overlap_flag(ap, 11, 16) == CrowdPhot.inside
+        @test _overlap_flag(ap, 11, 16) == inside
     end
 
     @testset "outside classification" begin
-        @test _overlap_flag(ap, 1, 1) == CrowdPhot.outside
-        @test _overlap_flag(ap, 20, 30) == CrowdPhot.outside
+        @test _overlap_flag(ap, 1, 1) == outside
+        @test _overlap_flag(ap, 20, 30) == outside
     end
 
     @testset "partial classification" begin
         # Pixels near the boundary should be partial
         flag = _overlap_flag(ap, 7, 15)  # near top edge of circle
-        @test flag == CrowdPhot.partial || flag == CrowdPhot.outside
+        @test flag == partial || flag == outside
         flag2 = _overlap_flag(ap, 10, 12)  # near left edge of circle
-        @test flag2 == CrowdPhot.partial || flag2 == CrowdPhot.outside
+        @test flag2 == partial || flag2 == outside
     end
 
     @testset "consistency with aperture_weight" begin
@@ -147,9 +148,9 @@ end
         for j in xr, i in yr
             flag = _overlap_flag(ap2, i, j)
             w = aperture_weight(ap2, i, j, ExactOverlap())
-            if flag == CrowdPhot.outside
+            if flag == outside
                 @test w == 0.0
-            elseif flag == CrowdPhot.inside
+            elseif flag == inside
                 @test w == 1.0
             end
         end
@@ -428,8 +429,8 @@ end
         ap_i = CircularAperture(y=10, x=15, r=3)
 
         for ap in (ap32, ap64, ap_i)
-            @test _overlap_flag(ap, 10, 15) isa CrowdPhot.OverlapFlag
-            @test _overlap_flag(ap, 1, 1) isa CrowdPhot.OverlapFlag
+            @test _overlap_flag(ap, 10, 15) isa OverlapFlag
+            @test _overlap_flag(ap, 1, 1) isa OverlapFlag
         end
     end
 end

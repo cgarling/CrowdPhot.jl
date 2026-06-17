@@ -48,6 +48,7 @@ makedocs(;
         ],
         "Photometry" => [
             "PSF Fitting Photometry" => "photometry/psf_fitting.md",
+            "Curves of Growth" => "photometry/curve_of_growth.md",
         ],
         "Levenberg-Marquardt Fitter" => "lm_fitter.md",
         "Simulation" => "simulation.md",
