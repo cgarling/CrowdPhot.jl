@@ -468,6 +468,63 @@ Colorbar(fig[1, 2], psf_hm; label = "relative flux", height = Relative(0.8), val
 fig
 ```
 
+## Curve of Growth and Aperture Correction
+
+We compute the encircled-energy curve from the empirical PSF using
+[`curve_of_growth`](@ref).  The radii are chosen to stay within the
+PSF support (``\pm 6`` detector pixels from center).  Normalizing
+to the largest radius gives the encircled-energy fraction.
+
+```@example hst-drc
+# Radii in detector pixels, staying within the PSF cutout extent (psf_rad = 6).
+radii = 0.5:0.25:5.5
+
+# Compute and normalize the curve of growth.
+cog = curve_of_growth(psf, radii)
+cog_norm = normalize(cog; method = :sum)
+
+# The half-light radius and 80% encircled-energy radius.
+rhalf = radius_at_flux(cog_norm, 0.5)
+r80 = radius_at_flux(cog_norm, 0.80)
+println("Half-light radius: $(round(rhalf; digits=2)) pix")
+println("80% encircled-energy radius: $(round(r80; digits=2)) pix")
+```
+
+The encircled-energy curve tells us what fraction of a source's total
+flux is enclosed by an aperture of a given radius.  For aperture
+corrections we need the inverse: given a measured flux at some small
+radius, what factor converts it to total flux?
+
+```@example hst-drc
+fig = Figure(size = (600, 450))
+ax = Axis(fig[1, 1];
+    xlabel = "Radius (pixels)", ylabel = "Encircled energy fraction",
+    title = "Empirical PSF Encircled Energy",
+    limits = ((0, 6), (0, 1.05)))
+
+lines!(ax, cog_norm.radii, cog_norm.flux; linewidth = 2, color = :black)
+
+# Mark key encircled-energy radii
+vlines!(ax, [rhalf]; color = :blue, linestyle = :dash, linewidth = 1.2)
+vlines!(ax, [r80]; color = :red, linestyle = :dash, linewidth = 1.2)
+hlines!(ax, [0.5]; color = :blue, linestyle = :dash, linewidth = 1.2)
+hlines!(ax, [0.8]; color = :red, linestyle = :dash, linewidth = 1.2)
+
+text!(ax, rhalf + 0.15, 0.08; text = "50% EE\n($(round(rhalf; digits=2)) pix)",
+    color = :blue, fontsize = 11, align = (:left, :center))
+text!(ax, r80 + 0.15, 0.65; text = "80% EE\n($(round(r80; digits=2)) pix)",
+    color = :red, fontsize = 11, align = (:left, :center))
+
+fig
+```
+
+The 50% and 80% encircled-energy radii are useful for planning aperture
+sizes.  For aperture photometry, the correction factor to go from a
+finite-radius measurement to total flux is the inverse of the encircled
+energy at that radius.  For example, a measurement at ``r = 2`` pixels
+would need to be divided by ``\approx`` the encircled energy at that
+radius to correct to total flux.
+
 ## PSF Fitting Photometry
 
 We now run [`fit_all_stars`](@ref) on every source in a 250×250 region,
