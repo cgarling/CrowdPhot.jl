@@ -35,8 +35,8 @@ curve_of_growth(::CrowdPhot.PSF.AbstractPSFModel{T}, ::AbstractVector{<:Real}) w
 ## Single-radius queries
 
 ```@docs
-encircled_flux
-radius_at_flux
+encircled_energy
+radius_at_energy
 ```
 
 ## Normalization

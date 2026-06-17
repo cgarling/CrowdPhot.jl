@@ -2,9 +2,10 @@ using CrowdPhot:
     CircularAperture,
     CurveOfGrowth,
     curve_of_growth,
-    encircled_flux,
-    radius_at_flux,
+    encircled_energy,
+    radius_at_energy,
     normalize,
+    reference_cog,
     ExactOverlap,
     CenterOverlap,
     clipped_axes,
@@ -175,22 +176,22 @@ end
 end
 
 # ==============================================================================
-# encircled_flux
+# encircled_energy
 # ==============================================================================
 
-@testset "encircled_flux" begin
+@testset "encircled_energy" begin
     @testset "from COG — exact at sample points" begin
         model = CircularGaussianPSF(y=0.0, x=0.0, fwhm=4.0, flux=100.0, bkg=0.0)
         cog = curve_of_growth(model, [1.0, 2.0, 3.0, 5.0])
-        @test encircled_flux(cog, 1.0) ≈ cog.flux[1]
-        @test encircled_flux(cog, 2.0) ≈ cog.flux[2]
-        @test encircled_flux(cog, 5.0) ≈ cog.flux[4]
+        @test encircled_energy(cog, 1.0) ≈ cog.flux[1]
+        @test encircled_energy(cog, 2.0) ≈ cog.flux[2]
+        @test encircled_energy(cog, 5.0) ≈ cog.flux[4]
     end
 
     @testset "from COG — interpolation" begin
         model = CircularGaussianPSF(y=0.0, x=0.0, fwhm=4.0, flux=100.0, bkg=0.0)
         cog = curve_of_growth(model, [1.0, 5.0])
-        ef = encircled_flux(cog, 3.0)
+        ef = encircled_energy(cog, 3.0)
         @test ef > cog.flux[1]
         @test ef < cog.flux[2]
     end
@@ -198,55 +199,55 @@ end
     @testset "from COG — out of range returns NaN" begin
         model = CircularGaussianPSF(y=0.0, x=0.0, fwhm=4.0, flux=100.0, bkg=0.0)
         cog = curve_of_growth(model, [1.0, 5.0])
-        @test isnan(encircled_flux(cog, 0.5))
-        @test isnan(encircled_flux(cog, 10.0))
+        @test isnan(encircled_energy(cog, 0.5))
+        @test isnan(encircled_energy(cog, 10.0))
     end
 
     @testset "from model — analytic (CircularGaussianPSF)" begin
         model = CircularGaussianPSF(y=0.0, x=0.0, fwhm=3.0, flux=100.0, bkg=0.0)
-        ef = encircled_flux(model, 1.5)  # half-light radius
+        ef = encircled_energy(model, 1.5)  # half-light radius
         @test ef ≈ 50.0 rtol = 1e-12
     end
 
     @testset "from model — analytic (CircularMoffatPSF)" begin
         model = CircularMoffatPSF(y=0.0, x=0.0, α=2.0, β=3.0,
                                   flux=100.0, bkg=0.0)
-        ef = encircled_flux(model, 2.0)
+        ef = encircled_energy(model, 2.0)
         @test ef ≈ 75.0 rtol = 1e-12
     end
 
     @testset "from model — generic (non-circular GaussianPSF)" begin
         model = GaussianPSF(y=15.0, x=15.0, x_fwhm=3.0, y_fwhm=3.0,
                             theta=0.0, flux=100.0, bkg=0.0)
-        ef = encircled_flux(model, 20.0)
+        ef = encircled_energy(model, 20.0)
         @test ef > 0
         @test ef ≈ 100.0 rtol = 0.05
     end
 
     @testset "model vs COG consistency" begin
         model = CircularGaussianPSF(y=0.0, x=0.0, fwhm=4.0, flux=100.0, bkg=0.0)
-        ef_direct = encircled_flux(model, 2.0)
+        ef_direct = encircled_energy(model, 2.0)
         cog = curve_of_growth(model, [2.0])
         @test ef_direct ≈ cog.flux[1] rtol = 1e-12
     end
 end
 
 # ==============================================================================
-# radius_at_flux
+# radius_at_energy
 # ==============================================================================
 
-@testset "radius_at_flux" begin
+@testset "radius_at_energy" begin
     @testset "exact at sample points" begin
         model = CircularGaussianPSF(y=0.0, x=0.0, fwhm=4.0, flux=100.0, bkg=0.0)
         cog = curve_of_growth(model, [1.0, 2.0, 3.0, 5.0])
-        @test radius_at_flux(cog, cog.flux[1]) ≈ 1.0
-        @test radius_at_flux(cog, cog.flux[3]) ≈ 3.0
+        @test radius_at_energy(cog, cog.flux[1]) ≈ 1.0
+        @test radius_at_energy(cog, cog.flux[3]) ≈ 3.0
     end
 
     @testset "interpolation" begin
         model = CircularGaussianPSF(y=0.0, x=0.0, fwhm=4.0, flux=100.0, bkg=0.0)
         cog = curve_of_growth(model, [1.0, 5.0])
-        r = radius_at_flux(cog, 50.0)
+        r = radius_at_energy(cog, 50.0)
         @test r > 1.0
         @test r < 5.0
     end
@@ -254,8 +255,8 @@ end
     @testset "out of range returns NaN" begin
         model = CircularGaussianPSF(y=0.0, x=0.0, fwhm=4.0, flux=100.0, bkg=0.0)
         cog = curve_of_growth(model, [1.0, 5.0])
-        @test isnan(radius_at_flux(cog, 0.0))
-        @test isnan(radius_at_flux(cog, 200.0))
+        @test isnan(radius_at_energy(cog, 0.0))
+        @test isnan(radius_at_energy(cog, 200.0))
     end
 end
 
@@ -334,5 +335,100 @@ end
         @test cog.area == [3.14, 12.57]
         @test cog.y == 5.0
         @test cog.x == 5.0
+    end
+end
+
+# ==============================================================================
+# reference_cog
+# ==============================================================================
+
+@testset "reference_cog" begin
+    @testset "WFC — known EE values" begin
+        ref = reference_cog(:WFC, :F814W)
+        # From Bohlin (2016) Table 8: EE(F814W, r=1 pix) = 0.322
+        @test ref.flux[1] ≈ 0.322 atol = 1e-6
+        # Infinite-aperture endpoint: r = 5.5 / 0.05 = 110 pix, EE = 1.0
+        @test last(ref.radii) ≈ 110.0
+        @test last(ref.flux) ≈ 1.0
+        @test isempty(ref.flux_err)
+        @test ref.radii isa Vector{Float64}
+        @test ref.flux isa Vector{Float64}
+    end
+
+    @testset "HRC — known EE values" begin
+        ref = reference_cog(:HRC, :F435W)
+        # From Bohlin (2016) Table 9: EE(F435W, r=2 pix) = 0.547
+        @test ref.flux[1] ≈ 0.547 atol = 1e-6
+        # Infinite-aperture endpoint: r = 5.5 / 0.025 = 220 pix, EE = 1.0
+        @test last(ref.radii) ≈ 220.0
+        @test last(ref.flux) ≈ 1.0
+    end
+
+    @testset "SBC — arcsecond conversion and endpoint trimming" begin
+        ref = reference_cog(:SBC, :F150LP)
+        # Original r = 0.1 arcsec → 0.1 / 0.03 ≈ 3.333 pix, EE = 0.546
+        @test first(ref.radii) ≈ 0.1 / 0.03
+        @test ref.flux[1] ≈ 0.546 atol = 1e-6
+        # Last retained point: r = 4.0 arcsec → 4.0 / 0.03 ≈ 133.33 pix, EE = 1.000
+        @test last(ref.radii) ≈ 4.0 / 0.03
+        @test last(ref.flux) ≈ 1.0
+        # Verify points beyond the infinite aperture (5.0″, 5.5″) were trimmed
+        @test maximum(ref.radii) ≤ 4.0 / 0.03 + 1e-10
+    end
+
+    @testset "radii are strictly increasing" begin
+        for (inst, filt) in [(:WFC, :F814W), (:HRC, :F435W), (:SBC, :F150LP)]
+            ref = reference_cog(inst, filt)
+            for i in 2:length(ref.radii)
+                @test ref.radii[i] > ref.radii[i-1]
+            end
+        end
+    end
+
+    @testset "flux is monotonically increasing and in [0, 1]" begin
+        for (inst, filt) in [(:WFC, :F814W), (:HRC, :F435W), (:SBC, :F150LP)]
+            ref = reference_cog(inst, filt)
+            for i in 1:length(ref.flux)
+                @test 0.0 <= ref.flux[i] <= 1.0 + 1e-12
+            end
+            for i in 2:length(ref.flux)
+                @test ref.flux[i] >= ref.flux[i-1]
+            end
+        end
+    end
+
+    @testset "encircled_energy and radius_at_energy work on reference COG" begin
+        ref = reference_cog(:WFC, :F814W)
+        ee = encircled_energy(ref, 3.0)
+        @test ee > 0.6
+        @test ee < 0.9
+        r = radius_at_energy(ref, 0.8)
+        @test r > 2.0
+        @test r < 5.0
+        # Out-of-range returns NaN
+        @test isnan(encircled_energy(ref, 0.0))
+        @test isnan(radius_at_energy(ref, -0.1))
+    end
+
+    @testset "normalize works on reference COG" begin
+        ref = reference_cog(:WFC, :F814W)
+        norm = normalize(ref; method = :sum)
+        @test last(norm.flux) ≈ 1.0
+        @test norm.radii == ref.radii
+        norm_max = normalize(ref; method = :max)
+        @test maximum(norm_max.flux) ≈ 1.0
+    end
+
+    @testset "error handling" begin
+        @test_throws ArgumentError reference_cog(:BAD, :F814W)
+        @test_throws ArgumentError reference_cog(:WFC, :BADFILT)
+        @test_throws ArgumentError reference_cog(:HRC, :F125LP)  # valid filter but wrong instrument
+    end
+
+    @testset "area field is πr²" begin
+        ref = reference_cog(:WFC, :F814W)
+        for (r, a) in zip(ref.radii, ref.area)
+            @test a ≈ π * r^2 rtol = 1e-12
+        end
     end
 end
