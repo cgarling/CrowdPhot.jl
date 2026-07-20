@@ -14,7 +14,9 @@ Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [compat]
+ConstructionBase = "1"
 Distributions = "0.25"
+Documenter = "0.26, 0.27, 1"
 FillArrays = "1"
 LinearAlgebra = "1"
 LossFunctions = "1.2"
@@ -22,6 +24,7 @@ OffsetArrays = "1"
 SafeTestsets = "0.1"
 StableRNGs = "1.0.4"
 StaticArrays = "0.12, 1"
+Statistics = "1"
 Test = "1"
 
 [sources]
