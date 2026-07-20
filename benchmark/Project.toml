@@ -11,3 +11,13 @@ StableRNGs = "860ef19b-820b-49d6-a774-d7a799459cd3"
 
 [sources]
 CrowdPhot = {path = ".."}
+
+[compat]
+BackgroundMeshes = "0.1"
+BenchmarkTools = "1"
+ImageFiltering = "0.7"
+LossFunctions = "1.2"
+OffsetArrays = "1"
+Photometry = "0.9"
+PrettyTables = "3"
+StableRNGs = "1"
