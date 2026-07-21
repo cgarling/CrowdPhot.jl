@@ -307,7 +307,7 @@ end
 SUITE["apertures"] = BenchmarkGroup()
 
 using CrowdPhot: CircularAperture, bounding_axes, _overlap_flag, aperture_weight, ExactOverlap, CenterOverlap, WholePixelOverlap
-using Photometry
+import Photometry
 
 # Set up equivalent apertures with coordinate swap.
 # CrowdPhot: CircularAperture(y, x, r) — image-index convention.
