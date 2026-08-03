@@ -24,7 +24,7 @@ makedocs(;
         assets = String[],
     ),
     authors = "Chris Garling",
-    # repo = GitHub("cgarling/CrowdPhot.jl"),
+    # repo = GitHub("crowdphot/CrowdPhot.jl"),
     pages = [
         "Home" => "index.md",
         "Getting Started" => [
@@ -63,7 +63,7 @@ makedocs(;
 )
 
 deploydocs(;
-    repo = "github.com/cgarling/CrowdPhot.jl.git",
+    repo = "github.com/crowdphot/CrowdPhot.jl.git",
     devbranch = "main",
     push_preview = true,
     versions = ["stable" => "v^", "v#.#"], # Restrict to minor releases
