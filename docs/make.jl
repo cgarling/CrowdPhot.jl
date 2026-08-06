@@ -44,6 +44,9 @@ makedocs(;
                 "ePSF Overview" => "psf/empirical/epsf_overview.md",
                 "ImagePSF" => "psf/empirical/image_psf.md",
             ],
+            "Spatially Varying PSF Models" => [
+                "GriddedPSFModel" => "psf/variable/gridded_psf.md",
+            ],
             "Picking PSF Stars" => "psf/picking.md",
         ],
         "Photometry" => [

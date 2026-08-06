@@ -8,12 +8,13 @@ using SpecialFunctions: besselj, besselj0, besselj1, erf
 using StaticArrays: SA, SVector, MMatrix
 using Statistics: median, mean, quantile, std
 
-export AbstractPSFModel, AiryPSF, CircularGaussianPSF, GaussianPSF, CircularGaussianPRF, GaussianPRF, CircularMoffatPSF, MoffatPSF, ImagePSF
+export AbstractPSFModel, AiryPSF, CircularGaussianPSF, GaussianPSF, CircularGaussianPRF, GaussianPRF, CircularMoffatPSF, MoffatPSF, ImagePSF, GriddedPSFModel
 export evaluate, evaluate_fg, centroid, integral, render, peak, amplitude, effective_area, fit_star, fit_psf
 export LMResult, MADScale, FixedScale, MScale, estimate_scale, TukeyLoss, weight, KnownWeightsCovarianceEstimator, ReweightedCovarianceEstimator
 
 """AbstractPSFModel{T}: Abstract type for PSF models with element type `T`. All PSF models should be subtypes of this abstract type, and implement the following methods:"""
 abstract type AbstractPSFModel{T} end
+Base.eltype(::AbstractPSFModel{T}) where {T} = T
 Base.Broadcast.broadcastable(m::AbstractPSFModel) = Ref(m)
 (model::AbstractPSFModel)(y, x) = evaluate(model, y, x)
 (model::AbstractPSFModel)(idx::CartesianIndex) = evaluate(model, idx)
@@ -324,6 +325,7 @@ end
 include("parametric_models.jl")
 include("empirical_models.jl")
 include("empirical_builder.jl")
+include("gridded_psf.jl")
 include("psf_fitting.jl")
 include("pick.jl")
 

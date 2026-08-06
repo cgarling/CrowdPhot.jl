@@ -13,6 +13,7 @@ import CrowdPhot
 @safetestset "PSF Fitting" include("psf/psf_fitting_tests.jl")
 @safetestset "PSF Fit Parity" include("psf/psf_fit_parity_tests.jl")
 @safetestset "Empirical PSF models" include("psf/empirical_model_tests.jl")
+@safetestset "Gridded PSF model" include("psf/gridded_psf_tests.jl")
 @safetestset "Simulation tests" include("simulation_test.jl")
 @safetestset "Background estimation" include("background_tests.jl")
 @safetestset "Centroids" include("centroids_tests.jl")

@@ -1,7 +1,7 @@
 # When adding a benchmark suite, update SUITE_NAMES and SUITE_TITLES, then
 # define its BenchmarkGroup under SUITE using the same suite name.
 using CrowdPhot: make_gaussians_image, simulate_image, centroid_poly, _centroid_poly3, correlate, findlocalmaxima, measure_star_shape, choose_centroid
-using CrowdPhot.PSF: GaussianPSF, CircularGaussianPSF, CircularGaussianPRF, evaluate, evaluate_fg, fit_star, fit_psf, TukeyLoss, bicubic_interpolate, fill_grid_holes!, ImagePSF
+using CrowdPhot.PSF: GaussianPSF, CircularGaussianPSF, CircularGaussianPRF, evaluate, evaluate_fg, fit_star, fit_psf, TukeyLoss, bicubic_interpolate, fill_grid_holes!, ImagePSF, GriddedPSFModel
 using CrowdPhot.Background
 import BackgroundMeshes as BM
 using BenchmarkTools
@@ -61,11 +61,12 @@ function _flatten_results!(flat, group, prefix)
     end
 end
 
-const SUITE_NAMES = ["parametric", "fitting", "empirical", "background", "centroids", "correlation", "peakfinding", "morphology", "apertures"]
+const SUITE_NAMES = ["parametric", "fitting", "empirical", "variable", "background", "centroids", "correlation", "peakfinding", "morphology", "apertures"]
 const SUITE_TITLES = Dict(
     "parametric" => "Parametric Suite",
     "fitting" => "Fitting Suite",
     "empirical" => "Empirical Suite",
+    "variable" => "Variable (Gridded) PSF Suite",
     "background" => "Background Estimation Suite",
     "centroids" => "Centroids Suite",
     "correlation" => "Correlation Suite",
@@ -162,6 +163,38 @@ for n in (50, 100)
                     background = 20.0, noise = :none, flux = (600.0, 900.0),
                     min_separation = 7, border = 8, model_radius = 6)
             end) evals=1 samples=100
+end
+
+# ---------------------------------------------------------------------------
+# GriddedPSFModel benchmarks — spatially-varying PSF built from ImagePSF nodes
+# (the primary intended use case), fitting a single star whose position lies
+# within the node grid so that every fit evaluation exercises the full
+# bilinear-blend of 4 corner ImagePSFs.
+# ---------------------------------------------------------------------------
+SUITE["variable"] = BenchmarkGroup()
+
+for n in (5, 11, 21)
+    SUITE["variable"]["GriddedPSFModel (ImagePSF nodes) fit_star, size=($n, $n)"] = @benchmarkable fit_star(init, image, inds; max_iter = 100) setup=(begin
+        origin = (y = ($n + 1) / 2, x = ($n + 1) / 2)
+        # Node PSF shapes differ (varying FWHM) so the grid is genuinely
+        # spatially-varying rather than four identical corners.
+        node_fwhms = (2.0, 2.8, 3.2, 4.0)
+        node_psfs = [
+            ImagePSF(
+                evaluate.(CircularGaussianPRF(x = origin.x, y = origin.y, fwhm = fwhm, flux = 1, bkg = 0), 1:$n, (1:$n)');
+                x = origin.x, y = origin.y, flux = 1.0, bkg = 0.0, origin, normalize = true
+            )
+            for fwhm in node_fwhms
+        ]
+        grid_y = [1.0, 1.0, Float64($n), Float64($n)]
+        grid_x = [1.0, Float64($n), 1.0, Float64($n)]
+        truth = GriddedPSFModel(node_psfs, grid_y, grid_x;
+            x = origin.x + 0.35, y = origin.y - 0.25, flux = 300.0, bkg = 4.0)
+        image = evaluate.(truth, 1:$n, (1:$n)')
+        init = GriddedPSFModel(node_psfs, grid_y, grid_x;
+            x = origin.x, y = origin.y + 0.1, flux = 260.0, bkg = 3.5)
+        inds = (1:$n, 1:$n)
+    end)
 end
 
 SUITE["background"] = BenchmarkGroup()
