@@ -1,4 +1,4 @@
-using CrowdPhot.PSF: CircularGaussianPSF, GaussianPSF, CircularGaussianPRF, GaussianPRF, CircularMoffatPSF, MoffatPSF, evaluate, centroid, integral, evaluate_fg, evaluate_fgh, AbstractPSFModel, extent, render, theta, amplitude, background, fwhm, peak, effective_area, AiryPSF, ImagePSF, add_star!, subtract_star!
+using CrowdPhot.PSF: CircularGaussianPSF, GaussianPSF, CircularGaussianPRF, GaussianPRF, CircularMoffatPSF, MoffatPSF, evaluate, centroid, integral, evaluate_fg, evaluate_fgh, AbstractPSFModel, extent, render, theta, amplitude, background, fwhm, peak, effective_area, AiryPSF, ImagePSF, GriddedPSFModel, add_star!, subtract_star!
 using Test
 
 # Tests generic API, type return, etc
@@ -75,6 +75,18 @@ for model in (
         GaussianPRF(x = 2.5f0, y = 5.0f0, x_fwhm = 3.0f0, y_fwhm = 4.0f0, theta = 35.0f0, flux = 120.0f0, bkg = 10.0f0),
         ImagePSF(rand(7, 7); x = 3.0, y = 4.0, flux = 120.0, bkg = 7.0, oversampling = 2, normalize = false),
         ImagePSF(rand(Float32, 7, 7); x = 3.0f0, y = 4.0f0, flux = 120.0f0, bkg = 7.0f0, oversampling = 2, normalize = false),
+        GriddedPSFModel(
+            [CircularGaussianPRF(y = gy, x = gx, fwhm = 3.0, flux = 1.0, bkg = 0.0) for (gy, gx) in ((0.0, 0.0), (0.0, 10.0), (10.0, 0.0), (10.0, 10.0))],
+            [0.0, 0.0, 10.0, 10.0], [0.0, 10.0, 0.0, 10.0]; y = 2.4, x = 1.3, flux = 120.0, bkg = 10.0,
+        ),
+        GriddedPSFModel(
+            [CircularGaussianPRF(y = gy, x = gx, fwhm = 3.0f0, flux = 1.0f0, bkg = 0.0f0) for (gy, gx) in ((0.0f0, 0.0f0), (0.0f0, 10.0f0), (10.0f0, 0.0f0), (10.0f0, 10.0f0))],
+            [0.0f0, 0.0f0, 10.0f0, 10.0f0], [0.0f0, 10.0f0, 0.0f0, 10.0f0]; y = 2.4f0, x = 1.3f0, flux = 120.0f0, bkg = 10.0f0,
+        ),
+        GriddedPSFModel(
+            [ImagePSF(rand(7, 7); y = gy, x = gx, flux = 1.0, bkg = 0.0, oversampling = 2, normalize = true) for (gy, gx) in ((0.0, 0.0), (0.0, 10.0), (10.0, 0.0), (10.0, 10.0))],
+            [0.0, 0.0, 10.0, 10.0], [0.0, 10.0, 0.0, 10.0]; y = 2.4, x = 1.3, flux = 120.0, bkg = 10.0,
+        ),
     )
     @testset "API: $(typeof(model))" begin
         test_common(model)
