@@ -46,6 +46,7 @@ makedocs(;
             ],
             "Spatially Varying PSF Models" => [
                 "GriddedPSFModel" => "psf/variable/gridded_psf.md",
+                "Roman CRDS ePSF" => "psf/variable/roman_crds_epsf.md",
             ],
             "Picking PSF Stars" => "psf/picking.md",
         ],

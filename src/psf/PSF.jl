@@ -8,7 +8,7 @@ using SpecialFunctions: besselj, besselj0, besselj1, erf
 using StaticArrays: SA, SVector, MMatrix
 using Statistics: median, mean, quantile, std
 
-export AbstractPSFModel, AiryPSF, CircularGaussianPSF, GaussianPSF, CircularGaussianPRF, GaussianPRF, CircularMoffatPSF, MoffatPSF, ImagePSF, GriddedPSFModel
+export AbstractPSFModel, AiryPSF, CircularGaussianPSF, GaussianPSF, CircularGaussianPRF, GaussianPRF, CircularMoffatPSF, MoffatPSF, ImagePSF, GriddedPSFModel, roman_crds_gridded_epsf
 export evaluate, evaluate_fg, centroid, integral, render, peak, amplitude, effective_area, fit_star, fit_psf
 export LMResult, MADScale, FixedScale, MScale, estimate_scale, TukeyLoss, weight, KnownWeightsCovarianceEstimator, ReweightedCovarianceEstimator
 
@@ -322,10 +322,29 @@ function subtract_star!(out::AbstractMatrix, model::AbstractPSFModel, inds::Cart
     return out
 end
 
+"""
+    pixel_response_kernel(n::Integer)
+
+Returns a discretized flat "pixel response" kernel of full-width `n` (the
+oversampling factor), height 1/n so it sums to 1. Reproduces
+`astropy.convolution.Box2DKernel(width=n).array` exactly (verified for
+n = 1..8): for even n this is *not* a naive n×n uniform box -- it's the exact
+overlap integral of a continuous box of width n against each unit-width pixel
+bin, giving an (n+1)x(n+1) kernel with tapered edge/corner weights.
+"""
+function pixel_response_kernel(n::Integer)
+    sz = isodd(n) ? n : n + 1
+    half = n / 2
+    centers = (0:sz-1) .- (sz - 1) / 2
+    w1d = [clamp(min(c + 0.5, half) - max(c - 0.5, -half), 0, Inf) / n for c in centers]
+    return w1d * w1d'
+end
+
 include("parametric_models.jl")
 include("empirical_models.jl")
 include("empirical_builder.jl")
 include("gridded_psf.jl")
+include("roman_crds.jl")
 include("psf_fitting.jl")
 include("pick.jl")
 
