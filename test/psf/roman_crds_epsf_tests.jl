@@ -1,0 +1,180 @@
+import CrowdPhot
+using CrowdPhot.PSF: roman_crds_gridded_epsf, GriddedPSFModel, ImagePSF, pixel_response_kernel
+using ASDF
+using OrderedCollections: OrderedDict
+using Test
+
+# This test file requires the `CrowdPhotASDFExt` package extension to be
+# loaded, which happens automatically once both `CrowdPhot` and `ASDF` are
+# `using`'d in the same session (Julia's weak-dependency/extension
+# mechanism). No synthetic fixture here touches the real (170 MB) Roman
+# CRDS reference file; everything is built as tiny in-memory ASDF trees
+# written to a temporary directory.
+
+# Build a minimal synthetic Roman CRDS ePSF-like ASDF tree.
+#
+# `data` must already be in the materialized Julia axis order
+# `(x, y, grid_index, spectral_type, defocus)` (i.e. what
+# `roman_crds_gridded_epsf` expects to read back after round-tripping
+# through ASDF) -- this helper reverses `size(data)` to produce the
+# ASDF/Python-order `shape` field `NDArray` expects, exactly mirroring how
+# the real files are laid out (see gridded_psf_crds_plan.md, Section 3).
+function _write_synthetic_epsf(dir, data::Array{Float32, 5}; pixel_x, pixel_y,
+                               spectral_type = ["A0V", "G2V"], defocus = [0], oversample = 2, name = "synthetic_epsf.asdf")
+    lbh = ASDF.LazyBlockHeaders()
+    nd = ASDF.NDArray(lbh, nothing, data, reverse(collect(size(data))), "float32", nothing)
+    tree = OrderedDict("roman" => OrderedDict(
+        "meta" => OrderedDict(
+            "pixel_x" => pixel_x, "pixel_y" => pixel_y,
+            "oversample" => oversample, "spectral_type" => spectral_type,
+            "defocus" => defocus,
+        ),
+        "psf" => nd,
+    ))
+    path = joinpath(dir, name)
+    ASDF.save(path, tree)
+    return path
+end
+
+@testset "roman_crds_gridded_epsf" begin
+    @testset "transpose correctness, grid pass-through, defocus/spectral_type selection" begin
+        # 2x2 grid, 2 spectral types, 1 defocus value. Each node's stamp has
+        # a single asymmetric "marker" pixel at a distinct, non-central
+        # (x, y) location -- a symmetric test stamp could pass even with a
+        # transposed axis order, so this specifically catches that bug.
+        nx, ny, ngrid, nspec, ndef = 7, 5, 4, 2, 1
+        data = fill(0.001f0, nx, ny, ngrid, nspec, ndef) # near-zero background
+        marker_xy = [(2, 4), (6, 1), (1, 1), (5, 3)] # distinct (x, y) per node
+        for (i, (mx, my)) in enumerate(marker_xy)
+            data[mx, my, i, 1, 1] = 100f0 # spectral_type = "A0V"
+            data[mx, my, i, 2, 1] = 200f0 # spectral_type = "G2V"
+        end
+        pixel_x = [0.0, 10.0, 0.0, 10.0]
+        pixel_y = [0.0, 0.0, 20.0, 20.0]
+
+        mktempdir() do dir
+            path = _write_synthetic_epsf(dir, data; pixel_x, pixel_y)
+
+            model = roman_crds_gridded_epsf(path; defocus = 0, spectral_type = "G2V")
+            @test model isa GriddedPSFModel
+            @test model.ygrid == [0.0, 20.0]
+            @test model.xgrid == [0.0, 10.0]
+            @test length(model.psfs) == 4
+
+            for (i, (mx, my)) in enumerate(marker_xy)
+                stamp = model.psfs[i].data # already transposed to (y, x) convention
+                @test size(stamp) == (ny, nx)
+                # Marker values (100/200) are far above oversample^2/2 = 2
+                # (oversample defaults to 2 in `_write_synthetic_epsf`), so
+                # this fixture is classified "new format" and used
+                # unchanged (no pixel-response convolution) -- the argmax
+                # location is exact, and lands at (my, mx), not (mx, my).
+                @test Tuple(argmax(stamp)) == (my, mx)
+            end
+
+            # Selecting the other spectral_type picks a different (scaled) marker value.
+            model_a0v = roman_crds_gridded_epsf(path; defocus = 0, spectral_type = "A0V")
+            @test maximum(model_a0v.psfs[1].data) < maximum(model.psfs[1].data)
+        end
+    end
+
+    @testset "error handling" begin
+        nx, ny, ngrid, nspec, ndef = 5, 5, 1, 1, 1
+        data = fill(0.001f0, nx, ny, ngrid, nspec, ndef)
+        data[3, 3, 1, 1, 1] = 1.0f0
+
+        mktempdir() do dir
+            path = _write_synthetic_epsf(dir, data; pixel_x = [0.0], pixel_y = [0.0],
+                spectral_type = ["G2V"], defocus = [0])
+
+            @test_throws "psf_subtype must be" roman_crds_gridded_epsf(path; psf_subtype = "extended_psf")
+            @test_throws "defocus=99 not found" roman_crds_gridded_epsf(path; defocus = 99)
+            @test_throws "spectral_type=\"Z9Z\" not found" roman_crds_gridded_epsf(path; spectral_type = "Z9Z")
+
+            # Missing top-level "roman" key.
+            bad_tree = OrderedDict("not_roman" => OrderedDict())
+            bad_path = joinpath(dir, "bad.asdf")
+            ASDF.save(bad_path, bad_tree)
+            @test_throws "does not contain a top-level \"roman\" key" roman_crds_gridded_epsf(bad_path)
+        end
+    end
+
+    @testset "normalize/origin/oversample plumbing" begin
+        nx, ny, ngrid, nspec, ndef = 5, 5, 1, 1, 1
+        data = fill(0.001f0, nx, ny, ngrid, nspec, ndef)
+        data[3, 3, 1, 1, 1] = 1.0f0
+
+        mktempdir() do dir
+            path = _write_synthetic_epsf(dir, data; pixel_x = [7.0], pixel_y = [3.0],
+                spectral_type = ["G2V"], defocus = [0], oversample = 3)
+
+            model = roman_crds_gridded_epsf(path)
+            node = model.psfs[1]
+            @test node.oversampling == (3, 3) # read from meta.oversample, not a keyword
+            @test node.origin == (y = 3.0, x = 3.0) # default origin: geometric center of a 5x5 stamp
+            @test model.ygrid == [3.0]
+            @test model.xgrid == [7.0]
+
+            model_origin = roman_crds_gridded_epsf(path; origin = (y = 1.0, x = 1.0))
+            @test model_origin.psfs[1].origin == (y = 1.0, x = 1.0)
+
+            # `normalize = false` (default) preserves the (post pixel-response-
+            # convolution) native flux scale; `normalize = true` forces
+            # sum(data) == oversampling^2.
+            model_norm = roman_crds_gridded_epsf(path; normalize = true)
+            @test sum(model_norm.psfs[1].data) ≈ 9.0 # oversample^2 = 3^2
+            @test !(sum(model.psfs[1].data) ≈ 9.0)
+        end
+    end
+
+    @testset "pixel-response convolution: old vs. new format" begin
+        # "Old format": raw per-node stamps sum to ~1 (median across nodes
+        # < oversample^2 / 2). Must be convolved with the pixel-response
+        # kernel and scaled by oversample^2 before use.
+        oversample = 4
+        nx, ny = 15, 15
+        old_stamp = zeros(Float32, nx, ny)
+        old_stamp[8, 8] = 1.0f0 # sums to ~1
+
+        # "New format": stamps already pixel-integrated, summing to
+        # ~oversample^2. Must be used unchanged (no convolution, no extra
+        # scaling).
+        new_stamp = zeros(Float32, nx, ny)
+        new_stamp[8, 8] = Float32(oversample^2) # sums to oversample^2
+
+        data_old = reshape(old_stamp, nx, ny, 1, 1, 1)
+        data_new = reshape(new_stamp, nx, ny, 1, 1, 1)
+
+        mktempdir() do dir
+            path_old = _write_synthetic_epsf(dir, data_old; pixel_x = [0.0], pixel_y = [0.0],
+                spectral_type = ["G2V"], defocus = [0], oversample, name = "old_format.asdf")
+            model_old = roman_crds_gridded_epsf(path_old)
+            kernel = Float32.(pixel_response_kernel(oversample))
+            expected_old = Float32(oversample^2) .* CrowdPhot.correlate(
+                permutedims(old_stamp), kernel, :zero,
+            )
+            @test model_old.psfs[1].data ≈ expected_old
+            @test sum(model_old.psfs[1].data) ≈ oversample^2 # convolution preserves total flux, then scaled
+
+            path_new = _write_synthetic_epsf(dir, data_new; pixel_x = [0.0], pixel_y = [0.0],
+                spectral_type = ["G2V"], defocus = [0], oversample, name = "new_format.asdf")
+            model_new = roman_crds_gridded_epsf(path_new; defocus = 0)
+            @test model_new.psfs[1].data == permutedims(new_stamp) # used unchanged, no extra scaling
+        end
+    end
+
+    @testset "_pixel_response_kernel matches astropy Box2DKernel" begin
+        # Hardcoded from astropy.convolution.Box2DKernel(width=n).array,
+        # verified earlier (see gridded_psf_crds_plan.md, "Pixel-response
+        # convolution"). n=3 (odd) is a naive uniform 3x3 box; n=4 (even)
+        # is a tapered 5x5 kernel, not a naive 4x4 box.
+        k3 = pixel_response_kernel(3)
+        @test k3 ≈ fill(1 / 9, 3, 3)
+
+        k4 = pixel_response_kernel(4)
+        @test size(k4) == (5, 5)
+        marginal4 = [0.125, 0.25, 0.25, 0.25, 0.125]
+        @test k4 ≈ marginal4 * marginal4'
+        @test sum(k4) ≈ 1.0
+    end
+end
