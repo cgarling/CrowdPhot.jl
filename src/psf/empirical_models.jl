@@ -166,6 +166,9 @@ function extent(model::ImagePSF{T}) where {T}
 end
 extent(model::ImagePSF, _) = extent(model) # ignore extra argument (fwhm_factor) if provided.
 
+# `ImagePSF` extent is the tabulated data grid, a genuine finite region of support.
+_has_finite_support(::ImagePSF) = true
+
 function effective_area(model::ImagePSF{T}) where {T}
     # Approximate effective area from the normalized discrete ePSF samples.
     denom = sum(abs2, model.data)

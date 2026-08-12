@@ -26,6 +26,11 @@ length (the number of input sources).
 - `bkg_err`: 1-sigma background error (`zero(T)` if background was fixed).
 - `converged::BitVector`: whether the final LM fit converged.
 - `valid::BitVector`: whether the source survived between-pass validation.
+- `finalized::BitVector`: whether the source was selected for the "finalize"
+  step (see `finalize_snr_min`/`finalize_rad` keyword arguments below).
+  Decided once, from the pass-1 fit, and never revisited. For finalized
+  stars, `flux`/`flux_err` come from the closed-form large-footprint
+  estimator rather than the small-footprint LM fit.
 - `n_iter::Vector{Int}`: total LM iterations accumulated across all passes for each source.
 - `n_passes::Int`: number of passes actually performed.
 - `n_failed::Int`: number of stars whose fits threw exceptions and were marked
@@ -77,7 +82,9 @@ length (the number of input sources).
   measured on the original image with all neighbors present.  Values near zero
   indicate an isolated source; positive values indicate contamination by
   neighbor light.  Computed on the final pass; check `valid` and `converged`
-  before interpreting.
+  before interpreting.  For finalized stars (see `finalized` above), this is
+  computed over the large finalize footprint (the same region that produced
+  `flux`); otherwise it uses the small fitting footprint.
 """
 struct MultiPassPhotResult{T}
     y::Vector{T}
@@ -90,6 +97,7 @@ struct MultiPassPhotResult{T}
     bkg_err::Vector{T}
     converged::BitVector
     valid::BitVector
+    finalized::BitVector
     chisq::Vector{T}
     qfit::Vector{T}
     qfit_expected::Vector{T}
@@ -202,6 +210,51 @@ end
 # Core algorithm
 # ==============================================================================
 
+# Footprint (as `CartesianIndices`, unclamped) used for the "finalize" step
+# for a given model instance. If `finalize_rad` is `nothing`, use the
+# model's own natural extent (the full tabulated grid for
+# `ImagePSF`/`GriddedPSFModel`, or a `5xFWHM` box for analytic models);
+# otherwise a `±finalize_rad` square box centered on the model's position.
+function _finalize_extent(model, finalize_rad::Union{Nothing, Real})
+    if isnothing(finalize_rad)
+        return CartesianIndices(model)
+    else
+        yr = floor(Int, model.y - finalize_rad):ceil(Int, model.y + finalize_rad)
+        xr = floor(Int, model.x - finalize_rad):ceil(Int, model.x + finalize_rad)
+        return CartesianIndices((yr, xr))
+    end
+end
+
+# Closed-form weighted-least-squares flux sums for `model` (with `y`, `x`,
+# `bkg`, and shape held fixed) over `inds`, evaluated against both `clean`
+# (e.g. the neighbor-subtracted residual) and `dirty` (e.g. the original
+# image with all neighbors present) data. Returns `(num_clean, num_dirty,
+# den)` where `num_clean / den` is the flux MLE and `1 / den` is its
+# variance; `num_dirty / den` is the corresponding "dirty" flux, used for
+# the `crowding` diagnostic. This is the same accumulation used for the
+# existing `crowding` computation, generalized to an arbitrary footprint.
+function _finalize_sums(
+        model, clean::AbstractMatrix{FT}, dirty::AbstractMatrix, inds, inv_var,
+    ) where {FT}
+    inv_flux = inv(model.flux)
+    bkg = model.bkg
+    num_clean = zero(FT)
+    num_dirty = zero(FT)
+    den = zero(FT)
+    for pix in inds
+        model_val = evaluate(model, pix)
+        w = inv_var !== nothing ? inv_var[pix] : one(FT)
+        if isfinite(w) && w > 0
+            Pp = (model_val - bkg) * inv_flux
+            wP = w * Pp
+            num_clean += wP * (clean[pix] - bkg)
+            num_dirty += wP * (dirty[pix] - bkg)
+            den += wP * Pp
+        end
+    end
+    return num_clean, num_dirty, den
+end
+
 """
     fit_all_stars(image, psf, sources, fit_rad; kws...) -> MultiPassPhotResult
 
@@ -235,6 +288,34 @@ re-fitted, and re-subtracted, progressively refining all measurements.
   shape as `image`.  Forwarded to [`fit_star`](@ref CrowdPhot.PSF.fit_star),
   where non-positive or non-finite values are treated as masked pixels.  Stars
   with too few valid pixels are marked invalid and skipped.
+- `finalize_snr_min::Real = Inf`: SNR threshold (flux / flux_err from the
+  small-footprint fit) above which a star is selected for the "finalize"
+  step. The decision is made **once**, from the pass-1 fit, and never
+  revisited on later passes. Disabled by default (`Inf`).  For a selected
+  star, on *every* pass (not just the last), after the ordinary small-
+  footprint fit: the star's flux and flux uncertainty are re-measured with a
+  closed-form weighted-least-squares sum (no LM iteration; position,
+  background, and shape are held fixed at their small-footprint fitted
+  values) evaluated over a larger footprint (see `finalize_rad`), and that
+  larger footprint — not the small fitting footprint — is what gets
+  subtracted from the residual. This both (a) uses more of the PSF model's
+  information content to shrink `flux_err` for bright stars, and (b) removes
+  more of a bright star's wings from the residual before fainter neighbors
+  in its vicinity are measured, on every subsequent pass. `qfit`,
+  `qfit_expected`, and `qfit_z` remain scoped to the small fitting footprint
+  regardless of finalize status (a large-footprint aggregate would be
+  dominated by wing noise and lose sensitivity to core defects); `crowding`
+  tracks whichever footprint produced the reported flux.  Requires `flux` to
+  be a free parameter (not in `fixed`).
+- `finalize_rad::Union{Nothing,Real} = nothing`: half-width, in detector
+  pixels, of the `±finalize_rad` square footprint used for the finalize
+  step. Must satisfy `finalize_rad >= fit_rad` when given. If `nothing`
+  (the default), the model's own natural extent (`CartesianIndices(psf)`) is
+  used instead — the full tabulated grid for `ImagePSF`/`GriddedPSFModel`,
+  or a `5×FWHM` box for analytic models (with a warning, since an analytic
+  model's infinite tails make its default extent a somewhat arbitrary choice
+  of "large" footprint — an explicit `finalize_rad` is recommended for such
+  models). Ignored when `finalize_snr_min = Inf`.
 - All other keyword arguments (`max_iter`, `x_tol`, `f_tol`,
   `g_tol`, `show_trace`, `reweight`, `covariance_estimator`,
   `scale_estimator`, `damping`, etc.) are forwarded to
@@ -253,10 +334,15 @@ function fit_all_stars(
         n_passes::Integer = 3,
         fixed::NamedTuple = (;),
         inv_var = nothing,
+        finalize_snr_min::Real = Inf,
+        finalize_rad::Union{Nothing, Real} = nothing,
         kws...,
     ) where {T}
     FT = float(T)
     n_passes > 0 || throw(ArgumentError("n_passes must be positive, got $n_passes"))
+    isnothing(finalize_rad) || finalize_rad >= fit_rad ||
+        throw(ArgumentError("finalize_rad ($finalize_rad) must be >= fit_rad ($fit_rad)"))
+    finalize_rad_FT = isnothing(finalize_rad) ? nothing : FT(finalize_rad)
 
     # -------------------------------------------------------------------
     # 1. Extract source catalog into contiguous params/errors matrices
@@ -265,7 +351,7 @@ function fit_all_stars(
     n_params, n_stars = size(params)
     n_stars == 0 && return MultiPassPhotResult(
         FT[], FT[], FT[], FT[], FT[], FT[], FT[], FT[],
-        falses(0), falses(0), FT[], FT[], FT[], FT[], FT[], Int[], Int(0), Int(0), String[], Matrix{FT}(undef, 0, 0),
+        falses(0), falses(0), falses(0), FT[], FT[], FT[], FT[], FT[], Int[], Int(0), Int(0), String[], Matrix{FT}(undef, 0, 0),
     )
 
     # Map PSF property names to matrix row indices.
@@ -291,6 +377,23 @@ function fit_all_stars(
     end
 
     # -------------------------------------------------------------------
+    # 2b. Finalize-step setup (validated/precomputed once)
+    # -------------------------------------------------------------------
+    finalize_enabled = isfinite(finalize_snr_min)
+    flux_free_pos = findfirst(==(row_flux), free_idx)
+    if finalize_enabled && isnothing(flux_free_pos)
+        @warn "finalize_snr_min is finite but `flux` is fixed (via `fixed`); " *
+              "disabling the finalize step since an SNR cannot be computed for a fixed flux."
+        finalize_enabled = false
+    end
+    if finalize_enabled && isnothing(finalize_rad_FT) && !PSF._has_finite_support(psf)
+        @warn "finalize_rad is `nothing` and `psf` does not have finite support " *
+              "(e.g. an analytic model with formally infinite tails); falling back to " *
+              "the model's default `extent` (a 5xFWHM box) as the finalize footprint. " *
+              "Pass an explicit `finalize_rad` to control this."
+    end
+
+    # -------------------------------------------------------------------
     # 3. Copy image for progressive subtraction
     # -------------------------------------------------------------------
     residual = Matrix{FT}(image)
@@ -300,6 +403,7 @@ function fit_all_stars(
     # -------------------------------------------------------------------
     valid = trues(n_stars)
     converged = falses(n_stars)
+    finalized = falses(n_stars)
     chisq = zeros(FT, n_stars)
     qfit = fill(convert(FT, NaN), n_stars)
     qfit_expected = fill(convert(FT, NaN), n_stars)
@@ -336,13 +440,21 @@ function fit_all_stars(
             # Fit the star on the residual image.  A failed fit (e.g. too
             # few valid inv_var pixels) marks the star invalid and continues
             # to the next source without crashing the full run.
+            # `prev_inds` records the footprint that was actually subtracted
+            # for this star the last time it was processed (small `inds` if
+            # it was never finalized, or the finalize footprint if it was —
+            # see `finalized` below); it is what must be added back on
+            # passes 2+, and also what must be undone if this pass's fit
+            # throws.
+            prev_inds = (pass > 1 && finalized[idx]) ?
+                        _clamp_inds(_finalize_extent(m, finalize_rad_FT), residual) : inds
             local best, result
             try
                 # On passes 2+, add this star's previous model back so it is
                 # fitted against data containing only its own signal (plus
                 # noise); all neighbors are already subtracted.
                 if pass > 1
-                    PSF.add_star!(residual, m, inds)
+                    PSF.add_star!(residual, m, prev_inds)
                 end
 
                 best, result = PSF.fit_star(
@@ -365,9 +477,60 @@ function fit_all_stars(
                 chisq[idx] = result.chisq
                 n_iter[idx] += result.iterations
 
+                # Decide finalize-group membership exactly once, from the
+                # pass-1 fit, and never revisit it. Pass-1 contamination
+                # from not-yet-subtracted fainter neighbors (brighter stars
+                # are already subtracted; fainter ones are not, this early
+                # in the loop) can only inflate a star's apparent SNR, never
+                # deflate it — so this is a safe, one-sided (inclusive, not
+                # exclusive) selection. See `photometry_finalize.md` §4.3
+                # for the full argument.
+                # NOTE: selecting on pass 2 instead (after one round of
+                # subtraction has reduced blend contamination in the SNR
+                # estimate) might be preferable in the future; deferred here
+                # to keep the selection logic simple (decide once, never
+                # revisit).
+                if pass == 1
+                    snr = if finalize_enabled && !isnothing(result.cov)
+                        var_flux = result.cov[flux_free_pos, flux_free_pos]
+                        var_flux > 0 ? best.flux / sqrt(var_flux) : convert(FT, NaN)
+                    else
+                        convert(FT, NaN)
+                    end
+                    finalized[idx] = isfinite(snr) && snr >= FT(finalize_snr_min)
+                end
+                do_finalize = finalized[idx]
+
+                # For finalized stars, re-measure flux/flux_err with a
+                # closed-form sum over a larger footprint (position,
+                # background, and shape fixed at their small-footprint
+                # fitted values — no LM iteration). This is what actually
+                # gets subtracted from the residual for such stars.
+                local best_f, inds_f, num_clean_f, num_dirty_f, den_f
+                if do_finalize
+                    inds_f = _clamp_inds(_finalize_extent(best, finalize_rad_FT), residual)
+                    num_clean_f, num_dirty_f, den_f = _finalize_sums(best, residual, image, inds_f, inv_var)
+                    flux_f = den_f > 0 ? num_clean_f / den_f : best.flux
+                    flux_err_f = den_f > 0 ? FT(sqrt(inv(den_f))) : convert(FT, NaN)
+                    best_f = ConstructionBase.setproperties(best, (; flux = flux_f))
+                    params[row_flux, idx] = flux_f
+                    errors[row_flux, idx] = flux_err_f
+                end
+
                 # Compute qfit and crowding in one pixel pass on the final
                 # pass, before subtraction.  The unit-flux PSF kernel is
                 # extracted from the already-evaluated model value.
+                #
+                # `qfit`/`qfit_expected`/`qfit_z` always stay scoped to the
+                # small `inds` footprint, regardless of finalize status: an
+                # aggregate computed over a much larger footprint would be
+                # dominated by wing-noise pixels that carry no information
+                # about core model mismatch, diluting (or for `qfit_z`,
+                # losing statistical power to detect) exactly the defects
+                # these diagnostics exist to catch. `crowding`, by contrast,
+                # tracks whichever footprint actually produced the reported
+                # flux, since it is a statement about that specific
+                # measurement rather than a general fit-quality diagnostic.
                 if pass == n_passes && best.flux > 0
                     inv_flux = inv(best.flux)
                     qfit_val = zero(FT)
@@ -388,8 +551,14 @@ function fit_all_stars(
                         end
                     end
                     qfit[idx] = qfit_val * inv_flux
-                    if den_crowd > 0 && num_clean > 0 && num_dirty > 0
-                        crowding[idx] = FT(2.5) * log10(num_dirty / num_clean)
+                    if do_finalize
+                        if den_f > 0 && num_clean_f > 0 && num_dirty_f > 0
+                            crowding[idx] = FT(2.5) * log10(num_dirty_f / num_clean_f)
+                        end
+                    else
+                        if den_crowd > 0 && num_clean > 0 && num_dirty > 0
+                            crowding[idx] = FT(2.5) * log10(num_dirty / num_clean)
+                        end
                     end
                     # qfit_expected and qfit_z (no evaluate, separate loop).
                     if !isnothing(inv_var)
@@ -415,12 +584,18 @@ function fit_all_stars(
                     end
                 end
 
-                # Subtract the updated best-fit model.
-                PSF.subtract_star!(residual, best, inds)
+                # Subtract the updated best-fit model over whichever
+                # footprint applies (large finalize footprint if selected,
+                # small fitting footprint otherwise).
+                if do_finalize
+                    PSF.subtract_star!(residual, best_f, inds_f)
+                else
+                    PSF.subtract_star!(residual, best, inds)
+                end
             catch e
                 # Undo the add-back so the residual stays consistent.
                 if pass > 1
-                    PSF.subtract_star!(residual, m, inds)
+                    PSF.subtract_star!(residual, m, prev_inds)
                 end
                 valid[idx] = false
                 n_failed += 1
@@ -465,6 +640,6 @@ function fit_all_stars(
 
     return MultiPassPhotResult(
         y, x, y_err, x_err, flux, flux_err, bkg, bkg_err,
-        converged, valid, chisq, qfit, qfit_expected, qfit_z, crowding, n_iter, Int(n_passes), n_failed, failure_msgs, residual,
+        converged, valid, finalized, chisq, qfit, qfit_expected, qfit_z, crowding, n_iter, Int(n_passes), n_failed, failure_msgs, residual,
     )
 end

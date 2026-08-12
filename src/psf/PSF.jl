@@ -246,6 +246,20 @@ end
 end
 
 """
+    _has_finite_support(model::AbstractPSFModel) -> Bool
+
+Internal trait indicating whether `extent(model)` reflects a genuine, finite
+region of support (e.g. the tabulated grid of an [`ImagePSF`](@ref)) rather
+than an arbitrary `fwhm_factor`-scaled box around an analytic model with
+formally infinite tails (e.g. [`GaussianPSF`](@ref), [`MoffatPSF`](@ref),
+[`AiryPSF`](@ref)). Used to decide whether it is safe to fall back to
+`CartesianIndices(model)` as a default "large" footprint (e.g. for the
+`finalize_rad` feature of `fit_all_stars`) without an explicit user-provided
+radius.
+"""
+_has_finite_support(::AbstractPSFModel) = false
+
+"""
     CartesianIndices(model::AbstractPSFModel, [fwhm_factor]) -> CartesianIndices{2}
 
 Return the `CartesianIndices` covering the integer-rounded `extent` of `model`.

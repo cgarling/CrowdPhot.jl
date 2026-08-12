@@ -286,3 +286,8 @@ function extent(model::GriddedPSFModel{T}, fwhm_factor = 5) where {T}
     end
     return (ymin, ymax), (xmin, xmax)
 end
+
+# A gridded model has genuine finite support only if every active corner node
+# does (e.g. all corners are `ImagePSF`); analytic corner models still carry
+# formally infinite tails.
+_has_finite_support(model::GriddedPSFModel) = all(_has_finite_support, model.psfs)

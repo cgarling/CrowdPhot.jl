@@ -234,6 +234,7 @@ end
         @test result.flux_err isa Vector{Float64}
         @test result.converged isa BitVector
         @test result.valid isa BitVector
+        @test result.finalized isa BitVector
         @test result.n_iter isa Vector{Int}
         @test result.qfit isa Vector{Float64}
         @test result.qfit_expected isa Vector{Float64}
@@ -257,5 +258,169 @@ end
         result = fit_all_stars(image, psf, sources_bad, 5; n_passes = 2, max_iter = 100)
         @test sum(result.valid) == 5  # 5 good + 1 bad rejected
         @test !result.valid[6]
+    end
+end
+
+# ---------------------------------------------------------------------------
+# fit_all_stars — finalize step for bright stars
+# ---------------------------------------------------------------------------
+
+@testset "fit_all_stars — finalize step" begin
+    T = Float64
+
+    @testset "closed-form estimator is exact for noiseless data, any footprint" begin
+        # With y, x, bkg fixed at their (exactly recovered) truth values, the
+        # closed-form finalize sum reproduces the injected flux to high
+        # precision regardless of how large the finalize footprint is
+        # (num/den simplifies to the true flux identically in the noiseless
+        # limit). A small amount of noise is retained so that the LM
+        # covariance (and hence the finalize-selection SNR) is well-defined
+        # -- a truly noiseless fit has an exactly-zero residual variance, for
+        # which "SNR" is not a meaningful concept.
+        rng = StableRNG(1)
+        y0, x0, flux0, bkg0 = 40.0, 40.0, 5000.0, 20.0
+        wide_psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=8.0, flux=1.0, bkg=0.0)
+        image = simulate_image((81, 81), wide_psf, (; y=[y0], x=[x0], flux=[flux0]);
+            background = bkg0, noise = :gaussian, read_noise = 0.5, model_radius = 35, rng)
+        sources = (; y=[y0], x=[x0], flux=[flux0])
+
+        result = fit_all_stars(image, wide_psf, sources, 5;
+            n_passes = 1, max_iter = 200, fixed = (; bkg = bkg0),
+            finalize_snr_min = 1.0, finalize_rad = 30)
+
+        @test result.finalized[1]
+        @test result.flux[1] ≈ flux0 rtol = 1e-3
+        @test isfinite(result.flux_err[1])
+    end
+
+    @testset "variance reduction from a larger footprint" begin
+        # A star with wide (fwhm=8) wings fit only over a small fit_rad=5
+        # core throws away information available at larger radii; the
+        # finalize step should recover a smaller flux uncertainty than the
+        # small-footprint fit alone.
+        y0, x0, flux0, bkg0 = 50.0, 50.0, 20000.0, 20.0
+        wide_psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=8.0, flux=1.0, bkg=0.0)
+        sources = (; y=[y0], x=[x0], flux=[flux0])
+
+        image_a = simulate_image((101, 101), wide_psf, sources;
+            background = bkg0, noise = :gaussian, read_noise = 5.0, model_radius = 45, rng = StableRNG(2))
+        image_b = copy(image_a)
+
+        result_small = fit_all_stars(image_a, wide_psf, sources, 5;
+            n_passes = 1, max_iter = 200, fixed = (; bkg = bkg0))
+        result_large = fit_all_stars(image_b, wide_psf, sources, 5;
+            n_passes = 1, max_iter = 200, fixed = (; bkg = bkg0),
+            finalize_snr_min = 1.0, finalize_rad = 30)
+
+        @test !result_small.finalized[1]
+        @test result_large.finalized[1]
+        @test isfinite(result_small.flux_err[1])
+        @test isfinite(result_large.flux_err[1])
+        @test result_large.flux_err[1] < result_small.flux_err[1]
+
+        # qfit/qfit_expected/qfit_z are scoped to the small `inds` footprint
+        # regardless of finalize status, so they should be identical between
+        # the two runs (the small-footprint LM fit itself is unaffected by
+        # whether finalize triggers afterward).
+        @test result_small.qfit[1] ≈ result_large.qfit[1]
+    end
+
+    @testset "finalize decision is fixed at pass 1" begin
+        rng = StableRNG(3)
+        truth_psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=3.0, flux=1.0, bkg=0.0)
+        image, sources = simulate_image((80, 80), truth_psf, 4;
+            background = 20.0, noise = :gaussian, read_noise = 3.0,
+            flux = (500.0, 15000.0), min_separation = 12, border = 10,
+            model_radius = 15, rng)
+        psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=3.0, flux=1.0, bkg=0.0)
+
+        result = fit_all_stars(image, psf, sources, 5;
+            n_passes = 3, max_iter = 100, fixed = (; bkg = 20.0),
+            finalize_snr_min = 20.0, finalize_rad = 15)
+
+        # `finalized` reflects the pass-1 SNR test only; re-running with
+        # n_passes = 1 (i.e. stopping right after the same pass-1 fits that
+        # decide membership) must select exactly the same stars.
+        result_pass1_only = fit_all_stars(image, psf, sources, 5;
+            n_passes = 1, max_iter = 100, fixed = (; bkg = 20.0),
+            finalize_snr_min = 20.0, finalize_rad = 15)
+        @test result.finalized == result_pass1_only.finalized
+    end
+
+    @testset "finalize_rad validation" begin
+        psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=2.0, flux=1.0, bkg=0.0)
+        sources = (; y=[10.0], x=[10.0], flux=[100.0])
+        image = fill(20.0, 32, 32)
+        @test_throws ArgumentError fit_all_stars(image, psf, sources, 5; finalize_rad = 2)
+    end
+
+    @testset "backward compatibility: finalize disabled by default" begin
+        rng = StableRNG(4)
+        truth_psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=2.0, flux=1.0, bkg=0.0)
+        image, sources = simulate_image((64, 64), truth_psf, 3;
+            background = 20.0, noise = :none, flux = (500.0, 900.0),
+            min_separation = 12, border = 10, model_radius = 10, rng)
+        psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=2.0, flux=1.0, bkg=0.0)
+        result = fit_all_stars(image, psf, sources, 5; n_passes = 2, max_iter = 100)
+        @test all(x -> x == false, result.finalized)
+    end
+
+    @testset "warnings: fixed flux disables finalize; infinite-support model warns" begin
+        psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=2.0, flux=1.0, bkg=0.0)
+        sources = (; y=[16.0], x=[16.0], flux=[1000.0])
+        image = fill(20.0, 32, 32)
+
+        # `flux` fixed: finalize cannot compute an SNR, should warn once and
+        # disable finalize (no error, `finalized` stays all-false).
+        @test_logs (:warn,) match_mode = :any result_fixed_flux = fit_all_stars(
+            image, psf, sources, 5; n_passes = 1, fixed = (; flux = 1000.0),
+            finalize_snr_min = 1.0,
+        )
+
+        # Analytic model, `finalize_rad === nothing`: should warn about
+        # falling back to the model's default (5xFWHM) extent.
+        @test_logs (:warn,) match_mode = :any fit_all_stars(
+            image, psf, sources, 5; n_passes = 1, finalize_snr_min = 1.0,
+        )
+    end
+
+    @testset "crowding tracks the finalize footprint; qfit stays core-scoped" begin
+        # Bright star A with a faint neighbor B sitting between fit_rad and
+        # finalize_rad: invisible to A's small `inds` aperture (so baseline
+        # crowding ~ 0) but inside A's finalize footprint (so finalize-scope
+        # crowding should detect the contamination).
+        psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=3.0, flux=1.0, bkg=0.0)
+        y_a, x_a, flux_a = 40.0, 40.0, 30000.0
+        y_b, x_b, flux_b = 40.0, 51.0, 500.0
+        bkg0 = 20.0
+        sources = (; y=[y_a, y_b], x=[x_a, x_b], flux=[flux_a, flux_b])
+        image = simulate_image((80, 80), psf, sources;
+            background = bkg0, noise = :none, model_radius = 20)
+
+        result_baseline = fit_all_stars(image, psf, sources, 5;
+            n_passes = 3, max_iter = 100, fixed = (; bkg = bkg0))
+        result_finalized = fit_all_stars(image, psf, sources, 5;
+            n_passes = 3, max_iter = 100, fixed = (; bkg = bkg0),
+            finalize_snr_min = 10.0, finalize_rad = 15)
+
+        @test !result_baseline.finalized[1]
+        @test result_finalized.finalized[1]
+        @test !result_finalized.finalized[2]  # faint neighbor stays below threshold
+
+        # qfit stays scoped to the small core aperture regardless of finalize
+        # status, so it should be small (good fit) in both configurations;
+        # exact equality is not expected here since finalize's large-footprint
+        # subtraction (which overlaps the faint neighbor B) changes what add_star!
+        # restores across passes, which can perturb A's LM convergence path (not
+        # its converged value) at the floating-point/tolerance level. This is
+        # already checked more directly (fixed data, isolated star) in the
+        # "variance reduction" testset above.
+        @test result_baseline.qfit[1] < 1e-3
+        @test result_finalized.qfit[1] < 1e-3
+
+        # crowding for the finalized star should detect B's contamination
+        # (positive, larger than the non-finalized baseline which cannot see
+        # B at all from within the small aperture).
+        @test result_finalized.crowding[1] > result_baseline.crowding[1]
     end
 end
