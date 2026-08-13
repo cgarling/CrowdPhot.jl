@@ -104,7 +104,7 @@ end
     fit_star(model::AbstractPSFModel, image, inds=axes(image);
         fixed=(;), inv_var=nothing,
         damping::AbstractLMDamping=MarquardtDamping(),
-        max_iter=200, x_tol=1e-8, f_tol=1e-8, g_tol=1e-8,
+        max_iter=200, x_tol=1e-8, f_tol=1e-4, g_tol=1e-4,
         show_trace=false, 
         reweight=nothing,
         scale_estimator=nothing,
@@ -202,12 +202,28 @@ uncertainty in the weights. In this case, use [`ReweightedCovarianceEstimator`](
   [`LevenbergDamping`](@ref CrowdPhot.LevenbergDamping), or
   [`NoDamping`](@ref CrowdPhot.NoDamping))
 - `max_iter`: maximum number of LM iterations (default `200`)
-- `x_tol`: step-norm convergence criterion:
-  ``\\|\\delta\\| \\le x\\_tol\\cdot(\\|x\\|+x\\_tol)`` (default `1e-8`)
-- `f_tol`: cost-decrease convergence criterion:
-  ``\\Delta C \\le f\\_tol\\cdot(|C|+f\\_tol)`` (default `1e-8`)
-- `g_tol`: gradient-norm convergence criterion ``\\|J^\\top W r\\|``
-  (default `1e-8`)
+- `x_tol`: rescaled parameter-step convergence criterion (default `1e-8`):
+  `norm(D .* δ) ≤ x_tol * (norm(D .* x) + x_tol)`,
+  where `D[i] = max(sqrt(A[i,i]), D_prev[i])`
+  is a monotonically-growing per-parameter scale (analogous to MINPACK's
+  `diag` under `mode=1`) that prevents a large-magnitude parameter (e.g.
+  flux, in counts) from dominating the norm over a small-magnitude one
+  (e.g. position, in pixels). On a rejected step this additionally requires
+  `f_tol`'s criterion to also hold in order to consider the fit converged,
+  to avoid falsely reporting convergence from a step that is tiny only due
+  to heavy damping.
+- `f_tol`: cost-decrease convergence criterion (default `1e-4`), mirroring MINPACK's
+  three-part `ftol` test. The actual cost decrease `ΔC` must be small,
+  the LM quadratic model's *predicted* decrease `prered` must independently
+  be small, and their ratio must not indicate that the model is a poor
+  local approximation:
+  `abs(ΔC) <= f_tol * (abs(C) + f_tol) &&
+   prered <= f_tol * (abs(C) + f_tol) &&
+   0.5 * ΔC / prered <= 1`. 
+   Checked every iteration, not only on accepted steps.
+- `g_tol`: dimensionless per-parameter gradient-cosine convergence
+  criterion (default `1e-4`), bounded by Cauchy-Schwarz in `[-1, 1]`:
+  `max(abs.(b) ./ sqrt.(diag(A) .* C)) <= g_tol`.
 - `show_trace`: print per-iteration statistics to stdout (default `false`)
 """
 function fit_star(
@@ -224,8 +240,8 @@ function fit_star(
         damping::AbstractLMDamping = MarquardtDamping(),
         max_iter::Integer = 200,
         x_tol::Real = 1.0e-8,
-        f_tol::Real = 1.0e-8,
-        g_tol::Real = 1.0e-8,
+        f_tol::Real = 1.0e-4,
+        g_tol::Real = 1.0e-4,
         show_trace::Bool = false,
         reweight::Union{Nothing, LossFunctions.SupervisedLoss} = nothing,
         scale_estimator::Union{Nothing, AbstractScaleEstimator} = nothing,

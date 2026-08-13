@@ -2,7 +2,7 @@ module CrowdPhot
 
 import ConstructionBase
 using FillArrays: Fill
-using LinearAlgebra: cholesky, cholesky!, ldiv!, I, Symmetric, pinv, PosDefException, svd
+using LinearAlgebra: cholesky, cholesky!, ldiv!, dot, norm, I, Symmetric, pinv, PosDefException, svd
 import LossFunctions
 import Random
 using StaticArrays: SMatrix, @SMatrix, @SVector
