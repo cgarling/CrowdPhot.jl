@@ -8,9 +8,17 @@ Fields:
 - `minimum::T`: final cost `∑ wᵢ (fᵢ − dᵢ)²` at the solution
 - `cost_init::T`: cost at the initial parameter vector
 - `converged::Bool`:  `true` when any termination criterion was satisfied
-- `x_converged::Bool`: `true` when the step norm fell below `x_tol`
-- `f_converged::Bool`: `true` when the cost decrease fell below `f_tol`
-- `g_converged::Bool`: `true` when the gradient norm fell below `g_tol`
+- `x_converged::Bool`: `true` when the per-parameter rescaled step norm fell
+  below `x_tol`. On a rejected step this additionally requires `f_converged`
+  to also hold, guarding against a false positive from a step that is tiny
+  only because of heavy damping rather than genuine convergence.
+- `f_converged::Bool`: `true` when the actual cost decrease, the LM
+  quadratic model's *predicted* cost decrease, and their ratio
+  all indicate no further improvement is available (inspired by MINPACK's
+  three-part `ftol` test)
+- `g_converged::Bool`: `true` when the largest per-parameter cosine between
+  the gradient and the weighted-residual direction (Cauchy-Schwarz bounded
+  in `[-1, 1]`, dimensionless) fell below `g_tol`
 - `iterations::Int`: total number of Levenberg-Marquardt iterations performed
 - `λ_final::T`: damping parameter value at termination
 - `σ_final::T`: final scale estimate (NaN if not applicable)
@@ -430,8 +438,8 @@ function lm_irls(
         damping::AbstractLMDamping = MarquardtDamping(),
         max_iter::Integer = 200,
         x_tol::Real = 1.0e-8,
-        f_tol::Real = 1.0e-8,
-        g_tol::Real = 1.0e-8,
+        f_tol::Real = 1.0e-4,
+        g_tol::Real = 1.0e-4,
         show_trace::Bool = false,
         reweight::Union{Nothing, LossFunctions.SupervisedLoss} = nothing,
         scale_estimator::Union{Nothing, AbstractScaleEstimator} = nothing,
@@ -498,6 +506,13 @@ function lm_irls(
     cost = problem.accum!(A, b, residuals, x, weights)
     cost_init = cost
 
+    # Per-parameter scale for the rescaled x_tol test
+    # and a small floor to avoid a degenerate zero-scale for a
+    # parameter with no local curvature. Reuses MarquardtDamping's own
+    # min_diagonal default for consistency rather than a new magic number.
+    d_floor = FT(1.0e-6)
+    D = [sqrt(max(A[i, i], d_floor)) for i in 1:n]
+
     if show_trace
         gnorm0 = sqrt(sum(abs2, b))
         println("Initialization | cost = $cost_init | λ = $λ | ||g|| = $gnorm0")
@@ -511,12 +526,13 @@ function lm_irls(
 
     while iter < max_iter
         iter += 1
-        # If the gradient is already small, solving for a step can be unreliable.
-        gnorm = sqrt(sum(abs2, b))
-        if gnorm ≤ g_tol
+        # Dimensionless per-parameter cosine test, Cauchy-Schwarz bounded in [-1, 1]
+        g_tiny = eps(FT)
+        gnorm_cos = maximum(i -> abs(b[i]) / (sqrt(A[i, i] * cost) + g_tiny), 1:n)
+        if gnorm_cos ≤ g_tol
             g_converged = true
             converged = true
-            show_trace && println("Iter $(lpad(iter, 4)) | converged on gradient norm (||g|| = $gnorm)")
+            show_trace && println("Iter $(lpad(iter, 4)) | converged on gradient cosine (max|cos| = $gnorm_cos)")
             break
         end
 
@@ -535,31 +551,49 @@ function lm_irls(
         end
         ldiv!(δ, F, -b)
         δnorm = sqrt(sum(abs2, δ))
+        # Predicted reduction of the local quadratic cost model at the
+        # already-solved step, using the pre-damping A, b (MINPACK's prered).
+        prered = -2 * dot(δ, b) - dot(δ, A, δ)
 
         # Evaluate cost at candidate step, accept if cost decreases
         x_cand .= x .+ δ
         cost_cand = problem.accum!(A_cand, b_cand, residuals, x_cand, weights)
         accepted = cost_cand < cost
 
+        # Check convergence every iteration
+        Δcost = cost - cost_cand
+        ratio = prered > 0 ? Δcost / prered : zero(Δcost)
+        # For f_converged, we require that the actual cost decrease, the LM
+        # quadratic model's *predicted* cost decrease, and their ratio all
+        # indicate no further improvement is available.
+        # This is inspired by MINPACK's three-part `ftol` test.
+        f_converged = abs(Δcost) ≤ FT(f_tol) * (abs(cost) + FT(f_tol)) &&
+            prered ≤ FT(f_tol) * (abs(cost) + FT(f_tol)) &&
+            FT(0.5) * ratio ≤ 1
+        # On a rejected step, guard against a delta that is tiny purely from
+        # heavy damping (not genuine convergence) by also requiring
+        # f_converged; on an accepted step `accepted` short-circuits this.
+        x_converged = norm(D .* δ) ≤ FT(x_tol) * (norm(D .* x) + FT(x_tol)) &&
+            (accepted || f_converged)
+
         if show_trace
             status = accepted ? "accepted" : "rejected"
             println(
                 "Iter $(lpad(iter, 4)) | cost = $cost → $cost_cand | " *
-                    "λ = $λ | ||g|| = $gnorm | ||δ|| = $δnorm | $status"
+                    "λ = $λ | ||g|| = $gnorm_cos | ||δ|| = $δnorm | $status"
             )
         end
 
         if accepted
             # If accepted, update parameters, cost, and decrease damping λ
-            Δcost = cost - cost_cand
             cost = cost_cand
             λ = max(λ / FT(λ_down), FT(λ_min))
             x .= x_cand
             A .= A_cand
             b .= b_cand
-
-            x_converged = δnorm ≤ FT(x_tol) * (sqrt(sum(abs2, x)) + FT(x_tol))
-            f_converged = Δcost ≤ FT(f_tol) * (abs(cost) + FT(f_tol))
+            @inbounds for i in 1:n
+                D[i] = max(D[i], sqrt(A[i, i]))
+            end
 
             if x_converged || f_converged
                 converged = true
@@ -591,12 +625,21 @@ function lm_irls(
                     weight_change = sqrt(Δw²) / max(sqrt(wold²), sqrt(wnew²), eps(FT))
                     # A large weight update means the weighted least-squares
                     # objective changed enough to reset the damping history.
+                    # The diagonal scale history in D is stale for the same reason,
+                    # so re-initialize it from the just-recomputed A.
                     if weight_change ≥ FT(weight_reset_tol)
                         λ = FT(λ_init)
+                        @inbounds for i in 1:n
+                            D[i] = sqrt(max(A[i, i], d_floor))
+                        end
                     end
                 end
             end
         else
+            if x_converged || f_converged
+                converged = true
+                break
+            end
             λ = min(λ * FT(λ_up), FT(λ_max))
         end
     end
