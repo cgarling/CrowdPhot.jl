@@ -5,7 +5,7 @@ using FillArrays: Fill
 using LinearAlgebra: cholesky, cholesky!, ldiv!, dot, norm, I, Symmetric, pinv, PosDefException, svd
 import LossFunctions
 import Random
-using StaticArrays: SMatrix, @SMatrix, @SVector
+using StaticArrays: SMatrix, SVector, @SMatrix, @SVector
 using Statistics: median, median!, mean, std
 
 export Background2D
@@ -18,6 +18,7 @@ export CurveOfGrowth, curve_of_growth, encircled_energy, radius_at_energy, norma
 
 include("correlation.jl")
 include("utilities.jl")
+include("bessels.jl")
 include("levenberg_marquardt.jl")
 include("psf/PSF.jl")
 using .PSF
