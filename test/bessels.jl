@@ -1,15 +1,83 @@
-using CrowdPhot: CrowdPhot, besselj1
+using CrowdPhot: CrowdPhot, besselj0, besselj1
 using Bessels: Bessels
 using Test
 
-# Accuracy tests for the branchless `besselj1`/`_besselj1` port in
-# src/bessels.jl, checked directly against Bessels.jl's own (branchy)
-# reference implementation rather than reproducing its test suite. Points
-# are chosen to cross every region boundary in the branchless port:
-#   Float32: x <= 2 (rational near-origin form) vs. x > 2 (asymptotic form).
+# Accuracy tests for the branchless `besselj0`/`_besselj0` and
+# `besselj1`/`_besselj1` ports in src/bessels.jl, checked directly against
+# Bessels.jl's own (branchy) reference implementation rather than
+# reproducing its test suite. Points are chosen to cross every region
+# boundary in the branchless ports:
+#   Float32: x <= 2 (rational near-origin form, with a tiny-x shortcut for
+#     j0 at x < 1e-3) vs. x > 2 (asymptotic form).
 #   Float64: x <= pi/2 (low-order polynomial), pi/2 < x <= 26 (per-interval
 #     table lookup, spanning several different intervals), 26 < x < 120 and
 #     x >= 120 (asymptotic form, two rational-approximation orders).
+
+@testset "besselj0" begin
+    @testset "Float32" begin
+        xs = Float32[0.0, 1.0f-4, 1.0f-3, 0.5, 1.0, 1.9, 2.0, 2.1, 5.0, 20.0, 100.0, 1.0f4, 1.0f6]
+        xs = vcat(xs, -xs)
+        for x in xs
+            got = besselj0(x)
+            @test got isa Float32
+            @test got ≈ Bessels.besselj0(x) rtol = 1.0f-6 atol = 1.0f-7
+        end
+
+        # Same Inf handling as the Float64 port: the asymptotic branch's
+        # `iszero(inv(x))` guard in upstream Bessels.jl becomes the
+        # `phase_safe` finiteness clamp here.
+        @test besselj0(Inf32) == 0.0f0
+        @test besselj0(-Inf32) == 0.0f0
+    end
+
+    @testset "Float64" begin
+        # 2.4048255576957730 is the first zero of J0: the per-interval
+        # table-lookup region is hardest to hit accurately exactly at its
+        # expansion roots.
+        xs = Float64[0.0, 1.0e-8, 0.5, 1.0, pi / 2, 2.0, 2.4048255576957730, 5.0, 13.0, 25.9, 26.0, 50.0, 120.0, 500.0, 1.0e4]
+        xs = vcat(xs, -xs)
+        for x in xs
+            got = besselj0(x)
+            @test got isa Float64
+            @test got ≈ Bessels.besselj0(x) rtol = 1.0e-10 atol = 1.0e-12
+        end
+
+        # Beyond ~1e6, the vendored port uses plain `sin(x_safe + pi/4 + xn)`
+        # instead of upstream's double-double argument reduction (see
+        # src/bessels.jl); accuracy degrades gracefully but is intentionally
+        # not held to the same tolerance as the rest of the domain -- this
+        # package's actual argument range (u = pi*r/a for pixel-scale r)
+        # never approaches it.
+        @test besselj0(1.0e8) ≈ Bessels.besselj0(1.0e8) rtol = 1.0e-6
+
+        # x == Inf lands in the asymptotic branch (x >= 26) without being
+        # substituted away by the "keep inv/sqrt safe" x_safe guard, so it
+        # exercises a separate finiteness guard on sin's argument -- see
+        # src/bessels.jl for why this needs its own handling.
+        @test besselj0(Inf) == 0.0
+        @test besselj0(-Inf) == 0.0
+        @test isnan(besselj0(NaN))
+    end
+
+    @testset "Float16" begin
+        for x in Float16[0.0, 0.5, 1.3, 2.5, -1.3]
+            got = besselj0(x)
+            @test got isa Float16
+            @test got ≈ Bessels.besselj0(x) rtol = 1.0f-3
+        end
+    end
+
+    @testset "Float64 lookup tables are Vec-gather-safe" begin
+        # Same gather requirement as the J1 tables (see the besselj1 testset
+        # below and src/bessels.jl for the full story).
+        @test CrowdPhot.J0_ROOTS_HI_F64 isa Array
+        @test CrowdPhot.J0_ROOTS_LO_F64 isa Array
+        @test length(CrowdPhot.J0_ROOTS_HI_F64) == 16
+        @test length(CrowdPhot.J0_ROOTS_LO_F64) == 16
+        @test length(CrowdPhot.J0_POLYS_F64) == 14
+        @test all(col -> col isa Array && length(col) == 16, CrowdPhot.J0_POLYS_F64)
+    end
+end
 
 @testset "besselj1" begin
     @testset "Float32" begin
@@ -20,6 +88,12 @@ using Test
             @test got isa Float32
             @test got ≈ Bessels.besselj1(x) rtol = 1.0f-6 atol = 1.0f-7
         end
+
+        # Same `phase_safe` finiteness clamp as besselj0's Float32 port
+        # (upstream Bessels.jl reaches 0 here via an explicit
+        # `iszero(inv(x)) && return zero(T)` guard).
+        @test besselj1(Inf32) == 0.0f0
+        @test besselj1(-Inf32) == 0.0f0
     end
 
     @testset "Float64" begin

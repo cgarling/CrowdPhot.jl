@@ -931,9 +931,11 @@ function evaluate_fg(model::AiryPSF{T}, py, px) where {T}
     u = π * r / a
     A2, dA2_du = ifelse(abs(u) < eps(T),
         (one(T), zero(T)),
-        let J0 = besselj0(u), J1 = besselj1(u), J2 = besselj(2, u),
+        let J0 = besselj0(u), J1 = besselj1(u),
             A  = 2J1 / u,
-            Ap = (u * (J0 - J2) - 2J1) / u^2
+            # J2 eliminated via the Bessel recurrence J2 = (2/u)J1 - J0:
+            # Ap = (u * (J0 - J2) - 2J1) / u^2 = 2J0/u - 4J1/u^2
+            Ap = 2 * J0 / u - 4 * J1 / u^2
             (A^2, 2A * Ap)
         end)
     norm = a^2 / π * 4

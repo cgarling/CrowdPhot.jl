@@ -1000,9 +1000,10 @@ function _accum_airy!(
         else
             J0 = besselj0(u)
             J1 = besselj1(u)
-            J2 = besselj(2, u)
             airy = 2 * J1 / u
-            airy_p = (u * (J0 - J2) - 2 * J1) / (u^2)
+            # J2 eliminated via the Bessel recurrence J2 = (2/u)J1 - J0:
+            # airy_p = (u * (J0 - J2) - 2J1) / u^2 = 2J0/u - 4J1/u^2
+            airy_p = 2 * J0 / u - 4 * J1 / u^2
             A2 = airy^2
             dA2_du = 2 * airy * airy_p
         end
