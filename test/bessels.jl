@@ -70,12 +70,12 @@ using Test
     @testset "Float64 lookup tables are Vec-gather-safe" begin
         # Same gather requirement as the J1 tables (see the besselj1 testset
         # below and src/bessels.jl for the full story).
-        @test CrowdPhot.J0_ROOTS_HI_F64 isa Array
-        @test CrowdPhot.J0_ROOTS_LO_F64 isa Array
-        @test length(CrowdPhot.J0_ROOTS_HI_F64) == 16
-        @test length(CrowdPhot.J0_ROOTS_LO_F64) == 16
-        @test length(CrowdPhot.J0_POLYS_F64) == 14
-        @test all(col -> col isa Array && length(col) == 16, CrowdPhot.J0_POLYS_F64)
+        @test CrowdPhot.Bessels.J0_ROOTS_HI_F64 isa Array
+        @test CrowdPhot.Bessels.J0_ROOTS_LO_F64 isa Array
+        @test length(CrowdPhot.Bessels.J0_ROOTS_HI_F64) == 16
+        @test length(CrowdPhot.Bessels.J0_ROOTS_LO_F64) == 16
+        @test length(CrowdPhot.Bessels.J0_POLYS_F64) == 14
+        @test all(col -> col isa Array && length(col) == 16, CrowdPhot.Bessels.J0_POLYS_F64)
     end
 end
 
@@ -145,11 +145,11 @@ end
         # length check guards against a silent incomplete transpose (all 16
         # intervals must survive the row -> structure-of-arrays reshape).
         # See src/bessels.jl for the full story.
-        @test CrowdPhot.J1_ROOTS_HI_F64 isa Array
-        @test CrowdPhot.J1_ROOTS_LO_F64 isa Array
-        @test length(CrowdPhot.J1_ROOTS_HI_F64) == 16
-        @test length(CrowdPhot.J1_ROOTS_LO_F64) == 16
-        @test length(CrowdPhot.J1_POLYS_F64) == 14
-        @test all(col -> col isa Array && length(col) == 16, CrowdPhot.J1_POLYS_F64)
+        @test CrowdPhot.Bessels.J1_ROOTS_HI_F64 isa Array
+        @test CrowdPhot.Bessels.J1_ROOTS_LO_F64 isa Array
+        @test length(CrowdPhot.Bessels.J1_ROOTS_HI_F64) == 16
+        @test length(CrowdPhot.Bessels.J1_ROOTS_LO_F64) == 16
+        @test length(CrowdPhot.Bessels.J1_POLYS_F64) == 14
+        @test all(col -> col isa Array && length(col) == 16, CrowdPhot.Bessels.J1_POLYS_F64)
     end
 end

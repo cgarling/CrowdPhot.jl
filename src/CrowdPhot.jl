@@ -19,6 +19,7 @@ export CurveOfGrowth, curve_of_growth, encircled_energy, radius_at_energy, norma
 include("correlation.jl")
 include("utilities.jl")
 include("bessels.jl")
+using .Bessels
 include("levenberg_marquardt.jl")
 include("psf/PSF.jl")
 using .PSF
