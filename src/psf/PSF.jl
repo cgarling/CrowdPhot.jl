@@ -4,6 +4,7 @@ import ..CrowdPhot: AbstractLMDamping, AbstractScaleEstimator, AbstractCovarianc
 using ..CrowdPhot: sigma_clip, sigma_clip!, besselj0, besselj1
 import ConstructionBase
 import LossFunctions
+import LoopVectorization as LV
 using SpecialFunctions: erf
 using StaticArrays: SA, SVector, MMatrix
 using Statistics: median, mean, quantile, std
@@ -37,6 +38,8 @@ Evaluate the PSF model at position `(y, x)`, where `y` is the row
 (first array index) and `x` is the column (second array index).
 """
 function evaluate end
+# Declare that evaluate is allowed to be used inside @turbo loops.
+LV.can_turbo(::typeof(evaluate), ::Val{3}) = true
 
 """
     centroid(model::AbstractPSFModel{T}) → (y::T, x::T)
@@ -267,7 +270,7 @@ odd (required for use as a correlation kernel in [`CrowdPhot.correlate`](@ref)).
 Dimension 1 (rows) corresponds to the y (row) coordinate and dimension 2 (columns)
 corresponds to the x (column) coordinate, consistent with `image[y, x]` indexing.
 """
-function render(model::AbstractPSFModel)
+function render(model::AbstractPSFModel{T}) where T
     (y_lo, y_hi), (x_lo, x_hi) = extent(model)
     y0, x0 = centroid(model)
     # Half-width large enough to cover the extent on both sides of the centroid.
@@ -276,9 +279,18 @@ function render(model::AbstractPSFModel)
     # Center on the nearest pixel to the true centroid.
     xc = round(Int, x0)
     yc = round(Int, y0)
-    xinds = (xc - hx):(xc + hx)
-    yinds = (yc - hy):(yc + hy)
-    return evaluate.(model, yinds, xinds')
+    # Number of pixels along each dimension
+    nx = 2hx + 1
+    ny = 2hy + 1
+    result = Matrix{T}(undef, ny, nx)
+    LV.@turbo for j in 1:nx
+        xi = xc - hx + j - 1
+        for i in 1:ny
+            yi = yc - hy + i - 1
+            result[i, j] = evaluate(model, yi, xi)
+        end
+    end
+    return result
 end
 
 """
