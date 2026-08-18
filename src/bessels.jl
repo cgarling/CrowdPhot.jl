@@ -2,7 +2,7 @@ module Bessels
 
 export besselj0, besselj1
 
-# Extracted and adapted from Bessels.jl (MIT-licensed, Michael Helton et al.).
+# Adapted from Bessels.jl (MIT-licensed, Michael Helton et al.).
 # These functions have been modified to support SIMD through LoopVectorization.jl.
 # This mainly involves changing `if else end` branches into `ifelse` statements,
 # and dispatching on `eltype` rather than the concrete argument type so that
