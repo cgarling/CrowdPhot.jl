@@ -1,10 +1,10 @@
 module PSF
 
 import ..CrowdPhot: AbstractLMDamping, AbstractScaleEstimator, AbstractCovarianceEstimator, LMResult, MarquardtDamping, MADScale, FixedScale, MScale, estimate_scale, TukeyLoss, weight, KnownWeightsCovarianceEstimator, ReweightedCovarianceEstimator, LMProblem, lm_irls
-using ..CrowdPhot: sigma_clip, sigma_clip!
+using ..CrowdPhot: sigma_clip, sigma_clip!, besselj1
 import ConstructionBase
 import LossFunctions
-using SpecialFunctions: besselj, besselj0, besselj1, erf
+using SpecialFunctions: besselj, besselj0, erf
 using StaticArrays: SA, SVector, MMatrix
 using Statistics: median, mean, quantile, std
 

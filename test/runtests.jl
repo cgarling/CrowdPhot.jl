@@ -24,5 +24,6 @@ import CrowdPhot
 @safetestset "Curve of Growth" include("curve_of_growth_tests.jl")
 @safetestset "Detection" include("detection_tests.jl")
 @safetestset "Utilities" include("utilities/calc_total_error_tests.jl")
+@safetestset "Bessel functions" include("bessels.jl")
 @safetestset "Photometry" include("photometry/psf_photometry_single.jl")
 @safetestset "Doctests" include("doctests.jl")
