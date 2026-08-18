@@ -69,7 +69,7 @@ function CrowdPhot.PSF.roman_crds_gridded_epsf(path::AbstractString;
     # and must be used unchanged; scaling it again would be silently wrong.
 
     psfs = [ImagePSF(stamp; oversampling = os, origin, normalize) for stamp in stamps]
-    return GriddedPSFModel(psfs, Vector{Float64}(pixel_y), Vector{Float64}(pixel_x))
+    return GriddedPSFModel(psfs, Vector{T}(pixel_y), Vector{T}(pixel_x))
 end
 
 end # module
