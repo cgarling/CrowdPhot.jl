@@ -226,32 +226,34 @@ Boundary conditions and assumptions:
 - The interpolant is intended for regularly spaced grid samples. `y` and `x`
   are array coordinates, not detector-pixel coordinates.
 """
-function bicubic_interpolate(data::AbstractMatrix, y, x; fill_value = zero(eltype(data)))
-    # Work in a promoted floating type and reject out-of-grid samples early.
+@inline function bicubic_interpolate(data::AbstractMatrix, y, x; fill_value = zero(eltype(data)))
     T = promote_type(eltype(data), typeof(y), typeof(x), typeof(fill_value))
     T = float(T)
     ny, nx = size(data)
     nx ≥ 4 && ny ≥ 4 || throw(ArgumentError("`data` must have at least four samples along each axis"))
     yy, xx = T(y), T(x)
-    if !(isfinite(xx) && isfinite(yy)) || xx < one(T) || xx > T(nx) || yy < one(T) || yy > T(ny)
-        return T(fill_value), zero(T), zero(T)
-    end
+    # Branch-free inbounds detection so this stays safe to call with SIMD
+    # Means we do extra work if the point is out-of-bounds compared to scalar case / early return
+    _inbound = isfinite(xx) & isfinite(yy) & (xx >= one(T)) & (xx <= T(nx)) & (yy >= one(T)) & (yy <= T(ny))
+    xxc = ifelse(_inbound, xx, one(T))
+    yyc = ifelse(_inbound, yy, one(T))
 
     # Locate the lower-left grid cell and fractional offset inside it.
-    lx = clamp(floor(Int, xx), 1, nx - 1)
-    ly = clamp(floor(Int, yy), 1, ny - 1)
-    dx = xx - T(lx)
-    dy = yy - T(ly)
+    # `Int32` (not `Int`) roughly halves the SIMD gather count under `@turbo`.
+    lx = clamp(floor(Int32, xxc), Int32(1), Int32(nx - 1))
+    ly = clamp(floor(Int32, yyc), Int32(1), Int32(ny - 1))
+    dx = xxc - T(lx)
+    dy = yyc - T(ly)
 
     # Clamp the 4x4 stencil once so edge samples are reused directly below.
-    ix1 = clamp(lx - 1, 1, nx)
+    ix1 = clamp(lx - Int32(1), Int32(1), Int32(nx))
     ix2 = lx
-    ix3 = lx + 1
-    ix4 = clamp(lx + 2, 1, nx)
-    iy1 = clamp(ly - 1, 1, ny)
+    ix3 = lx + Int32(1)
+    ix4 = clamp(lx + Int32(2), Int32(1), Int32(nx))
+    iy1 = clamp(ly - Int32(1), Int32(1), Int32(ny))
     iy2 = ly
-    iy3 = ly + 1
-    iy4 = clamp(ly + 2, 1, ny)
+    iy3 = ly + Int32(1)
+    iy4 = clamp(ly + Int32(2), Int32(1), Int32(ny))
 
     # Interpolate each row in x and keep the row-wise x derivatives.
     @inbounds begin
@@ -276,7 +278,7 @@ function bicubic_interpolate(data::AbstractMatrix, y, x; fill_value = zero(eltyp
     # Interpolate those row values in y, including both first derivatives.
     value, dfdy = _cubic4(row1, row2, row3, row4, dy)
     dfdx, _ = _cubic4(drow1dx, drow2dx, drow3dx, drow4dx, dy)
-    return value, dfdy, dfdx
+    return ifelse(_inbound, value, T(fill_value)), ifelse(_inbound, dfdy, zero(T)), ifelse(_inbound, dfdx, zero(T))
 end
 
 function evaluate(model::ImagePSF{T}, py, px) where {T}
