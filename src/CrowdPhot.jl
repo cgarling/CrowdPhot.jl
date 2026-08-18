@@ -32,5 +32,6 @@ include("apertures.jl")
 include("morphology.jl")
 include("curve_of_growth.jl")
 include("photometry/psf_photometry_single.jl")
+include("precompile.jl")
 
 end # module CrowdPhot
