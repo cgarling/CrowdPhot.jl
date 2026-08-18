@@ -1,3 +1,7 @@
+module Bessels
+
+export besselj0, besselj1
+
 # Extracted and adapted from Bessels.jl (MIT-licensed, Michael Helton et al.).
 # These functions have been modified to support SIMD through LoopVectorization.jl.
 # This mainly involves changing `if else end` branches into `ifelse` statements,
@@ -351,3 +355,5 @@ end
 
     return ifelse(small, p_small, p_large) * s
 end
+
+end # module
