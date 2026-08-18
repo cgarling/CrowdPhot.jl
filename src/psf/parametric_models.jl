@@ -911,13 +911,7 @@ function evaluate(model::AiryPSF{T}, py, px) where {T}
     r = sqrt((px - model.x)^2 + (py - model.y)^2)
     a = model.radius / T(AIRY_RZ)
     u = π * r / a
-    # Handle the u=0 case separately to avoid NaNs from besselj1(0)/0
-    A2 = if abs(u) < eps(T)
-        one(T)
-    else
-        J1 = besselj1(u)
-        (2 * J1 / u)^2
-    end
+    A2 = ifelse(abs(u) < eps(T), one(T), (2 * besselj1(u) / u)^2)
     norm = a^2 / π * 4
     amp = model.flux / norm
     return muladd(amp, A2, model.bkg)
@@ -935,18 +929,13 @@ function evaluate_fg(model::AiryPSF{T}, py, px) where {T}
     r = sqrt(dx^2 + dy^2)
     a = model.radius / T(AIRY_RZ)
     u = π * r / a
-    if abs(u) < eps(T)
-        A2 = one(T)
-        dA2_du = zero(T)
-    else
-        J0 = besselj0(u)
-        J1 = besselj1(u)
-        J2 = besselj(2, u)
-        A = 2J1 / u
-        Ap = (u * (J0 - J2) - 2J1) / (u^2)
-        A2 = A^2
-        dA2_du = 2A * Ap
-    end
+    A2, dA2_du = ifelse(abs(u) < eps(T),
+        (one(T), zero(T)),
+        let J0 = besselj0(u), J1 = besselj1(u), J2 = besselj(2, u),
+            A  = 2J1 / u,
+            Ap = (u * (J0 - J2) - 2J1) / u^2
+            (A^2, 2A * Ap)
+        end)
     norm = a^2 / π * 4
     amp = model.flux / norm
     f = muladd(amp, A2, model.bkg)
