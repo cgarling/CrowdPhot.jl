@@ -1,9 +1,10 @@
-# correlation.jl — 2D correlation filtering for CrowdPhot.jl
+# correlation.jl -- 2D correlation filtering for CrowdPhot.jl
 #
 # Extracted and adapted from ImageFiltering.jl (MIT-licensed, Tim Holy et al.).
 # This file provides a self-contained FIR (finite impulse response) 2D correlation
 # engine with automatic separable-kernel detection via SVD.  It depends only on
-# LinearAlgebra (stdlib) — no OffsetArrays, no image ecosystem, no FFTW.
+# LinearAlgebra (stdlib) and LoopVectorization -- no OffsetArrays, no image
+# ecosystem, no FFTW.
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -13,7 +14,7 @@
     correlate(img::AbstractMatrix, kernel, [border=:replicate]) -> Matrix
 
 Compute the 2D correlation of `img` with `kernel`, returning a matrix of the
-same size as `img`.  The `kernel` is **not** flipped — this is correlation,
+same size as `img`.  The `kernel` is **not** flipped -- this is correlation,
 not convolution.
 
 `kernel` may be:
@@ -25,8 +26,8 @@ not convolution.
   e.g. `(col_vec, row_vec)` where `col_vec` is `kr×1` and `row_vec` is `1×kc`.
 
 `border` controls how the image is extended at the edges:
-- `:replicate` (default) — repeat the nearest border pixel.
-- `:zero` — pad with zeros.
+- `:replicate` (default) -- repeat the nearest border pixel.
+- `:zero` -- pad with zeros.
 
 See also: [`correlate!`](@ref) for an in-place variant.
 
@@ -54,9 +55,9 @@ a dense `Matrix` copy of the kernel, so wrapper array types are materialised.
 When `kernel` is a `Tuple` of two matrices, the **shape** of each factor
 determines the filtering direction:
 
-- `m × 1` — filters along rows (dimension 1).  Its center is at row
+- `m × 1` -- filters along rows (dimension 1).  Its center is at row
   `(m+1)÷2`.
-- `1 × n` — filters along columns (dimension 2).  Its center is at column
+- `1 × n` -- filters along columns (dimension 2).  Its center is at column
   `(n+1)÷2`.
 
 Each factor must have exactly one non-singleton dimension.  A factor that
@@ -69,7 +70,7 @@ not rely on it.
 
 ### Correlation, not convolution
 
-The kernel is applied as-is — no flipping is performed.  This is correlation
+The kernel is applied as-is -- no flipping is performed.  This is correlation
 (also called "matched filtering" in the signal-processing literature), not
 convolution.  If you have a convolution kernel, reverse it along both axes
 before calling `correlate`.
@@ -83,18 +84,25 @@ output element type.  For mixed-precision workloads (e.g. `Float32` image
 with `Float64` kernel), consider passing an explicit output type by
 allocating the output yourself and calling `correlate!`.
 
-### Multithreading
+### Vectorization
 
-The inner loops use `Threads.@threads` over columns.  On machines with many
-cores the speedup is substantial (3–5× on 16 threads).  On single-threaded
-runs the overhead is negligible.
+The interior fast-path loops (full kernel footprint in bounds) use
+`LoopVectorization.@turbo` for SIMD vectorization instead of threading.
+Element types LoopVectorization does not support (e.g. `Complex`,
+`BigFloat`) transparently fall back to a scalar loop via LV's own
+`check_args` mechanism, emitting a suppressible warning; ordinary
+floating-point and integer image/kernel types vectorize normally.
+Because SIMD reassociates the accumulation, results can differ from a
+naive scalar loop at the level of floating-point roundoff.
 
 ### Border handling
 
-Border conditions are handled inline via strip-mining — no padded copy of
+Border conditions are handled inline via strip-mining -- no padded copy of
 the input image is made.  The interior pixels (where the full kernel
-footprint lies within the image bounds) use a `@inbounds` fast path.
-The thin border strips use per-access bounds checks via `_getpixel`.
+footprint lies within the image bounds) use the `@turbo` fast path described
+above.  The thin border strips use per-access bounds checks via `_getpixel`
+and remain plain (non-vectorized, non-threaded) `@inbounds` loops, since
+`@turbo` cannot see through those function calls.
 """
 function correlate(img::AbstractMatrix{T}, kernel, border::Symbol=:replicate) where {T}
     S = promote_type(T, _eltype_kernel(kernel))
@@ -107,8 +115,8 @@ end
 
 In-place variant of [`correlate`](@ref).  Writes the correlation result into `out`,
 which must have the same axes as `img`.  `out` must not be the same object as `img`
-(in-place correlation is not a valid operation; aliasing causes data races under
-multi-threading).
+(in-place correlation is not a valid operation; each output pixel reads a
+neighborhood of input pixels that would otherwise be overwritten mid-pass).
 """
 function correlate!(out::AbstractMatrix, img::AbstractMatrix, kernel, border::Symbol=:replicate)
     axes(out) == axes(img) || throw(DimensionMismatch(
@@ -128,11 +136,11 @@ function correlate!(out::AbstractMatrix, img::AbstractMatrix, kernel, border::Sy
     else
         throw(ArgumentError("unknown border mode :$border; use :replicate or :zero"))
     end
-    out
+    return out
 end
 
 # ---------------------------------------------------------------------------
-# Kernel canonicalization — convert everything to Tuple form
+# Kernel canonicalization -- convert everything to Tuple form
 # ---------------------------------------------------------------------------
 
 _eltype_kernel(kernel::AbstractMatrix) = eltype(kernel)
@@ -181,7 +189,7 @@ function _validate_kernel(kernel::AbstractMatrix)
             "kernel must use 1-based indexing (got axes $(axes(kernel))); " *
             "OffsetArrays and other non-standard index ranges are not supported"))
     end
-    nothing
+    return nothing
 end
 
 function _tryfactor(kernel::AbstractMatrix{T}) where {T}
@@ -212,7 +220,7 @@ function _tryfactor(kernel::AbstractMatrix{T}) where {T}
     return (k1, k2)
 end
 
-# Sentinel identity kernel.  A 1×1 matrix [1.0] — convolving with this is a no-op.
+# Sentinel identity kernel.  A 1×1 matrix [1.0] -- convolving with this is a no-op.
 _identity_kernel(::Type{T}) where {T} = fill(one(float(T)), 1, 1)
 
 _isidentity(k::AbstractMatrix) = size(k) == (1, 1) && k[1, 1] == 1
@@ -245,7 +253,7 @@ Return `img[r, c]` if in bounds, or `zero(eltype(img))` otherwise.
     end
 end
 
-# Row-only variant — caller guarantees column is in bounds.
+# Row-only variant -- caller guarantees column is in bounds.
 @inline function _getpixel_row(img::AbstractMatrix, r::Int, c::Int, ::Val{:replicate})
     r = clamp(r, 1, size(img, 1))
     @inbounds img[r, c]
@@ -258,7 +266,7 @@ end
     end
 end
 
-# Col-only variant — caller guarantees row is in bounds.
+# Col-only variant -- caller guarantees row is in bounds.
 @inline function _getpixel_col(img::AbstractMatrix, r::Int, c::Int, ::Val{:replicate})
     c = clamp(c, 1, size(img, 2))
     @inbounds img[r, c]
@@ -272,11 +280,11 @@ end
 end
 
 # ---------------------------------------------------------------------------
-# Correlation scheduler — routes to 1D-separable or 2D-inseparable paths
+# Correlation scheduler -- routes to 1D-separable or 2D-inseparable paths
 #
 # Each function receives the original (unpadded) image and handles border
 # conditions inline via strip-mining.  `correlate!` guarantees `out !== img`,
-# so all inner loops are thread-safe.
+# so aliasing is never a concern for the in-place writes below.
 # ---------------------------------------------------------------------------
 
 function _correlate!(out::AbstractMatrix, img::AbstractMatrix, kernel::Tuple{Any},
@@ -300,7 +308,7 @@ function _correlate!(out::AbstractMatrix, img::AbstractMatrix, kernel::Tuple{Any
     _correlate_1d!(out, tmp, k2, Val{B}())
 end
 
-# Three or more factors — fold left with fresh intermediates at each step.
+# Three or more factors -- fold left with fresh intermediates at each step.
 function _correlate!(out::AbstractMatrix, img::AbstractMatrix, kernel::Tuple,
                      ::Val{B}) where {B}
     T = promote_type(eltype(out), _eltype_kernel(kernel))
@@ -317,7 +325,7 @@ function _correlate!(out::AbstractMatrix, img::AbstractMatrix, kernel::Tuple,
 end
 
 # ---------------------------------------------------------------------------
-# Inner correlation loops — strip-mined with border handling
+# Inner correlation loops -- strip-mined with border handling
 #
 # Indexing convention: for a kernel of size (kr, kc) with center at
 # (cr, cc) = ((kr+1)÷2, (kc+1)÷2) and radius (r, c) = (kr÷2, kc÷2),
@@ -329,8 +337,9 @@ end
 #
 #     Σ_j Σ_i  img[row + i - r - 1, col + j - c - 1] * kernel[i, j]
 #
-# The interior region (rows r+1..H-r, cols c+1..W-c) uses a pure @inbounds
-# fast path.  Border strips use _getpixel to clamp out-of-bounds accesses.
+# The interior region (rows r+1..H-r, cols c+1..W-c) uses an `LV.@turbo`
+# fast path.  Border strips use _getpixel to clamp out-of-bounds accesses
+# and remain plain `@inbounds` loops (see the module docstring).
 # ---------------------------------------------------------------------------
 
 # ---- 1D dispatch ----
@@ -360,46 +369,40 @@ function _correlate_rows!(out::AbstractMatrix, img::AbstractMatrix,
     # Interior rows: r+1 .. H-r.  All kernel footprint rows are in bounds.
     ri, re = r + 1, H - r
     if ri <= re
-        Threads.@threads for col in 1:W
-            @inbounds for row in ri:re
-                acc = z
-                for j in 1:kr
-                    acc += img[row + j - r - 1, col] * kernel[j, 1]
-                end
-                out[row, col] = acc
+        LV.@turbo for col in 1:W, row in ri:re
+            acc = z
+            for j in 1:kr
+                acc += img[row + j - r - 1, col] * kernel[j, 1]
             end
+            out[row, col] = acc
         end
     end
 
     # Top border: rows 1 .. r.  Row index may underflow.
     if r >= 1
-        Threads.@threads for col in 1:W
-            @inbounds for row in 1:r
-                acc = z
-                for j in 1:kr
-                    ir = row + j - r - 1
-                    acc += _getpixel_row(img, ir, col, Val{B}()) * kernel[j, 1]
-                end
-                out[row, col] = acc
+        @inbounds for col in 1:W, row in 1:r
+            acc = z
+            for j in 1:kr
+                ir = row + j - r - 1
+                acc += _getpixel_row(img, ir, col, Val{B}()) * kernel[j, 1]
             end
+            out[row, col] = acc
         end
     end
 
     # Bottom border: rows H-r+1 .. H.  Row index may overflow.
     if r >= 1
-        Threads.@threads for col in 1:W
-            @inbounds for row in H-r+1:H
-                acc = z
-                for j in 1:kr
-                    ir = row + j - r - 1
-                    acc += _getpixel_row(img, ir, col, Val{B}()) * kernel[j, 1]
-                end
-                out[row, col] = acc
+        @inbounds for col in 1:W, row in H-r+1:H
+            acc = z
+            for j in 1:kr
+                ir = row + j - r - 1
+                acc += _getpixel_row(img, ir, col, Val{B}()) * kernel[j, 1]
             end
+            out[row, col] = acc
         end
     end
 
-    out
+    return out
 end
 
 # ---- Column filter (1×n kernel) ----
@@ -415,46 +418,40 @@ function _correlate_cols!(out::AbstractMatrix, img::AbstractMatrix,
     # Interior columns: c+1 .. W-c.  All kernel footprint columns are in bounds.
     ci, ce = c + 1, W - c
     if ci <= ce
-        Threads.@threads for col in ci:ce
-            @inbounds for row in 1:H
-                acc = z
-                for j in 1:kc
-                    acc += img[row, col + j - c - 1] * kernel[1, j]
-                end
-                out[row, col] = acc
+        LV.@turbo for col in ci:ce, row in 1:H
+            acc = z
+            for j in 1:kc
+                acc += img[row, col + j - c - 1] * kernel[1, j]
             end
+            out[row, col] = acc
         end
     end
 
     # Left border: cols 1 .. c.  Column index may underflow.
     if c >= 1
-        Threads.@threads for col in 1:c
-            @inbounds for row in 1:H
-                acc = z
-                for j in 1:kc
-                    ic = col + j - c - 1
-                    acc += _getpixel_col(img, row, ic, Val{B}()) * kernel[1, j]
-                end
-                out[row, col] = acc
+        @inbounds for col in 1:c, row in 1:H
+            acc = z
+            for j in 1:kc
+                ic = col + j - c - 1
+                acc += _getpixel_col(img, row, ic, Val{B}()) * kernel[1, j]
             end
+            out[row, col] = acc
         end
     end
 
     # Right border: cols W-c+1 .. W.  Column index may overflow.
     if c >= 1
-        Threads.@threads for col in W-c+1:W
-            @inbounds for row in 1:H
-                acc = z
-                for j in 1:kc
-                    ic = col + j - c - 1
-                    acc += _getpixel_col(img, row, ic, Val{B}()) * kernel[1, j]
-                end
-                out[row, col] = acc
+        @inbounds for col in W-c+1:W, row in 1:H
+            acc = z
+            for j in 1:kc
+                ic = col + j - c - 1
+                acc += _getpixel_col(img, row, ic, Val{B}()) * kernel[1, j]
             end
+            out[row, col] = acc
         end
     end
 
-    out
+    return out
 end
 
 # ---- 2D non-separable filter ----
@@ -468,83 +465,73 @@ function _correlate_2d!(out::AbstractMatrix, img::AbstractMatrix,
     z = zero(S)
 
     # Interior: rows r+1..H-r, cols c+1..W-c.  All kernel footprint
-    # pixels are in bounds — full @inbounds fast path.
+    # pixels are in bounds -- full @inbounds fast path.
     ri, re = r + 1, H - r
     ci, ce = c + 1, W - c
     if ri <= re && ci <= ce
-        Threads.@threads for col in ci:ce
-            @inbounds for row in ri:re
-                acc = z
-                for kc_i in 1:kc, kr_i in 1:kr
-                    acc += img[row + kr_i - r - 1, col + kc_i - c - 1] *
-                           kernel[kr_i, kc_i]
-                end
-                out[row, col] = acc
+        LV.@turbo for col in ci:ce, row in ri:re
+            acc = z
+            for kc_i in 1:kc, kr_i in 1:kr
+                acc += img[row + kr_i - r - 1, col + kc_i - c - 1] *
+                       kernel[kr_i, kc_i]
             end
+            out[row, col] = acc
         end
     end
 
     # Top strip: rows 1..r, all columns.  Row index may underflow.
-    # (Includes the four corner regions — no separate corner handling needed.)
+    # (Includes the four corner regions -- no separate corner handling needed.)
     if r >= 1
-        Threads.@threads for col in 1:W
-            @inbounds for row in 1:r
-                acc = z
-                for kc_i in 1:kc, kr_i in 1:kr
-                    ir = row + kr_i - r - 1
-                    ic = col + kc_i - c - 1
-                    acc += _getpixel(img, ir, ic, Val{B}()) * kernel[kr_i, kc_i]
-                end
-                out[row, col] = acc
+        @inbounds for col in 1:W, row in 1:r
+            acc = z
+            for kc_i in 1:kc, kr_i in 1:kr
+                ir = row + kr_i - r - 1
+                ic = col + kc_i - c - 1
+                acc += _getpixel(img, ir, ic, Val{B}()) * kernel[kr_i, kc_i]
             end
+            out[row, col] = acc
         end
     end
 
     # Bottom strip: rows H-r+1..H, all columns.  Row index may overflow.
     if r >= 1
-        Threads.@threads for col in 1:W
-            @inbounds for row in H-r+1:H
-                acc = z
-                for kc_i in 1:kc, kr_i in 1:kr
-                    ir = row + kr_i - r - 1
-                    ic = col + kc_i - c - 1
-                    acc += _getpixel(img, ir, ic, Val{B}()) * kernel[kr_i, kc_i]
-                end
-                out[row, col] = acc
+        @inbounds for col in 1:W, row in H-r+1:H
+            acc = z
+            for kc_i in 1:kc, kr_i in 1:kr
+                ir = row + kr_i - r - 1
+                ic = col + kc_i - c - 1
+                acc += _getpixel(img, ir, ic, Val{B}()) * kernel[kr_i, kc_i]
             end
+            out[row, col] = acc
         end
     end
 
     # Left strip: middle rows, cols 1..c.  Only column index may underflow;
     # row index is always in bounds for rows ri..re.
     if c >= 1 && ri <= re
-        Threads.@threads for col in 1:c
-            @inbounds for row in ri:re
-                acc = z
-                for kc_i in 1:kc, kr_i in 1:kr
-                    ic = col + kc_i - c - 1
-                    acc += _getpixel_col(img, row + kr_i - r - 1, ic, Val{B}()) *
-                           kernel[kr_i, kc_i]
-                end
-                out[row, col] = acc
+        @inbounds for col in 1:c, row in ri:re
+            acc = z
+            for kc_i in 1:kc, kr_i in 1:kr
+                ic = col + kc_i - c - 1
+                acc += _getpixel_col(img, row + kr_i - r - 1, ic, Val{B}()) *
+                       kernel[kr_i, kc_i]
             end
+            out[row, col] = acc
         end
     end
 
     # Right strip: middle rows, cols W-c+1..W.  Only column index may overflow.
     if c >= 1 && ri <= re
-        Threads.@threads for col in W-c+1:W
-            @inbounds for row in ri:re
-                acc = z
-                for kc_i in 1:kc, kr_i in 1:kr
-                    ic = col + kc_i - c - 1
-                    acc += _getpixel_col(img, row + kr_i - r - 1, ic, Val{B}()) *
-                           kernel[kr_i, kc_i]
-                end
-                out[row, col] = acc
+        @inbounds for col in W-c+1:W, row in ri:re
+            acc = z
+            for kc_i in 1:kc, kr_i in 1:kr
+                ic = col + kc_i - c - 1
+                acc += _getpixel_col(img, row + kr_i - r - 1, ic, Val{B}()) *
+                       kernel[kr_i, kc_i]
             end
+            out[row, col] = acc
         end
     end
 
-    out
+    return out
 end
