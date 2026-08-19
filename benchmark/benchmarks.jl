@@ -120,18 +120,23 @@ end
 # LM fitting benchmarks
 # ---------------------------------------------------------------------------
 SUITE["fitting"] = BenchmarkGroup()
+SUITE["fitting"]["Float64"] = BenchmarkGroup()
+SUITE["fitting"]["Float32"] = BenchmarkGroup()
 
-let model = CircularGaussianPSF(x=15.0, y=15.0, fwhm=4.0, flux=10.0, bkg=1.0)
+for T in (Float32, Float64)
     for inds in ((1:5, 1:5), (1:31, 1:31))
-        image = evaluate.(model, inds[1], inds[2]')
-        y = (maximum(inds[1]) + minimum(inds[1])) / 2
-        x = (maximum(inds[2]) + minimum(inds[2])) / 2
-        init = CircularGaussianPSF(y=y, x=x, fwhm=3.5, flux=9.0, bkg=1.2)
-        SUITE["fitting"]["fit_star ($(size(image, 1))x$(size(image, 2)) CircularGaussianPSF (L2)"] = @benchmarkable fit_star($init, $image, $inds)
-        SUITE["fitting"]["fit_star ($(size(image, 1))x$(size(image, 2)) CircularGaussianPSF (Huber IRLS)"] = @benchmarkable fit_star($init, $image, $inds;
-            reweight=$(LossFunctions.HuberLoss(1.0)))
-        SUITE["fitting"]["fit_star ($(size(image, 1))x$(size(image, 2)) CircularGaussianPSF (Tukey IRLS)"] = @benchmarkable fit_star($init, $image, $inds;
-            reweight=$(TukeyLoss()))
+        y = (maximum(inds[1]) + minimum(inds[1])) / 2 |> T
+        x = (maximum(inds[2]) + minimum(inds[2])) / 2 |> T
+        fwhm = y # Use y as a proxy for FWHM so that the PSF is well-sampled in the cutout.
+        let model = CircularGaussianPSF(y=y, x=x, fwhm=fwhm, flux=T(10.0), bkg=T(1.0))
+            image = evaluate.(model, inds[1], inds[2]')
+            init = CircularGaussianPSF(y=y+T(0.1), x=x-T(0.1), fwhm=fwhm+1, flux=T(9.0), bkg=T(1.2))
+            SUITE["fitting"][string(T)]["fit_star ($(size(image, 1))x$(size(image, 2)) CircularGaussianPSF (L2)"] = @benchmarkable fit_star($init, $image, $inds)
+            SUITE["fitting"][string(T)]["fit_star ($(size(image, 1))x$(size(image, 2)) CircularGaussianPSF (Huber IRLS)"] = @benchmarkable fit_star($init, $image, $inds;
+                reweight=$(LossFunctions.HuberLoss(1.0)))
+            SUITE["fitting"][string(T)]["fit_star ($(size(image, 1))x$(size(image, 2)) CircularGaussianPSF (Tukey IRLS)"] = @benchmarkable fit_star($init, $image, $inds;
+                reweight=$(TukeyLoss()))
+        end
     end
 end
 
