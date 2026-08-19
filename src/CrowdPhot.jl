@@ -3,6 +3,7 @@ module CrowdPhot
 import ConstructionBase
 using FillArrays: Fill
 using LinearAlgebra: cholesky, cholesky!, ldiv!, dot, norm, I, Symmetric, pinv, PosDefException, svd
+import LoopVectorization as LV
 import LossFunctions
 import Random
 using StaticArrays: SMatrix, SVector, @SMatrix, @SVector
