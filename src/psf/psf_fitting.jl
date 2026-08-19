@@ -311,7 +311,6 @@ end
 # Custom `fit_star` methods for specific PSF models with optimized accumulators.
 ################################################################################
 
-# Specialized method: 2--4x faster than generic.
 function fit_star(
         model::CircularGaussianPSF{T},
         image::AbstractMatrix,
@@ -325,15 +324,17 @@ function fit_star(
     prepared = _prepare_fit_star_inputs(model, image, inds, fixed, inv_var)
     inds, _, free_idx, x0, free_names_val, FT, base_weights = prepared
 
-
+    # Prepare an all-ones weight vector for the unweighted case
+    # so the LV.@turbo IRLS accumulator can always use a weight vector.
+    ones_weights = isnothing(base_weights) ? ones(FT, length(inds)) : base_weights
     # Stream pixels through a CircularGaussian-specific normal-equation kernel.
-    # The all-parameters case is fully scalarized; fixed-parameter fits use the
-    # same scalar derivatives and project them onto the free parameter subset.
     function accum!(A::AbstractMatrix{FT}, b::AbstractVector{FT}, residuals::AbstractVector{FT}, x::AbstractVector{FT}, weights) where {FT}
         @assert size(A, 1) == size(A, 2) == length(b) == length(free_idx)
         @assert length(residuals) == length(inds)
         m = model_from_vector(model, free_names_val, x, fixed)
-        return _accum_circular_gaussian!(A, b, residuals, image, inds, m, free_idx, weights)
+        # Always provide a weight vector to the accumulator for LV.@turbo
+        w = isnothing(weights) ? ones_weights : weights
+        return _accum_circular_gaussian!(A, b, residuals, image, inds, m, free_idx, w)
     end
 
     # Delegate iteration, IRLS reweighting, damping, and covariance estimation
@@ -356,8 +357,6 @@ function _accum_circular_gaussian!(
     ) where {FT}
 
     # Precompute model constants exactly as in the full-parameter path.
-    fill!(A, zero(FT))
-    fill!(b, zero(FT))
     γ = FT(GAUSS_PRE)
     x0 = FT(model.x)
     y0 = FT(model.y)
@@ -368,40 +367,84 @@ function _accum_circular_gaussian!(
     bkg = FT(model.bkg)
     γ_f2 = γ / fwhm²
 
-    # Compute scalar derivatives, then project them onto the requested free
-    # parameter subset for fixed-parameter fits.
+    # `@turbo` requires affine array indices and compile-time-constant tuple
+    # indices, so the runtime-valued `free_idx` subset can't be used to index
+    # a per-pixel gradient tuple inside the loop as the original scalar version did.
+    # Instead, always accumulate the full 5-parameter cost, gradient, and
+    # (upper-triangle, by symmetry) Hessian into scalar reduction variables,
+    # then project onto the requested free-parameter block once after the
+    # loop. `inds` is iterated via its `(yr, xr)` ranges directly (rather
+    # than `CartesianIndices`) so offset/non-1-based `inds` still work, and
+    # the linear index into `residuals` (k) is recovered affinely from
+    # `(i, j)`.
+    yr, xr = inds.indices
+    y1 = first(yr)
+    x1 = first(xr)
+    ny = length(yr)
+
     cost = zero(FT)
-    obs_k = 0
-    nparams = length(free_idx)
-    use_weights = !isnothing(weights)
-    @inbounds for idx in inds
-        obs_k += 1
-        w = use_weights ? FT(weights[obs_k]) : one(FT)
-        dx = FT(idx[2]) - x0
-        dy = FT(idx[1]) - y0
+    b1 = b2 = b3 = b4 = b5 = zero(FT)
+    A11 = A12 = A13 = A14 = A15 = zero(FT)
+    A22 = A23 = A24 = A25 = zero(FT)
+    A33 = A34 = A35 = zero(FT)
+    A44 = A45 = zero(FT)
+    A55 = zero(FT)
+
+    LV.@turbo for j in xr, i in yr
+        dx = FT(j) - x0
+        dy = FT(i) - y0
         sqmahab = (dx^2 + dy^2) / fwhm²
         g = exp(γ * sqmahab)
         Ag = amp * g
         f_val = muladd(amp, g, bkg)
-        r = f_val - FT(image[idx])
-        residuals[obs_k] = r
+        r = f_val - FT(image[i, j])
+        k = (j - x1) * ny + (i - y1) + 1
+        residuals[k] = r
+        w = FT(weights[k])
         wr = w * r
         cost = muladd(wr, r, cost)
-        g_full = (
-            -2 * Ag * γ_f2 * dy,
-            -2 * Ag * γ_f2 * dx,
-            -2 * Ag * (1 + γ * sqmahab) / fwhm,
-            g / norm,
-            one(FT),
-        )
+        g1 = -2 * Ag * γ_f2 * dy
+        g2 = -2 * Ag * γ_f2 * dx
+        g3 = -2 * Ag * (1 + γ * sqmahab) / fwhm
+        g4 = g / norm
+        g5 = one(FT)
+        b1 = muladd(wr, g1, b1)
+        b2 = muladd(wr, g2, b2)
+        b3 = muladd(wr, g3, b3)
+        b4 = muladd(wr, g4, b4)
+        b5 = muladd(wr, g5, b5)
+        A11 = muladd(w * g1, g1, A11)
+        A12 = muladd(w * g1, g2, A12)
+        A13 = muladd(w * g1, g3, A13)
+        A14 = muladd(w * g1, g4, A14)
+        A15 = muladd(w * g1, g5, A15)
+        A22 = muladd(w * g2, g2, A22)
+        A23 = muladd(w * g2, g3, A23)
+        A24 = muladd(w * g2, g4, A24)
+        A25 = muladd(w * g2, g5, A25)
+        A33 = muladd(w * g3, g3, A33)
+        A34 = muladd(w * g3, g4, A34)
+        A35 = muladd(w * g3, g5, A35)
+        A44 = muladd(w * g4, g4, A44)
+        A45 = muladd(w * g4, g5, A45)
+        A55 = muladd(w * g5, g5, A55)
+    end
 
-        # Accumulate only the active parameter block expected by lm_irls.
-        for j in 1:nparams
-            gj = g_full[free_idx[j]]
-            b[j] = muladd(wr, gj, b[j])
-            for i in 1:nparams
-                A[i, j] = muladd(w * g_full[free_idx[i]], gj, A[i, j])
-            end
+    # Project the full 5x5 normal-equation block onto the requested free
+    # parameters (identity projection when all 5 parameters are free).
+    bfull = (b1, b2, b3, b4, b5)
+    Afull = (
+        A11, A12, A13, A14, A15,
+        A12, A22, A23, A24, A25,
+        A13, A23, A33, A34, A35,
+        A14, A24, A34, A44, A45,
+        A15, A25, A35, A45, A55,
+    )
+    nparams = length(free_idx)
+    @inbounds for j in 1:nparams
+        b[j] = bfull[free_idx[j]]
+        for i in 1:nparams
+            A[i, j] = Afull[(free_idx[j] - 1) * 5 + free_idx[i]]
         end
     end
     return cost
