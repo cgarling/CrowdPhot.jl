@@ -1,5 +1,5 @@
 using CrowdPhot.PSF
-using CrowdPhot.PSF: AbstractPSFModel, fit_star
+using CrowdPhot.PSF: AbstractPSFModel, fit_star, _grid_corners
 using Test
 
 @testset "fit CircularGaussianPSF specialized parity" begin
@@ -444,4 +444,121 @@ end
     @test best_fixed_specialized.y ≈ best_fixed_generic.y rtol = 1.0e-11 atol = 1.0e-11
     @test best_fixed_specialized.flux ≈ best_fixed_generic.flux rtol = 1.0e-11 atol = 1.0e-11
     @test best_fixed_specialized.bkg ≈ best_fixed_generic.bkg rtol = 1.0e-11 atol = 1.0e-11
+end
+
+@testset "fit GriddedPSFModel{ImagePSF} specialized parity" begin
+    # Compare the @turbo-vectorized GriddedPSFModel{T,ImagePSF{T}} accumulator
+    # (_accum_gridded_imagepsf!) against the generic fitter. `inds`
+    # deliberately does not start at 1 -- mirroring how `fit_all_stars`
+    # builds a cutout at a star's real position within a much larger image
+    # -- to guard against a previous bug where the accumulator's per-corner
+    # scratch matrices were indexed directly by the (non-1-based) loop
+    # variables instead of an offset-corrected index, silently writing out
+    # of bounds and corrupting the heap.
+    inds = (991:1010, 1231:1250)
+    stampsize = 15
+    c = (stampsize + 1) / 2
+    mkdata(sigma2) = [exp(-((i - c)^2 + (j - c)^2) / sigma2) for i in 1:stampsize, j in 1:stampsize]
+    nodes = [ImagePSF(mkdata(5.0)), ImagePSF(mkdata(20.0)), ImagePSF(mkdata(20.0)), ImagePSF(mkdata(5.0))]
+    # Grid corners bracket both `inds` and the star position below with
+    # margin, so (y, x) is a grid-interior point, exercising the corner-accumulation logic.
+    gy = [950.0, 950.0, 1010.0, 1010.0]
+    gx = [1200.0, 1275.0, 1200.0, 1275.0]
+    truth = GriddedPSFModel(nodes, gy, gx; y = 1001.4, x = 1240.7, flux = 250.0, bkg = 4.0)
+    init = GriddedPSFModel(nodes, gy, gx; y = 1000.9, x = 1241.2, flux = 230.0, bkg = 4.4)
+    # Confirm this setup actually exercises all four corners (not a degenerate
+    # single-corner or edge-of-grid case) before trusting the parity below.
+    @test count(!iszero, last.(_grid_corners(truth, truth.y, truth.x))) == 4
+    img = zeros(maximum(inds[1]), maximum(inds[2]))
+    img[inds...] .= evaluate.(truth, inds[1], inds[2]')
+    generic_sig = Tuple{AbstractPSFModel{Float64}, AbstractMatrix, Any}
+
+    best_generic, result_generic = invoke(
+        fit_star, generic_sig, init, img, inds;
+        inv_var = fill(1.0, size(img)),
+        x_tol = 1.0e-7,
+        max_iter = 100,
+    )
+    best_specialized, result_specialized = fit_star(
+        init, img, inds;
+        inv_var = fill(1.0, size(img)),
+        x_tol = 1.0e-7,
+        max_iter = 100,
+    )
+
+    @test result_specialized.converged == result_generic.converged
+    @test result_specialized.minimizer ≈ result_generic.minimizer rtol = 1.0e-11 atol = 1.0e-11
+    @test result_specialized.minimum ≈ result_generic.minimum rtol = 1.0e-11 atol = 1.0e-11
+    @test best_specialized.y ≈ best_generic.y rtol = 1.0e-11 atol = 1.0e-11
+    @test best_specialized.x ≈ best_generic.x rtol = 1.0e-11 atol = 1.0e-11
+    @test best_specialized.flux ≈ best_generic.flux rtol = 1.0e-11 atol = 1.0e-11
+    @test best_specialized.bkg ≈ best_generic.bkg rtol = 1.0e-11 atol = 1.0e-11
+
+    # Exercise the projected-parameter accumulator for a fixed field.
+    fixed = (bkg = truth.bkg,)
+    best_fixed_generic, result_fixed_generic = invoke(
+        fit_star, generic_sig, init, img, inds;
+        fixed,
+        x_tol = 1.0e-7,
+        max_iter = 100,
+    )
+    best_fixed_specialized, result_fixed_specialized = fit_star(
+        init, img, inds;
+        fixed,
+        x_tol = 1.0e-7,
+        max_iter = 100,
+    )
+
+    @test result_fixed_specialized.minimizer ≈ result_fixed_generic.minimizer rtol = 1.0e-11 atol = 1.0e-11
+    @test result_fixed_specialized.minimum ≈ result_fixed_generic.minimum rtol = 1.0e-11 atol = 1.0e-11
+    @test best_fixed_specialized.y ≈ best_fixed_generic.y rtol = 1.0e-11 atol = 1.0e-11
+    @test best_fixed_specialized.x ≈ best_fixed_generic.x rtol = 1.0e-11 atol = 1.0e-11
+    @test best_fixed_specialized.flux ≈ best_fixed_generic.flux rtol = 1.0e-11 atol = 1.0e-11
+    @test best_fixed_specialized.bkg == best_fixed_generic.bkg
+end
+
+@testset "fit GriddedPSFModel{ImagePSF} heterogeneous node parity" begin
+    # Corner nodes with different origins -- unlike the earlier blended
+    # accumulator design, the current per-corner design has no shared-grid-
+    # geometry precondition, so this exercises the specialized path with
+    # node data it can't collapse via the old linearity trick.
+    inds = (1:20, 1:20)
+    stampsize = 15
+    c = (stampsize + 1) / 2
+    mkdata(sigma2) = [exp(-((i - c)^2 + (j - c)^2) / sigma2) for i in 1:stampsize, j in 1:stampsize]
+    origins = [(y = c - 1, x = c), (y = c, x = c + 1), (y = c + 1, x = c), (y = c, x = c - 1)]
+    nodes = [
+        ImagePSF(mkdata(5.0); origin = origins[1]),
+        ImagePSF(mkdata(20.0); origin = origins[2]),
+        ImagePSF(mkdata(20.0); origin = origins[3]),
+        ImagePSF(mkdata(5.0); origin = origins[4]),
+    ]
+    gy = [0.0, 0.0, 20.0, 20.0]
+    gx = [0.0, 20.0, 0.0, 20.0]
+    truth = GriddedPSFModel(nodes, gy, gx; y = 11.4, x = 9.3, flux = 250.0, bkg = 4.0)
+    init = GriddedPSFModel(nodes, gy, gx; y = 11.0, x = 9.7, flux = 230.0, bkg = 4.4)
+    @test count(!iszero, last.(_grid_corners(truth, truth.y, truth.x))) == 4
+    img = evaluate.(truth, inds[1], inds[2]')
+    generic_sig = Tuple{AbstractPSFModel{Float64}, AbstractMatrix, Any}
+
+    best_generic, result_generic = invoke(
+        fit_star, generic_sig, init, img, inds;
+        inv_var = fill(1.0, size(img)),
+        x_tol = 1.0e-7,
+        max_iter = 100,
+    )
+    best_specialized, result_specialized = fit_star(
+        init, img, inds;
+        inv_var = fill(1.0, size(img)),
+        x_tol = 1.0e-7,
+        max_iter = 100,
+    )
+
+    @test result_specialized.converged == result_generic.converged
+    @test result_specialized.minimizer ≈ result_generic.minimizer rtol = 1.0e-11 atol = 1.0e-11
+    @test result_specialized.minimum ≈ result_generic.minimum rtol = 1.0e-11 atol = 1.0e-11
+    @test best_specialized.y ≈ best_generic.y rtol = 1.0e-11 atol = 1.0e-11
+    @test best_specialized.x ≈ best_generic.x rtol = 1.0e-11 atol = 1.0e-11
+    @test best_specialized.flux ≈ best_generic.flux rtol = 1.0e-11 atol = 1.0e-11
+    @test best_specialized.bkg ≈ best_generic.bkg rtol = 1.0e-11 atol = 1.0e-11
 end

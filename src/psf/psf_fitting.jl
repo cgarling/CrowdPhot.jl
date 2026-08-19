@@ -1171,3 +1171,347 @@ function _accum_image_psf!(
     end
     return cost
 end
+
+# Specialized method: uses `LV.@turbo` for GriddedPSFModel{ImagePSF}; see
+# `_accum_gridded_imagepsf!` for design and benchmark details.
+function fit_star(
+        model::GriddedPSFModel{T, M},
+        image::AbstractMatrix,
+        inds = axes(image);
+        fixed::NamedTuple = (;),
+        inv_var = nothing,
+        kws...
+    ) where {T, M <: ImagePSF{T}}
+
+    prepared = _prepare_fit_star_inputs(model, image, inds, fixed, inv_var)
+    inds, _, free_idx, x0, free_names_val, FT, base_weights = prepared
+    ones_weights = isnothing(base_weights) ? ones(FT, length(inds)) : base_weights
+
+    # Scratch buffers reused across every LM iteration for this fit: three
+    # cutout-sized caches (value, dpdv, dpdu) per corner, threading the four
+    # elementwise `@turbo` passes into the final reduction pass.
+    ny_c, nx_c = length(inds.indices[1]), length(inds.indices[2])
+    p_val = ntuple(_ -> Matrix{FT}(undef, ny_c, nx_c), 4)
+    p_dpdv = ntuple(_ -> Matrix{FT}(undef, ny_c, nx_c), 4)
+    p_dpdu = ntuple(_ -> Matrix{FT}(undef, ny_c, nx_c), 4)
+
+    function accum!(A::AbstractMatrix{FT}, b::AbstractVector{FT}, residuals::AbstractVector{FT}, x::AbstractVector{FT}, weights) where {FT}
+        @assert size(A, 1) == size(A, 2) == length(b) == length(free_idx)
+        @assert length(residuals) == length(inds)
+        m = model_from_vector(model, free_names_val, x, fixed)
+        w = isnothing(weights) ? ones_weights : weights
+        return _accum_gridded_imagepsf!(A, b, residuals, image, inds, m, free_idx, w, p_val, p_dpdv, p_dpdu)
+    end
+
+    problem = LMProblem(Vector{FT}(x0), length(inds), accum!, base_weights)
+    result = lm_irls(problem; kws...)
+    best_model = model_from_vector(model, free_names_val, result.minimizer, fixed)
+    return best_model, result
+end
+
+"""
+    _gridded_corner_bicubic_pass!(pv, pdv, pdu, data, ox, oy, sx, sy, fv, ny_d, nx_d, yr, xr, Y, X, y1, x1)
+
+Bicubic value + both partial derivatives (`dpdv`, `dpdu`) for one grid
+corner's own tabulated stamp `data`, at every pixel in the cutout `(yr,
+xr)`. Writes `ifelse`-clamped results into `pv`/`pdv`/`pdu`, which are
+mutated in place and sized to the cutout, not the stamp.
+
+Written once and called once per corner (up to four times) by
+[`_accum_gridded_imagepsf!`](@ref) rather than hand-duplicated, since
+fusing more than one corner's worth of 4x4-gather bicubic math into a
+single `@turbo` loop exceeds an internal LoopVectorization scheduling
+limit (a `LoopSet` `ArgumentError` at compile time, not a semantic
+restriction -- confirmed to fail compiling even at two matrices' worth of
+gathers together, well short of four). Being an ordinary function containing
+its own self-contained `@turbo` loop, rather than a macro expanded at each
+call site, is sufficient for that: `@turbo` only ever inspects the syntax
+of its own loop, not what encloses it, so this compiles identically to
+four inlined copies while being compiled once and called four times --
+less code generated, not more, for the same result.
+"""
+function _gridded_corner_bicubic_pass!(
+        pv::AbstractMatrix{FT}, pdv::AbstractMatrix{FT}, pdu::AbstractMatrix{FT},
+        data::AbstractMatrix, ox, oy, sx, sy, fv, ny_d, nx_d,
+        yr, xr, Y, X, y1, x1
+    ) where {FT}
+    LV.@turbo for j in xr, i in yr
+        u = sx * (FT(j) - X) + ox
+        v = sy * (FT(i) - Y) + oy
+        _inb = isfinite(u) & isfinite(v) & (u >= one(FT)) & (u <= FT(nx_d)) & (v >= one(FT)) & (v <= FT(ny_d))
+        uc = ifelse(_inb, u, one(FT))
+        vc = ifelse(_inb, v, one(FT))
+        lx = clamp(floor(Int32, uc), Int32(1), Int32(nx_d - 1))
+        ly = clamp(floor(Int32, vc), Int32(1), Int32(ny_d - 1))
+        du = uc - FT(lx)
+        dv = vc - FT(ly)
+        ix1_ = clamp(lx - Int32(1), Int32(1), Int32(nx_d))
+        ix2_ = lx
+        ix3_ = lx + Int32(1)
+        ix4_ = clamp(lx + Int32(2), Int32(1), Int32(nx_d))
+        iy1_ = clamp(ly - Int32(1), Int32(1), Int32(ny_d))
+        iy2_ = ly
+        iy3_ = ly + Int32(1)
+        iy4_ = clamp(ly + Int32(2), Int32(1), Int32(ny_d))
+
+        r1a = data[iy1_, ix1_]
+        r1b = data[iy1_, ix2_]
+        r1c = data[iy1_, ix3_]
+        r1d = data[iy1_, ix4_]
+        c1a = (r1c - r1a) / 2
+        c4a = r1c - r1b - c1a
+        c2a = 3 * c4a - (r1d - r1b) / 2 + c1a
+        c3a = c4a - c2a
+        row1 = du * (du * (du * c3a + c2a) + c1a) + r1b
+        drow1 = du * (3 * du * c3a + 2 * c2a) + c1a
+
+        r2a = data[iy2_, ix1_]
+        r2b = data[iy2_, ix2_]
+        r2c = data[iy2_, ix3_]
+        r2d = data[iy2_, ix4_]
+        c1b = (r2c - r2a) / 2
+        c4b = r2c - r2b - c1b
+        c2b = 3 * c4b - (r2d - r2b) / 2 + c1b
+        c3b = c4b - c2b
+        row2 = du * (du * (du * c3b + c2b) + c1b) + r2b
+        drow2 = du * (3 * du * c3b + 2 * c2b) + c1b
+
+        r3a = data[iy3_, ix1_]
+        r3b = data[iy3_, ix2_]
+        r3c = data[iy3_, ix3_]
+        r3d = data[iy3_, ix4_]
+        c1c = (r3c - r3a) / 2
+        c4c = r3c - r3b - c1c
+        c2c = 3 * c4c - (r3d - r3b) / 2 + c1c
+        c3c = c4c - c2c
+        row3 = du * (du * (du * c3c + c2c) + c1c) + r3b
+        drow3 = du * (3 * du * c3c + 2 * c2c) + c1c
+
+        r4a = data[iy4_, ix1_]
+        r4b = data[iy4_, ix2_]
+        r4c = data[iy4_, ix3_]
+        r4d = data[iy4_, ix4_]
+        c1d = (r4c - r4a) / 2
+        c4d = r4c - r4b - c1d
+        c2d = 3 * c4d - (r4d - r4b) / 2 + c1d
+        c3d = c4d - c2d
+        row4 = du * (du * (du * c3d + c2d) + c1d) + r4b
+        drow4 = du * (3 * du * c3d + 2 * c2d) + c1d
+
+        cv1 = (row3 - row1) / 2
+        cv4 = row3 - row2 - cv1
+        cv2 = 3 * cv4 - (row4 - row2) / 2 + cv1
+        cv3 = cv4 - cv2
+        val = dv * (dv * (dv * cv3 + cv2) + cv1) + row2
+        dpdv_ = dv * (3 * dv * cv3 + 2 * cv2) + cv1
+
+        cu1 = (drow3 - drow1) / 2
+        cu4 = drow3 - drow2 - cu1
+        cu2 = 3 * cu4 - (drow4 - drow2) / 2 + cu1
+        cu3 = cu4 - cu2
+        dpdu_ = dv * (dv * (dv * cu3 + cu2) + cu1) + drow2
+
+        ii = i - y1 + 1
+        jj = j - x1 + 1
+        pv[ii, jj] = ifelse(_inb, val, fv)
+        pdv[ii, jj] = ifelse(_inb, dpdv_, zero(FT))
+        pdu[ii, jj] = ifelse(_inb, dpdu_, zero(FT))
+    end
+    return nothing
+end
+
+"""
+    _accum_gridded_imagepsf!(A, b, residuals, image, inds, model, free_idx, weights,
+        p_val, p_dpdv, p_dpdu)
+
+`@turbo`-vectorized normal-equation accumulator for
+`GriddedPSFModel{T, <:ImagePSF{T}}` fits.
+
+# Design
+`GriddedPSFModel` evaluates as a bilinear blend of up to four corner node
+PSFs (see `evaluate_fg(model::GriddedPSFModel, ...)`), each independently
+bicubic-interpolated. Fusing all four corners' bicubic evaluations (value
+plus both partial derivatives, 16 gathers each) into a single `@turbo` loop
+exceeds an internal LoopVectorization scheduling limit (confirmed to fail
+compiling even at two matrices' worth of gathers together, well short of
+four). An earlier design worked around this by pre-blending the four corner
+stamps (nodes) into one, exploiting linearity of bicubic interpolation in the
+tabulated samples; that made per-`accum!`-call cost scale with stamp size
+rather than cutout size, which measured 20-50x slower than the generic path
+for a 361x361, oversampling-4 stamp fit with a 5x5 cutout (Roman CRDS ePSF
+geometry).
+
+This design avoids both problems: each corner's own bicubic is
+computed in its own `@turbo` pass via
+[`_gridded_corner_bicubic_pass!`](@ref), writing `ifelse`-clamped results
+into per-corner scratch matrices sized to the *cutout*, not the stamp. A
+final reduction pass combines the four cached corners via the
+(compile-time-fixed-per-call) corner weights and their position
+derivatives, matching the chain rule in `evaluate_fg(::GriddedPSFModel,
+...)`, and accumulates the normal equations. Five `@turbo` loops total
+(four elementwise, one reduction); each elementwise pass recomputes the
+shared stencil indices (`ix1_..4_`, `iy1_..4_`, `du`, `dv`) redundantly
+rather than caching them separately, since that arithmetic is cheap
+relative to the 16 gathers each pass performs.
+
+Because there is no blending step, corner nodes no longer need to share
+`size(data)`, `origin`, or `oversampling` -- this handles heterogeneous
+grids directly, unlike the earlier blended design.
+
+# Performance
+Benchmarked against the generic `fit_star` path (which evaluates
+`evaluate_fg` per node per pixel with no vectorization).
+
+At ePSF node size 31x31, oversampling 1:
+
+| type    | n=5   | n=11  | n=21  | n=31  |
+|:--------|:------|:------|:------|:------|
+| Float32 | 2.4x  | 3.7x  | 5.2x  | 5.7x  |
+| Float64 | 1.4x  | 2.2x  | 2.4x  | 2.6x  |
+
+At ePSF node size 361x361, oversampling 4 (Roman CRDS ePSF geometry):
+
+| type    | n=5   | n=8   | n=15  | n=31  |
+|:--------|:------|:------|:------|:------|
+| Float32 | 2.4x  | 4.0x  | 4.8x  | 5.8x  |
+| Float64 | 1.4x  | 2.3x  | 2.4x  | 2.6x  |
+
+Gains at every tested size and stamp geometry, unlike the earlier
+blended design, which regressed sharply once the stamp was large relative
+to the cutout.
+"""
+function _accum_gridded_imagepsf!(
+        A::AbstractMatrix{FT},
+        b::AbstractVector{FT},
+        residuals::AbstractVector{FT},
+        image::AbstractMatrix,
+        inds::CartesianIndices,
+        model::GriddedPSFModel,
+        free_idx,
+        weights,
+        p_val::NTuple{4, AbstractMatrix{FT}},
+        p_dpdv::NTuple{4, AbstractMatrix{FT}},
+        p_dpdu::NTuple{4, AbstractMatrix{FT}}
+    ) where {FT}
+
+    Y = FT(model.y)
+    X = FT(model.x)
+    flux = FT(model.flux)
+    bkg = FT(model.bkg)
+
+    # Corner weights and their position derivatives are constant over the
+    # whole cutout (they depend only on (Y, X)), so this is computed once
+    # per `accum!` call, not per pixel.
+    corners = _grid_corners_dw(model, Y, X)
+    idx1, w1, dwdy1, dwdx1 = corners[1]
+    idx2, w2, dwdy2, dwdx2 = corners[2]
+    idx3, w3, dwdy3, dwdx3 = corners[3]
+    idx4, w4, dwdy4, dwdx4 = corners[4]
+    # `_grid_corners_dw` returns idx=0 for corners 2-4 only when
+    # `length(model.psfs) == 1`; their weight is exactly 0 there, so
+    # remapping to a valid (arbitrary) index is safe.
+    idx2 = idx2 == 0 ? idx1 : idx2
+    idx3 = idx3 == 0 ? idx1 : idx3
+    idx4 = idx4 == 0 ? idx1 : idx4
+    w1, w2, w3, w4 = FT(w1), FT(w2), FT(w3), FT(w4)
+    dwdy1, dwdy2, dwdy3, dwdy4 = FT(dwdy1), FT(dwdy2), FT(dwdy3), FT(dwdy4)
+    dwdx1, dwdx2, dwdx3, dwdx4 = FT(dwdx1), FT(dwdx2), FT(dwdx3), FT(dwdx4)
+
+    node1, node2, node3, node4 = model.psfs[idx1], model.psfs[idx2], model.psfs[idx3], model.psfs[idx4]
+    d1, d2, d3, d4 = node1.data, node2.data, node3.data, node4.data
+    ox1, oy1 = FT(node1.origin.x), FT(node1.origin.y)
+    sx1, sy1 = FT(node1.oversampling[1]), FT(node1.oversampling[2])
+    fv1 = FT(node1.fill_value)
+    ox2, oy2 = FT(node2.origin.x), FT(node2.origin.y)
+    sx2, sy2 = FT(node2.oversampling[1]), FT(node2.oversampling[2])
+    fv2 = FT(node2.fill_value)
+    ox3, oy3 = FT(node3.origin.x), FT(node3.origin.y)
+    sx3, sy3 = FT(node3.oversampling[1]), FT(node3.oversampling[2])
+    fv3 = FT(node3.fill_value)
+    ox4, oy4 = FT(node4.origin.x), FT(node4.origin.y)
+    sx4, sy4 = FT(node4.oversampling[1]), FT(node4.oversampling[2])
+    fv4 = FT(node4.fill_value)
+    ny_d1, nx_d1 = size(d1)
+    ny_d2, nx_d2 = size(d2)
+    ny_d3, nx_d3 = size(d3)
+    ny_d4, nx_d4 = size(d4)
+
+    yr, xr = inds.indices
+    y1 = first(yr)
+    x1 = first(xr)
+    ny = length(yr)
+    pv1, pv2, pv3, pv4 = p_val
+    pdv1, pdv2, pdv3, pdv4 = p_dpdv
+    pdu1, pdu2, pdu3, pdu4 = p_dpdu
+
+    _gridded_corner_bicubic_pass!(pv1, pdv1, pdu1, d1, ox1, oy1, sx1, sy1, fv1, ny_d1, nx_d1, yr, xr, Y, X, y1, x1)
+    _gridded_corner_bicubic_pass!(pv2, pdv2, pdu2, d2, ox2, oy2, sx2, sy2, fv2, ny_d2, nx_d2, yr, xr, Y, X, y1, x1)
+    _gridded_corner_bicubic_pass!(pv3, pdv3, pdu3, d3, ox3, oy3, sx3, sy3, fv3, ny_d3, nx_d3, yr, xr, Y, X, y1, x1)
+    _gridded_corner_bicubic_pass!(pv4, pdv4, pdu4, d4, ox4, oy4, sx4, sy4, fv4, ny_d4, nx_d4, yr, xr, Y, X, y1, x1)
+
+    # Reduction pass: combine the four cached corners via the corner weights
+    # (matching `evaluate_fg(::GriddedPSFModel, ...)`'s chain rule), no
+    # gathers -- just dense per-pixel reads of the cache matrices above.
+    cost = zero(FT)
+    b1 = b2 = b3 = b4 = zero(FT)
+    A11 = A12 = A13 = A14 = zero(FT)
+    A22 = A23 = A24 = zero(FT)
+    A33 = A34 = zero(FT)
+    A44 = zero(FT)
+    LV.@turbo for j in xr, i in yr
+        ii = i - y1 + 1
+        jj = j - x1 + 1
+        s = w1 * pv1[ii, jj] + w2 * pv2[ii, jj] + w3 * pv3[ii, jj] + w4 * pv4[ii, jj]
+        dsdY = dwdy1 * pv1[ii, jj] - w1 * sy1 * pdv1[ii, jj] +
+            dwdy2 * pv2[ii, jj] - w2 * sy2 * pdv2[ii, jj] +
+            dwdy3 * pv3[ii, jj] - w3 * sy3 * pdv3[ii, jj] +
+            dwdy4 * pv4[ii, jj] - w4 * sy4 * pdv4[ii, jj]
+        dsdX = dwdx1 * pv1[ii, jj] - w1 * sx1 * pdu1[ii, jj] +
+            dwdx2 * pv2[ii, jj] - w2 * sx2 * pdu2[ii, jj] +
+            dwdx3 * pv3[ii, jj] - w3 * sx3 * pdu3[ii, jj] +
+            dwdx4 * pv4[ii, jj] - w4 * sx4 * pdu4[ii, jj]
+        f_val = muladd(flux, s, bkg)
+        r = f_val - FT(image[i, j])
+        k = (j - x1) * ny + (i - y1) + 1
+        residuals[k] = r
+        wgt = FT(weights[k])
+        wr = wgt * r
+        cost = muladd(wr, r, cost)
+        g1v = flux * dsdY
+        g2v = flux * dsdX
+        g3v = s
+        g4v = one(FT)
+        b1 = muladd(wr, g1v, b1)
+        b2 = muladd(wr, g2v, b2)
+        b3 = muladd(wr, g3v, b3)
+        b4 = muladd(wr, g4v, b4)
+        A11 = muladd(wgt * g1v, g1v, A11)
+        A12 = muladd(wgt * g1v, g2v, A12)
+        A13 = muladd(wgt * g1v, g3v, A13)
+        A14 = muladd(wgt * g1v, g4v, A14)
+        A22 = muladd(wgt * g2v, g2v, A22)
+        A23 = muladd(wgt * g2v, g3v, A23)
+        A24 = muladd(wgt * g2v, g4v, A24)
+        A33 = muladd(wgt * g3v, g3v, A33)
+        A34 = muladd(wgt * g3v, g4v, A34)
+        A44 = muladd(wgt * g4v, g4v, A44)
+    end
+
+    # Project the full 4x4 normal-equation block onto the requested free
+    # parameters (identity projection when all 4 parameters are free).
+    bfull = (b1, b2, b3, b4)
+    Afull = (
+        A11, A12, A13, A14,
+        A12, A22, A23, A24,
+        A13, A23, A33, A34,
+        A14, A24, A34, A44,
+    )
+    nparams = length(free_idx)
+    @inbounds for j in 1:nparams
+        b[j] = bfull[free_idx[j]]
+        for i in 1:nparams
+            A[i, j] = Afull[(free_idx[j] - 1) * 4 + free_idx[i]]
+        end
+    end
+    return cost
+end
