@@ -13,23 +13,28 @@ using Test
     img = zeros(10, 10)
 
     @testset "fully inside" begin
-        inds = CartesianIndices((3:7, 3:7))
-        clamped = _clamp_inds(inds, img)
-        @test clamped == inds
-        @test length(clamped) == 25
+        yr, xr = _clamp_inds(3:7, 3:7, img)
+        @test yr == 3:7
+        @test xr == 3:7
+        @test length(yr) * length(xr) == 25
     end
 
     @testset "partially outside" begin
-        inds = CartesianIndices((8:12, 8:12))
-        clamped = _clamp_inds(inds, img)
-        @test clamped == CartesianIndices((8:10, 8:10))
-        @test length(clamped) == 9
+        yr, xr = _clamp_inds(8:12, 8:12, img)
+        @test yr == 8:10
+        @test xr == 8:10
+        @test length(yr) * length(xr) == 9
     end
 
     @testset "completely outside" begin
-        inds = CartesianIndices((11:15, 3:7))
-        clamped = _clamp_inds(inds, img)
-        @test length(clamped) == 0
+        yr, xr = _clamp_inds(11:15, 3:7, img)
+        @test length(yr) * length(xr) == 0
+    end
+
+    @testset "CartesianIndices forwarding" begin
+        yr, xr = _clamp_inds(CartesianIndices((8:12, 8:12)), img)
+        @test yr == 8:10
+        @test xr == 8:10
     end
 end
 

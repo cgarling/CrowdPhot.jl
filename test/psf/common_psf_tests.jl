@@ -1,4 +1,5 @@
 using CrowdPhot.PSF: CircularGaussianPSF, GaussianPSF, CircularGaussianPRF, GaussianPRF, CircularMoffatPSF, MoffatPSF, evaluate, centroid, integral, evaluate_fg, evaluate_fgh, AbstractPSFModel, extent, render, theta, amplitude, background, fwhm, peak, effective_area, AiryPSF, ImagePSF, GriddedPSFModel, add_star!, subtract_star!
+import ConstructionBase
 using LoopVectorization: @turbo
 using Test
 
@@ -24,30 +25,57 @@ function test_common(model::AbstractPSFModel{T}) where {T}
     @test m isa Matrix{T}
     @test size(m) == (length(y), length(x))
     @test @inferred(render(model)) isa Matrix{T}
-    # Check rendering into a larger image
+    # Check rendering into a larger image.
+    # add_star!/subtract_star! evaluate the model via @turbo, which may use
+    # FMA/reassociation and so can differ from a plain scalar `evaluate` call
+    # by a few ULP; compare with a tolerance rather than exact equality.
     image = zeros(T, 20, 20)
     inds = CartesianIndices(model)
     add_star!(image, model, inds)
     for i in inds
         checkbounds(Bool, image, i) || continue
-        @test image[i] == evaluate(model, i)
+        @test image[i] ≈ evaluate(model, i) rtol = sqrt(eps(T))
     end
     # Check that doing it again accumulates flux
     add_star!(image, model, inds)
     for i in inds
         checkbounds(Bool, image, i) || continue
-        @test image[i] == 2 * evaluate(model, i)
+        @test image[i] ≈ 2 * evaluate(model, i) rtol = sqrt(eps(T))
     end
     # Check automatic inds
     fill!(image, 0)
     add_star!(image, model)
     for i in inds
         checkbounds(Bool, image, i) || continue
-        @test image[i] == evaluate(model, i)
+        @test image[i] ≈ evaluate(model, i) rtol = sqrt(eps(T))
     end
     subtract_star!(image, model)
     @test all(iszero, image)
 
+    # Conversion rules
+    other_elt = T === Float64 ? Float32 : Float64
+    convert_type = if model isa GriddedPSFModel
+        ConstructionBase.constructorof(typeof(model)){
+            other_elt,
+            ConstructionBase.constructorof(typeof(model.psfs[1])){other_elt}
+        }
+    else
+        ConstructionBase.constructorof(typeof(model)){other_elt}
+    end
+    @test convert(convert_type, model) isa convert_type
+    # add_star!/subtract_star! must fall back to a plain scalar loop (rather
+    # than @turbo) when eltype(out) != T, since LoopVectorization/
+    # VectorizationBase cannot unify SIMD vector widths across mismatched
+    # floating-point types and throws inside `vconvert` if forced to.
+    mixed_rtol = sqrt(max(eps(T), eps(other_elt))) # storage into `other_elt` may be coarser than T
+    image_mixed = zeros(other_elt, 20, 20)
+    add_star!(image_mixed, model)
+    for i in inds
+        checkbounds(Bool, image_mixed, i) || continue
+        @test image_mixed[i] ≈ evaluate(model, i) rtol = mixed_rtol
+    end
+    subtract_star!(image_mixed, model)
+    @test all(x -> abs(x) < sqrt(eps(other_elt)), image_mixed)
 
     # API functions
     @test @inferred(centroid(model)) isa Tuple{T, T}

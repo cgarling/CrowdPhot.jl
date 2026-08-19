@@ -330,8 +330,9 @@ function fit_all_stars(
             FT_fit = FT(fit_rad)
             yr = floor(Int, m.y - FT_fit):ceil(Int, m.y + FT_fit)
             xr = floor(Int, m.x - FT_fit):ceil(Int, m.x + FT_fit)
-            inds = _clamp_inds(CartesianIndices((yr, xr)), residual)
-            length(inds) < 3 && (valid[idx] = false; continue)
+            yr, xr = _clamp_inds(yr, xr, residual)
+            length(yr) * length(xr) < 3 && (valid[idx] = false; continue)
+            inds = CartesianIndices((yr, xr))
 
             # Fit the star on the residual image.  A failed fit (e.g. too
             # few valid inv_var pixels) marks the star invalid and continues
@@ -342,7 +343,7 @@ function fit_all_stars(
                 # fitted against data containing only its own signal (plus
                 # noise); all neighbors are already subtracted.
                 if pass > 1
-                    PSF.add_star!(residual, m, inds)
+                    PSF.add_star!(residual, m, yr, xr)
                 end
 
                 best, result = PSF.fit_star(
@@ -416,11 +417,11 @@ function fit_all_stars(
                 end
 
                 # Subtract the updated best-fit model.
-                PSF.subtract_star!(residual, best, inds)
+                PSF.subtract_star!(residual, best, yr, xr)
             catch e
                 # Undo the add-back so the residual stays consistent.
                 if pass > 1
-                    PSF.subtract_star!(residual, m, inds)
+                    PSF.subtract_star!(residual, m, yr, xr)
                 end
                 valid[idx] = false
                 n_failed += 1

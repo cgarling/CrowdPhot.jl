@@ -152,6 +152,12 @@ function ConstructionBase.setproperties(model::ImagePSF{T, S}, patch::NamedTuple
     )
 end
 
+function Base.convert(to::Type{ImagePSF{T}}, from::ImagePSF) where {T}
+    dataT = T.(from.data)
+    return ImagePSF{T, typeof(dataT)}(dataT, T(from.x), T(from.y), T(from.flux), T(from.bkg), map(x -> T(x), from.origin), from.oversampling, T(from.fill_value))
+end
+Base.convert(::Type{ImagePSF{S}}, from::ImagePSF{S}) where {S} = from
+
 theta(model::ImagePSF{T}) where {T} = zero(T)
 
 function extent(model::ImagePSF{T}) where {T}

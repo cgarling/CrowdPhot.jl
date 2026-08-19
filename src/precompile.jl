@@ -11,6 +11,8 @@ for psf in (PSF.AiryPSF,)
         psfT = psf{T}
         precompile(evaluate, (psfT, T, T))
         precompile(render, (psfT,))
+        precompile(PSF.add_star!, (Matrix{T}, psfT))
+        precompile(PSF.subtract_star!, (Matrix{T}, psfT))
     end
 end
 
