@@ -122,14 +122,17 @@ end
 SUITE["fitting"] = BenchmarkGroup()
 
 let model = CircularGaussianPSF(x=15.0, y=15.0, fwhm=4.0, flux=10.0, bkg=1.0)
-    inds  = (1:30, 1:30)
-    image = evaluate.(model, inds[1], inds[2]')
-    init = CircularGaussianPSF(x=15.5, y=14.5, fwhm=3.5, flux=9.0, bkg=1.2)
-    SUITE["fitting"]["fit_star CircularGaussianPSF (L2)"] = @benchmarkable fit_star($init, $image, $inds)
-    SUITE["fitting"]["fit_star CircularGaussianPSF (Huber IRLS)"] = @benchmarkable fit_star($init, $image, $inds;
-        reweight=$(LossFunctions.HuberLoss(1.0)))
-    SUITE["fitting"]["fit_star CircularGaussianPSF (Tukey IRLS)"] = @benchmarkable fit_star($init, $image, $inds;
-        reweight=$(TukeyLoss()))
+    for inds in ((1:5, 1:5), (1:31, 1:31))
+        image = evaluate.(model, inds[1], inds[2]')
+        y = (maximum(inds[1]) + minimum(inds[1])) / 2
+        x = (maximum(inds[2]) + minimum(inds[2])) / 2
+        init = CircularGaussianPSF(y=y, x=x, fwhm=3.5, flux=9.0, bkg=1.2)
+        SUITE["fitting"]["fit_star ($(size(image, 1))x$(size(image, 2)) CircularGaussianPSF (L2)"] = @benchmarkable fit_star($init, $image, $inds)
+        SUITE["fitting"]["fit_star ($(size(image, 1))x$(size(image, 2)) CircularGaussianPSF (Huber IRLS)"] = @benchmarkable fit_star($init, $image, $inds;
+            reweight=$(LossFunctions.HuberLoss(1.0)))
+        SUITE["fitting"]["fit_star ($(size(image, 1))x$(size(image, 2)) CircularGaussianPSF (Tukey IRLS)"] = @benchmarkable fit_star($init, $image, $inds;
+            reweight=$(TukeyLoss()))
+    end
 end
 
 # ---------------------------------------------------------------------------
