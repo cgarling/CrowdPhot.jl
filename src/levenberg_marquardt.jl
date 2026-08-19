@@ -526,9 +526,16 @@ function lm_irls(
 
     while iter < max_iter
         iter += 1
-        # Dimensionless per-parameter cosine test, Cauchy-Schwarz bounded in [-1, 1]
+        # Dimensionless per-parameter cosine test, Cauchy-Schwarz bounded in [-1, 1].
+        # Written as an explicit loop rather than `maximum(i -> ..., 1:n)`: `cost` is
+        # reassigned later in this loop, so a closure capturing it would force `cost`
+        # to be heap-boxed (and, transitively, every other use of `cost` in this
+        # function) for the lifetime of `lm_irls`.
         g_tiny = eps(FT)
-        gnorm_cos = maximum(i -> abs(b[i]) / (sqrt(A[i, i] * cost) + g_tiny), 1:n)
+        gnorm_cos = zero(FT)
+        @inbounds for i in 1:n
+            gnorm_cos = max(gnorm_cos, abs(b[i]) / (sqrt(A[i, i] * cost) + g_tiny))
+        end
         if gnorm_cos ≤ g_tol
             g_converged = true
             converged = true
@@ -549,7 +556,8 @@ function lm_irls(
             λ = min(λ * FT(λ_up), FT(λ_max))
             continue
         end
-        ldiv!(δ, F, -b)
+        ldiv!(δ, F, b) # Instead of -b, which can allocate, we negate δ in place afterward.
+        δ .*= -1
         δnorm = sqrt(sum(abs2, δ))
         # Predicted reduction of the local quadratic cost model at the
         # already-solved step, using the pre-damping A, b (MINPACK's prered).
