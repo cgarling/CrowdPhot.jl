@@ -153,6 +153,12 @@ function ConstructionBase.setproperties(model::GriddedPSFModel{T, M}, patch::Nam
     )
 end
 
+function Base.convert(to::Type{GriddedPSFModel{T, M}}, from::GriddedPSFModel) where {T, M <: AbstractPSFModel{T}}
+    psfs = [convert(M, psf) for psf in from.psfs]
+    return GriddedPSFModel{T, M}(psfs, T.(from.grid_y), T.(from.grid_x), T.(from.ygrid), T.(from.xgrid), from.index_grid, T(from.y), T(from.x), T(from.flux), T(from.bkg))
+end
+Base.convert(::Type{GriddedPSFModel{T, M}}, from::GriddedPSFModel{T, M}) where {T, M <: AbstractPSFModel{T}} = from
+
 """
     _grid_corners_dw(model::GriddedPSFModel{T}, Y, X) -> NTuple{4, Tuple{Int, T, T, T}}
 

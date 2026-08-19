@@ -1,7 +1,7 @@
 module PSF
 
 import ..CrowdPhot: AbstractLMDamping, AbstractScaleEstimator, AbstractCovarianceEstimator, LMResult, MarquardtDamping, MADScale, FixedScale, MScale, estimate_scale, TukeyLoss, weight, KnownWeightsCovarianceEstimator, ReweightedCovarianceEstimator, LMProblem, lm_irls
-using ..CrowdPhot: sigma_clip, sigma_clip!, besselj0, besselj1
+using ..CrowdPhot: sigma_clip, sigma_clip!, besselj0, besselj1, _clamp_inds
 import ConstructionBase
 import LossFunctions
 import LoopVectorization as LV
@@ -38,6 +38,12 @@ Evaluate the PSF model at position `(y, x)`, where `y` is the row
 (first array index) and `x` is the column (second array index).
 """
 function evaluate end
+function Base.convert(to::Type{T}, from::AbstractPSFModel{S}) where 
+    {T1, T <: AbstractPSFModel{T1}, S}
+    props = map(x -> T1(x), ConstructionBase.getproperties(from))
+    return ConstructionBase.constructorof(T)(; props...)
+end
+Base.convert(::Type{T}, original::AbstractPSFModel{T1}) where {T1, T <: AbstractPSFModel{T1}} = original
 # Declare that evaluate is allowed to be used inside @turbo loops.
 LV.can_turbo(::typeof(evaluate), ::Val{3}) = true
 
@@ -294,44 +300,88 @@ function render(model::AbstractPSFModel{T}) where T
 end
 
 """
-    add_star!(out::AbstractMatrix, model::AbstractPSFModel, 
-                    inds::CartesianIndices = CartesianIndices(model))
+    add_star!(out::AbstractMatrix, model::AbstractPSFModel,
+              yr::AbstractUnitRange{<:Integer}, xr::AbstractUnitRange{<:Integer})
 
-Mutate `out` by evaluating `model` at each pixel index in `inds` and adding
-the result to `out`, skipping indices that fall outside the bounds of `out`.
-This is designed for rendering a PSF model into a larger image frame,
-requiring that the `centroid` of the `model` be in the pixel space of the
-image (i.e., a star with a center of `(y=20.5, x=10.5)` would be centered on
-the pixel at row 20, column 10 of the image). Pixels that lie off the edge of
-`out` are quietly skipped. Each `CartesianIndex` `idx` satisfies `idx[1] = y`
-(row) and `idx[2] = x` (column).
+Mutate `out` by evaluating `model` at each pixel `(y, x)` for `y in yr, x in
+xr` and adding the result to `out`, clamping `yr`/`xr` to the bounds of `out`
+first (so pixels that lie off the edge of `out` are quietly skipped). This is
+designed for rendering a PSF model into a larger image frame, requiring that
+the `centroid` of the `model` be in the pixel space of the image (i.e., a
+star with a center of `(y=20.5, x=10.5)` would be centered on the pixel at
+row 20, column 10 of the image).
+
+!!! note
+    The SIMD-accelerated path is only used when `eltype(out)` matches the
+    model's own element type `T` (`model::AbstractPSFModel{T}`) and falls back
+    to a plain scalar loop otherwise.
 
 See also: [`subtract_star!`](@ref) for the subtractive counterpart.
 """
-function add_star!(out::AbstractMatrix, model::AbstractPSFModel, inds::CartesianIndices = CartesianIndices(model))
-    for idx in inds
-        checkbounds(Bool, out, idx) || continue
-        @inbounds out[idx] += evaluate(model, idx)
+function add_star!(out::AbstractMatrix{T}, model::AbstractPSFModel{T}, yr::AbstractUnitRange{<:Integer}, xr::AbstractUnitRange{<:Integer}) where {T}
+    yr, xr = _clamp_inds(yr, xr, out)
+    (isempty(yr) || isempty(xr)) && return out
+    LV.@turbo for j in xr
+        for i in yr
+            out[i, j] += evaluate(model, i, j)
+        end
     end
     return out
+end
+function add_star!(out::AbstractMatrix, model::AbstractPSFModel, yr::AbstractUnitRange{<:Integer}, xr::AbstractUnitRange{<:Integer})
+    yr, xr = _clamp_inds(yr, xr, out)
+    (isempty(yr) || isempty(xr)) && return out
+    @inbounds @simd for j in xr
+        for i in yr
+            out[i, j] += evaluate(model, i, j)
+        end
+    end
+    return out
+end
+add_star!(out::AbstractMatrix, model::AbstractPSFModel, inds::CartesianIndices) = add_star!(out, model, inds.indices...)
+function add_star!(out::AbstractMatrix, model::AbstractPSFModel)
+    (y_lo, y_hi), (x_lo, x_hi) = extent(Int, model)
+    return add_star!(out, model, y_lo:y_hi, x_lo:x_hi)
 end
 
 
 """
-    subtract_star!(out::AbstractMatrix, model::AbstractPSFModel, 
-        inds::CartesianIndices=CartesianIndices(model))
+    subtract_star!(out::AbstractMatrix, model::AbstractPSFModel,
+        yr::AbstractUnitRange{<:Integer}, xr::AbstractUnitRange{<:Integer})
 
-Subtract the model PSF flux from each pixel of `out` over the indices `inds`,
-i.e. `out[idx] -= evaluate(model, Tuple(idx)...)`.
+Subtract the model PSF flux from each pixel of `out` over `y in yr, x in
+xr`, i.e. `out[y, x] -= evaluate(model, y, x)`.
+
+!!! note
+    The SIMD-accelerated path requires `eltype(out) == T` for
+    `model::AbstractPSFModel{T}` and falls back to a plain scalar loop otherwise.
 
 See also: [`add_star!`](@ref) for the additive counterpart.
 """
-function subtract_star!(out::AbstractMatrix, model::AbstractPSFModel, inds::CartesianIndices = CartesianIndices(model))
-    for idx in inds
-        checkbounds(Bool, out, idx) || continue
-        @inbounds out[idx] -= evaluate(model, idx)
+function subtract_star!(out::AbstractMatrix{T}, model::AbstractPSFModel{T}, yr::AbstractUnitRange{<:Integer}, xr::AbstractUnitRange{<:Integer}) where {T}
+    yr, xr = _clamp_inds(yr, xr, out)
+    (isempty(yr) || isempty(xr)) && return out
+    LV.@turbo for j in xr
+        for i in yr
+            out[i, j] -= evaluate(model, i, j)
+        end
     end
     return out
+end
+function subtract_star!(out::AbstractMatrix, model::AbstractPSFModel, yr::AbstractUnitRange{<:Integer}, xr::AbstractUnitRange{<:Integer})
+    yr, xr = _clamp_inds(yr, xr, out)
+    (isempty(yr) || isempty(xr)) && return out
+    @inbounds for j in xr
+        for i in yr
+            out[i, j] -= evaluate(model, i, j)
+        end
+    end
+    return out
+end
+subtract_star!(out::AbstractMatrix, model::AbstractPSFModel, inds::CartesianIndices) = subtract_star!(out, model, inds.indices...)
+function subtract_star!(out::AbstractMatrix, model::AbstractPSFModel)
+    (y_lo, y_hi), (x_lo, x_hi) = extent(Int, model)
+    return subtract_star!(out, model, y_lo:y_hi, x_lo:x_hi)
 end
 
 """

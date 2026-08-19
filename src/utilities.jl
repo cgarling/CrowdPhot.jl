@@ -249,14 +249,17 @@ end
 # ==============================================================================
 
 """
-    _clamp_inds(inds::CartesianIndices{2}, image::AbstractMatrix)
+    _clamp_inds(yr::AbstractUnitRange{<:Integer}, xr::AbstractUnitRange{<:Integer}, image::AbstractMatrix) -> (yr, xr)
 
-Clip `CartesianIndices{2}` to the axes of `image`, returning a new
-`CartesianIndices{2}` that lies entirely within the image bounds.
+Clip the row range `yr` and column range `xr` to the axes of `image`,
+returning `(yr, xr)` ranges that lie entirely within the image bounds. If
+`yr`/`xr` do not overlap the corresponding axis of `image` at all, the
+returned range is empty (`isempty` is `true`, with `last < first`).
 """
-function _clamp_inds(inds::CartesianIndices{2}, image::AbstractMatrix)
+function _clamp_inds(yr::AbstractUnitRange{<:Integer}, xr::AbstractUnitRange{<:Integer}, image::AbstractMatrix)
     ay, ax = axes(image)
-    r1 = max(first(ay), first(inds)[1]):min(last(ay), last(inds)[1])
-    r2 = max(first(ax), first(inds)[2]):min(last(ax), last(inds)[2])
-    return CartesianIndices((r1, r2))
+    yr = max(first(ay), first(yr)):min(last(ay), last(yr))
+    xr = max(first(ax), first(xr)):min(last(ax), last(xr))
+    return yr, xr
 end
+_clamp_inds(inds::CartesianIndices{2}, image::AbstractMatrix) = _clamp_inds(inds.indices..., image)
