@@ -38,13 +38,19 @@ Evaluate the PSF model at position `(y, x)`, where `y` is the row
 (first array index) and `x` is the column (second array index).
 """
 function evaluate end
+
 function Base.convert(to::Type{T}, from::AbstractPSFModel{S}) where 
     {T1, T <: AbstractPSFModel{T1}, S}
+    T === typeof(from) && return from
+    ConstructionBase.constructorof(T) === ConstructionBase.constructorof(typeof(from)) ||
+        throw(MethodError(convert, (to, from)))
     props = map(x -> T1(x), ConstructionBase.getproperties(from))
     return ConstructionBase.constructorof(T)(; props...)
 end
-Base.convert(::Type{T}, original::AbstractPSFModel{T1}) where {T1, T <: AbstractPSFModel{T1}} = original
+
 # Declare that evaluate is allowed to be used inside @turbo loops.
+# This will be true for *all* evaluate methods defined, so this is
+# a contract that all PSF models must implement evaluate in a way that is compatible with @turbo.
 LV.can_turbo(::typeof(evaluate), ::Val{3}) = true
 
 """
