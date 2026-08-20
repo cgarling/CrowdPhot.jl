@@ -256,7 +256,7 @@ end
 function _source_ranges(model, y, x, model_radius, image)
     # Use the model extent unless the caller supplies a fixed render radius.
     if isnothing(model_radius)
-        (ylo, yhi), (xlo, xhi) = extent(model)
+        (ylo, yhi), (xlo, xhi) = PSF.extent(model)
     else
         ylo, yhi = y - model_radius, y + model_radius
         xlo, xhi = x - model_radius, x + model_radius
@@ -287,7 +287,7 @@ function render_sources!(
         # Render each source with zero model background; image background is added separately.
         m = ConstructionBase.setproperties(model, (x = xs[k], y = ys[k], flux = fs[k], bkg = zero(float(eltype(image)))))
         yr, xr = _source_ranges(m, ys[k], xs[k], model_radius, image)
-        for j in xr, i in yr
+        LV.@turbo for j in xr, i in yr
             image[i, j] += evaluate(m, i, j)
         end
     end
@@ -540,7 +540,7 @@ function make_gaussians_image(
         fval = f * norm
         ilo, ihi = max(1, floor(Int, y0) - half), min(H, ceil(Int, y0) + half)
         jlo, jhi = max(1, floor(Int, x0) - half), min(W, ceil(Int, x0) + half)
-        for j in jlo:jhi, i in ilo:ihi
+        LV.@turbo for j in jlo:jhi, i in ilo:ihi
             img[i, j] += fval * exp(-((j - x0)^2 + (i - y0)^2) * inv2σ2)
         end
     end
