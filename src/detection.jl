@@ -138,12 +138,12 @@ function matched_filter(image::AbstractMatrix{T}, kernel::AbstractMatrix;
         den = weighted_img
         correlate!(den, inv_var, K_sq, border)
 
-        # Significance: num ./ sqrt(den).
+        # Significance = num ./ sqrt(den).
         # num's eltype is already wide enough (promoted with Float64 kernel),
         # so reuse its buffer for the significance map.
         significance = num
-        @inbounds for i in eachindex(den)
-            significance[i] = den[i] > 0 ? significance[i] / sqrt(den[i]) : zero(eltype(significance))
+        LV.@turbo for i in eachindex(den)
+            significance[i] = ifelse(den[i] > 0, significance[i] / sqrt(den[i]), zero(eltype(significance)))
         end
         smoothed_inv_var = den
     else
@@ -151,7 +151,9 @@ function matched_filter(image::AbstractMatrix{T}, kernel::AbstractMatrix;
         # (kernel_norm converts the raw correlation to SNR per unit σ.)
         S = promote_type(T, typeof(kernel_norm))
         significance = similar(image, S)
-        significance .= S.(smoothed) .* kernel_norm
+        LV.@turbo for i in eachindex(smoothed)
+            significance[i] = S(smoothed[i]) * kernel_norm
+        end
         smoothed_inv_var = nothing
     end
 
