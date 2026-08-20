@@ -1,4 +1,6 @@
 name: CI
+env:
+  JULIA_CPU_TARGET: "generic;sandybridge,-xsaveopt,clone_all;haswell,-rdrnd,base(1);x86_64_v4,-rdrnd,base(1)"
 on:
   push:
     branches:
@@ -41,8 +43,8 @@ jobs:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
       - uses: julia-actions/cache@v3
-        with:
-          cache-compiled: false
+        # with:
+        #   cache-compiled: false
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
       - uses: julia-actions/julia-processcoverage@v1
@@ -81,8 +83,8 @@ jobs:
         with:
           version: '1'
       - uses: julia-actions/cache@v3
-        with:
-          cache-compiled: false
+        # with:
+        #   cache-compiled: false
       - uses: julia-actions/julia-buildpkg@v1
       - run: |
           julia --project=docs -e '
