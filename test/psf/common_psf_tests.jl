@@ -63,6 +63,7 @@ function test_common(model::AbstractPSFModel{T}) where {T}
         ConstructionBase.constructorof(typeof(model)){other_elt}
     end
     @test convert(convert_type, model) isa convert_type
+    @test convert(typeof(model), model) === model
     # add_star!/subtract_star! must fall back to a plain scalar loop (rather
     # than @turbo) when eltype(out) != T, since LoopVectorization/
     # VectorizationBase cannot unify SIMD vector widths across mismatched
@@ -86,6 +87,11 @@ function test_common(model::AbstractPSFModel{T}) where {T}
     # @test effective_area(model) isa T # no generic method yet
     # @test fwhm(model) isa T # no generic method yet
     return @test @inferred(theta(model)) isa T
+end
+
+@testset "conversion preserves model family" begin
+    model = CircularGaussianPSF(x = 1.0, y = 2.0, fwhm = 3.0, flux = 4.0, bkg = 5.0)
+    @test_throws MethodError convert(AiryPSF{Float64}, model)
 end
 
 for model in (
