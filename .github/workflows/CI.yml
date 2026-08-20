@@ -1,6 +1,6 @@
 name: CI
-env:
-  JULIA_CPU_TARGET: "generic;sandybridge,-xsaveopt,clone_all;haswell,-rdrnd,base(1)"
+# env:
+#   JULIA_CPU_TARGET: "generic;sandybridge,-xsaveopt,clone_all;haswell,-rdrnd,base(1)"
 on:
   push:
     branches:
