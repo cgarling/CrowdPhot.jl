@@ -69,7 +69,7 @@ end
     image = simulate_image((40, 45), psf, sources; background = 12.0, noise = :none, model_radius = 7)
     @test size(image) == (40, 45)
     @test sum(image) ≈ 12.0 * 40 * 45 + sum(sources.flux) rtol = 1.0e-6
-    @test CrowdPhot.flux_for_snr(psf; snr = 20, background = 12, read_noise = 2) > 0
+    @test CrowdPhot.flux_for_snr(psf, 20; background = 12, read_noise = 2) > 0
 
     @testset "flux_for_snr" begin
         # Verify that requested SNR inverts the data-unit noise model, including source shot noise.
@@ -77,12 +77,64 @@ end
         background = 12.0
         read_noise = 2.0
         gain = 2.5
-        flux = CrowdPhot.flux_for_snr(psf; snr, background, read_noise, gain)
+        flux = CrowdPhot.flux_for_snr(psf, snr; background, read_noise, gain)
         σb2 = background / gain + read_noise^2
         @test flux / sqrt(flux / gain + effective_area(psf) * σb2) ≈ snr
 
         # Source-only Poisson noise still requires nonzero flux in data units.
-        @test CrowdPhot.flux_for_snr(psf; snr = 5, background = 0, gain = 2) ≈ 12.5
+        @test CrowdPhot.flux_for_snr(psf, 5; background = 0, gain = 2) ≈ 12.5
+    end
+
+    @testset "snr_for_flux" begin
+        # snr_for_flux must directly match the quadratic-formula noise model.
+        flux = 317.0
+        background = 12.0
+        read_noise = 2.0
+        gain = 2.5
+        σb2 = background / gain + read_noise^2
+        snr = CrowdPhot.snr_for_flux(psf, flux; background, read_noise, gain)
+        @test snr ≈ flux / sqrt(flux / gain + effective_area(psf) * σb2)
+
+        # snr_for_flux and flux_for_snr must be exact inverses of one another.
+        for snr0 in (5.0, 20.0, 100.0)
+            flux0 = CrowdPhot.flux_for_snr(psf, snr0; background, read_noise, gain)
+            @test CrowdPhot.snr_for_flux(psf, flux0; background, read_noise, gain) ≈ snr0
+        end
+        for flux0 in (12.5, 100.0, 500.0)
+            snr0 = CrowdPhot.snr_for_flux(psf, flux0; background, read_noise, gain)
+            @test CrowdPhot.flux_for_snr(psf, snr0; background, read_noise, gain) ≈ flux0
+        end
+
+        # Zero flux with zero background/read-noise variance is a 0/0 indeterminate form.
+        @test isnan(CrowdPhot.snr_for_flux(psf, 0.0; background = 0, read_noise = 0))
+        # Zero flux with nonzero background variance gives zero SNR.
+        @test CrowdPhot.snr_for_flux(psf, 0.0; background, read_noise, gain) == 0
+    end
+
+    @testset "simulate_sources snr branch" begin
+        # A scalar `snr` should place every source at the flux required for that SNR.
+        rng_snr = StableRNG(11)
+        background = 12.0
+        read_noise = 2.0
+        gain = 1.0
+        snr_sources = simulate_sources(
+            (40, 45), 6; snr = 15.0, psf, background, read_noise, gain,
+            min_separation = 4, border = 5, rng = rng_snr
+        )
+        expected_flux = CrowdPhot.flux_for_snr(psf, 15.0; background, read_noise, gain)
+        @test all(f -> f ≈ expected_flux, snr_sources.flux)
+
+        # A two-value `snr` range should sample each source's SNR uniformly before converting to flux.
+        rng_range = StableRNG(12)
+        range_sources = simulate_sources(
+            (40, 45), 6; snr = (10.0, 30.0), psf, background, read_noise, gain,
+            min_separation = 4, border = 5, rng = rng_range
+        )
+        @test length(range_sources.flux) == 6
+        for f in range_sources.flux
+            snr_f = CrowdPhot.snr_for_flux(psf, f; background, read_noise, gain)
+            @test 10.0 ≤ snr_f ≤ 30.0
+        end
     end
 
     noisy = copy(image)

@@ -21,10 +21,11 @@ simulate_sources
 simulate_image
 ```
 
-## Flux from SNR
+## Flux ↔ SNR
 
 ```@docs
 flux_for_snr
+snr_for_flux
 ```
 
 ## Noise Injection

@@ -28,7 +28,7 @@ function _sample_flux(rng::Random.AbstractRNG, flux, distribution, power)
 end
 
 @doc raw"""
-    flux_for_snr(model; snr, background, read_noise=0, gain=1)
+    flux_for_snr(model, snr; background, read_noise=0, gain=1)
 
 Approximate source flux, in the same data units as `background` and
 `read_noise` (for example, ADU), required for matched-filter `snr` for a PSF
@@ -57,8 +57,8 @@ A_\mathrm{eff} = \mathrm{effective\_area}(\mathrm{model})
 ```
 """
 function flux_for_snr(
-        model::AbstractPSFModel;
-        snr::Real,
+        model::AbstractPSFModel,
+        snr::Real;
         background::Real,
         read_noise::Real = 0,
         gain::Real = 1
@@ -66,10 +66,12 @@ function flux_for_snr(
     # Validate inputs before solving the SNR-flux quadratic.
     snr ≥ 0 || throw(ArgumentError("`snr` must be non-negative"))
     gain > 0 || throw(ArgumentError("`gain` must be positive"))
+    background ≥ 0 || throw(ArgumentError("`background` must be non-negative"))
+    read_noise ≥ 0 || throw(ArgumentError("`read_noise` must be non-negative"))
     snr, background, read_noise, gain = float.((snr, background, read_noise, gain))
 
     # Combine the background/read-noise variance and effective PSF area.
-    σb2 = max(zero(background), background) / gain + read_noise^2
+    σb2 = background / gain + read_noise^2
     background_variance = effective_area(model) * σb2
 
     # Include source shot noise by taking the positive root of the quadratic.
@@ -77,16 +79,58 @@ function flux_for_snr(
     return (source_noise_term + sqrt(source_noise_term^2 + 4 * snr^2 * background_variance)) / 2
 end
 
+@doc raw"""
+    snr_for_flux(model, flux; background, read_noise=0, gain=1)
+
+Approximate matched-filter signal-to-noise ratio for a source of `flux`, in
+the same data units as `background` and `read_noise` (for example, ADU), for
+a PSF model on a flat background. `gain` is in electrons per data unit. This
+is the inverse of [`flux_for_snr`](@ref) and uses the same noise model:
+
+```math
+\mathrm{snr} \approx \frac{F}{\sqrt{F / g + A_\mathrm{eff}\,\sigma_b^2}},
+\quad
+\sigma_b^2 = \max\left(0, \frac{\mathrm{background}}{g} + \mathrm{read\_noise}^2\right),
+\quad
+A_\mathrm{eff} = \mathrm{effective\_area}(\mathrm{model})
+```
+
+Note that `snr_for_flux(model, 0; background=0, read_noise=0)` returns `NaN`,
+since both source shot noise and background/read noise vanish and the ratio
+is indeterminate.
+"""
+function snr_for_flux(
+        model::AbstractPSFModel,
+        flux::Real;
+        background::Real,
+        read_noise::Real = 0,
+        gain::Real = 1
+    )
+    # Validate inputs before solving the SNR-flux quadratic.
+    flux ≥ 0 || throw(ArgumentError("`flux` must be non-negative"))
+    gain > 0 || throw(ArgumentError("`gain` must be positive"))
+    background ≥ 0 || throw(ArgumentError("`background` must be non-negative"))
+    read_noise ≥ 0 || throw(ArgumentError("`read_noise` must be non-negative"))
+    flux, background, read_noise, gain = float.((flux, background, read_noise, gain))
+
+    # Combine the background/read-noise variance and effective PSF area.
+    σb2 = background / gain + read_noise^2
+    background_variance = effective_area(model) * σb2
+
+    # Include source shot noise in the SNR calculation.
+    return flux / sqrt(flux / gain + background_variance)
+end
+
 function _flux_from_snr_spec(rng, model, snr, background, read_noise, gain)
     # Collapse matrix backgrounds to a representative scalar for source draws.
     bg = background isa AbstractMatrix ? median(background) : background
     if snr isa Number
-        return flux_for_snr(model; snr, background = bg, read_noise, gain)
+        return flux_for_snr(model, snr; background = bg, read_noise, gain)
     elseif snr isa Tuple || snr isa AbstractVector
         # Allow source-to-source SNR variation over a uniform range.
         length(snr) == 2 || throw(ArgumentError("`snr` range must have two values"))
         sampled = snr[1] + rand(rng) * (snr[2] - snr[1])
-        return flux_for_snr(model; snr = sampled, background = bg, read_noise, gain)
+        return flux_for_snr(model, sampled; background = bg, read_noise, gain)
     else
         throw(ArgumentError("`snr` must be a scalar or two-value range"))
     end

@@ -92,7 +92,8 @@ Simulation utilities are available for tests, examples, and benchmarking:
 - [`simulate_sources`](@ref) generates source positions and fluxes with optional
   separation constraints.
 - [`simulate_image`](@ref) renders sources through a PSF model and adds noise.
-- [`flux_for_snr`](@ref) converts target SNR values into model fluxes.
+- [`flux_for_snr`](@ref) converts target SNR values into model fluxes, and
+  [`snr_for_flux`](@ref) performs the inverse conversion.
 - `make_gaussians_image` provides a compact convenience interface for
   Gaussian-star images.
 
