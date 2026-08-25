@@ -61,6 +61,10 @@ struct GriddedPSFModel{T, M <: AbstractPSFModel{T}} <: AbstractPSFModel{T}
     bkg::T
 end
 
+# `evaluate` bilinearly blends the component models, so it inherits their
+# `@turbo` compatibility.
+_turbo_safe(::Type{<:GriddedPSFModel{T, M}}) where {T, M} = _turbo_safe(M)
+
 function GriddedPSFModel(
         psfs::AbstractVector{<:AbstractPSFModel},
         grid_y::AbstractVector,
