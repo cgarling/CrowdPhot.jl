@@ -84,6 +84,10 @@ struct ImagePSF{T, A <: AbstractMatrix{T}} <: AbstractPSFModel{T}
     fill_value::T
 end
 
+# `evaluate` gathers through `bicubic_interpolate`, whose branch-free `ifelse`
+# guards `@turbo` cannot lower when both loop dimensions are unrolled.
+_turbo_safe(::Type{<:ImagePSF}) = false
+
 function ImagePSF(
         data::AbstractMatrix;
         y = 0,

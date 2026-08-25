@@ -287,8 +287,16 @@ function render_sources!(
         # Render each source with zero model background; image background is added separately.
         m = ConstructionBase.setproperties(model, (x = xs[k], y = ys[k], flux = fs[k], bkg = zero(float(eltype(image)))))
         yr, xr = _source_ranges(m, ys[k], xs[k], model_radius, image)
-        LV.@turbo for j in xr, i in yr
-            image[i, j] += evaluate(m, i, j)
+        if PSF._turbo_safe(m)
+            LV.@turbo for j in xr, i in yr
+                image[i, j] += evaluate(m, i, j)
+            end
+        else
+            @inbounds for j in xr
+                @simd for i in yr
+                    image[i, j] += evaluate(m, i, j)
+                end
+            end
         end
     end
     return image

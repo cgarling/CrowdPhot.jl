@@ -53,6 +53,41 @@ end
 # a contract that all PSF models must implement evaluate in a way that is compatible with @turbo.
 LV.can_turbo(::typeof(evaluate), ::Val{3}) = true
 
+# Workaround for a gap in VectorizationBase's `vcopysign` method table.
+# When `@turbo` unrolls a loop dimension *without* vectorizing it (common on
+# narrow 128-bit registers, e.g. Apple silicon, where `pick_vector_width(Float64)`
+# is only 2), operands that depend solely on that dimension arrive as
+# `VecUnroll{N,1,T,T}`, i.e. a tuple of plain scalars rather than of `Vec`s.
+# `Base.copysign(::VecUnroll, ::VecUnroll)` then `fmap`s down to
+# `vcopysign(::T, ::T)` for `T <: Base.HWReal`, which VectorizationBase does not
+# define (it only covers `Vec`/`MM`/`VecUnroll` arguments). That MethodError is
+# hit by `SpecialFunctions.erf` -> `VectorizationBase.verf`, which `copysign`s
+# its result, so every `@turbo` loop over `CircularGaussianPRF`/`GaussianPRF`
+# (and `GriddedPSFModel`s built from them) fails on such machines.
+# The scalar fallback is exactly `Base.copysign`.
+LV.VectorizationBase.vcopysign(a::Base.HWReal, b::Base.HWReal) = Base.copysign(a, b)
+
+"""
+    _turbo_safe(model) -> Bool
+    _turbo_safe(::Type{<:AbstractPSFModel}) -> Bool
+
+Whether a plain two-dimensional `for j in xr, i in yr; ... evaluate(model, i, j)`
+loop over `model` may be wrapped in `LV.@turbo`.  Defaults to `true`; the
+gathering models opt out.
+
+`ImagePSF` (and `GriddedPSFModel`s built from it) must opt out because the
+branch-free `ifelse` guards in `bicubic_interpolate` are handed a *doubly*
+nested `VecUnroll` mask whenever LoopVectorization unrolls both loop
+dimensions, and VectorizationBase defines no `ifelse` for a nested-`VecUnroll`
+mask.  Double unrolling happens once the register width is small enough
+(`pick_vector_width(Float64) == 2` on 128-bit NEON, i.e. Apple silicon), so
+these loops throw a `MethodError` there while working on wider hardware.
+Since these models gather per pixel anyway, the `@inbounds @simd` fallback is
+used unconditionally rather than being gated on the host register size.
+"""
+_turbo_safe(::Type{<:AbstractPSFModel}) = true
+_turbo_safe(model::AbstractPSFModel) = _turbo_safe(typeof(model))
+
 """
     centroid(model::AbstractPSFModel{T}) → (y::T, x::T)
 
@@ -295,11 +330,21 @@ function render(model::AbstractPSFModel{T}) where T
     nx = 2hx + 1
     ny = 2hy + 1
     result = Matrix{T}(undef, ny, nx)
-    LV.@turbo for j in 1:nx
-        xi = xc - hx + j - 1
-        for i in 1:ny
-            yi = yc - hy + i - 1
-            result[i, j] = evaluate(model, yi, xi)
+    if _turbo_safe(model)
+        LV.@turbo for j in 1:nx
+            xi = xc - hx + j - 1
+            for i in 1:ny
+                yi = yc - hy + i - 1
+                result[i, j] = evaluate(model, yi, xi)
+            end
+        end
+    else
+        @inbounds for j in 1:nx
+            xi = xc - hx + j - 1
+            @simd for i in 1:ny
+                yi = yc - hy + i - 1
+                result[i, j] = evaluate(model, yi, xi)
+            end
         end
     end
     return result
@@ -327,9 +372,17 @@ See also: [`subtract_star!`](@ref) for the subtractive counterpart.
 function add_star!(out::AbstractMatrix{T}, model::AbstractPSFModel{T}, yr::AbstractUnitRange{<:Integer}, xr::AbstractUnitRange{<:Integer}) where {T}
     yr, xr = _clamp_inds(yr, xr, out)
     (isempty(yr) || isempty(xr)) && return out
-    LV.@turbo for j in xr
-        for i in yr
-            out[i, j] += evaluate(model, i, j)
+    if _turbo_safe(model)
+        LV.@turbo for j in xr
+            for i in yr
+                out[i, j] += evaluate(model, i, j)
+            end
+        end
+    else
+        @inbounds for j in xr
+            @simd for i in yr
+                out[i, j] += evaluate(model, i, j)
+            end
         end
     end
     return out
@@ -367,9 +420,17 @@ See also: [`add_star!`](@ref) for the additive counterpart.
 function subtract_star!(out::AbstractMatrix{T}, model::AbstractPSFModel{T}, yr::AbstractUnitRange{<:Integer}, xr::AbstractUnitRange{<:Integer}) where {T}
     yr, xr = _clamp_inds(yr, xr, out)
     (isempty(yr) || isempty(xr)) && return out
-    LV.@turbo for j in xr
-        for i in yr
-            out[i, j] -= evaluate(model, i, j)
+    if _turbo_safe(model)
+        LV.@turbo for j in xr
+            for i in yr
+                out[i, j] -= evaluate(model, i, j)
+            end
+        end
+    else
+        @inbounds for j in xr
+            @simd for i in yr
+                out[i, j] -= evaluate(model, i, j)
+            end
         end
     end
     return out

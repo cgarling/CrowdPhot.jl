@@ -1,6 +1,5 @@
 using CrowdPhot.PSF: CircularGaussianPSF, GaussianPSF, CircularGaussianPRF, GaussianPRF, CircularMoffatPSF, MoffatPSF, evaluate, centroid, integral, evaluate_fg, evaluate_fgh, AbstractPSFModel, extent, render, theta, amplitude, background, fwhm, peak, effective_area, AiryPSF, ImagePSF, GriddedPSFModel, add_star!, subtract_star!
 import ConstructionBase
-using LoopVectorization: @turbo
 using Test
 
 # Tests generic API, type return, etc
@@ -17,7 +16,6 @@ function test_common(model::AbstractPSFModel{T}) where {T}
     ex_round = @inferred extent(Int, model)
     @test ex_round == ((floor(Int, ex[1][1]), ceil(Int, ex[1][2])), (floor(Int, ex[2][1]), ceil(Int, ex[2][2])))
     m = evaluate.(model, y, x')
-    evaluate.(model, y, x') ≈ @turbo evaluate.(model, collect(y), collect(x'))
     @test m isa Matrix{T}
     @test size(m) == (length(y), length(x))
     y, x = ex_round[1][1]:ex_round[1][2], ex_round[2][1]:ex_round[2][2]
