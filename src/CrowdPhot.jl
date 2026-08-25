@@ -5,7 +5,9 @@ using FillArrays: Fill
 using LinearAlgebra: cholesky, cholesky!, ldiv!, dot, norm, I, Symmetric, pinv, PosDefException, svd
 import LoopVectorization as LV
 import LossFunctions
+using Printf: @sprintf
 import Random
+import SparseArrays
 using StaticArrays: SMatrix, SVector, @SMatrix, @SVector
 using Statistics: median, median!, mean, std
 
@@ -14,7 +16,7 @@ export sigma_clip, sigma_clip!, calc_total_error
 export simulate_sources, simulate_image, make_gaussians_image, centroid_poly, choose_centroid
 export matched_filter, MatchedFilterResult
 export measure_star_shape, measure_star_shapes
-export MultiPassPhotResult, fit_all_stars
+export MultiPassPhotResult, fit_all_stars, fit_all_stars_simultaneous
 export CurveOfGrowth, curve_of_growth, encircled_energy, radius_at_energy, normalize, reference_cog
 
 include("correlation.jl")
@@ -32,7 +34,9 @@ include("centroids.jl")
 include("apertures.jl")
 include("morphology.jl")
 include("curve_of_growth.jl")
+include("photometry/psf_photometry_diagnostics.jl")
 include("photometry/psf_photometry_single.jl")
+include("photometry/psf_photometry_simultaneous.jl")
 include("precompile.jl")
 
 end # module CrowdPhot

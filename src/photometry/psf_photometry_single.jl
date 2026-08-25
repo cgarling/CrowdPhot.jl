@@ -366,54 +366,13 @@ function fit_all_stars(
                 chisq[idx] = result.chisq
                 n_iter[idx] += result.iterations
 
-                # Compute qfit and crowding in one pixel pass on the final
-                # pass, before subtraction.  The unit-flux PSF kernel is
-                # extracted from the already-evaluated model value.
-                if pass == n_passes && best.flux > 0
-                    inv_flux = inv(best.flux)
-                    qfit_val = zero(FT)
-                    num_clean = zero(FT)
-                    num_dirty = zero(FT)
-                    den_crowd = zero(FT)
-                    for pix in inds
-                        model_val = evaluate(best, pix)
-                        wp = inv_var !== nothing ? inv_var[pix] : one(FT)
-                        if isfinite(wp) && wp > 0
-                            qfit_val += abs(residual[pix] - model_val)
-                            # Unit-flux PSF kernel for crowding calculation.
-                            Pp = (model_val - best.bkg) * inv_flux
-                            wP = wp * Pp
-                            num_clean += wP * (residual[pix] - best.bkg)
-                            num_dirty += wP * (image[pix] - best.bkg)
-                            den_crowd += wP * Pp
-                        end
-                    end
-                    qfit[idx] = qfit_val * inv_flux
-                    if den_crowd > 0 && num_clean > 0 && num_dirty > 0
-                        crowding[idx] = FT(2.5) * log10(num_dirty / num_clean)
-                    end
-                    # qfit_expected and qfit_z (no evaluate, separate loop).
-                    if !isnothing(inv_var)
-                        sigma_sum = zero(FT)
-                        sigma2_sum = zero(FT)
-                        n_pix_good = 0
-                        for pix in inds
-                            iv = inv_var[pix]
-                            if isfinite(iv) && iv > 0
-                                sigma_i = inv(sqrt(iv))
-                                sigma_sum += sigma_i
-                                sigma2_sum += sigma_i^2
-                                n_pix_good += 1
-                            end
-                        end
-                        qfit_expected[idx] = FT(sqrt(2 / FT(π))) * sigma_sum * inv_flux
-                        if sigma2_sum > 0 && n_pix_good > length(free_idx)
-                            dof_factor = FT(sqrt(1 - length(free_idx) / n_pix_good))
-                            num = qfit_val - FT(sqrt(2 / FT(π))) * dof_factor * sigma_sum
-                            den = FT(sqrt((1 - 2 / FT(π)) * sigma2_sum)) * dof_factor
-                            qfit_z[idx] = num / den
-                        end
-                    end
+                # Compute qfit and crowding on the final pass, before
+                # subtraction, over exactly the same pixels as the fit.  The
+                # working `residual` at this point is the neighbor-subtracted
+                # image (this star's own model not yet subtracted).
+                if pass == n_passes
+                    _star_diagnostics!(qfit, qfit_expected, qfit_z, crowding,
+                        idx, best, image, residual, inds, inv_var, length(free_idx))
                 end
 
                 # Subtract the updated best-fit model.
