@@ -24,6 +24,7 @@ include("utilities.jl")
 include("bessels.jl")
 using .Bessels
 include("levenberg_marquardt.jl")
+include("sparse_inverse.jl")
 include("psf/PSF.jl")
 using .PSF
 include("detection.jl")
