@@ -1285,9 +1285,7 @@ error.
   over the same pixels in both arms.
 - No robust reweighting: `reweight`, `scale_estimator`, and `weight_reset_tol`
   are not accepted.
-- Errors invert the per-star diagonal block of `H`; like `fit_all_stars` this
-  ignores covariance with blended neighbors, so `flux_err`/`y_err`/`x_err`
-  compare directly but are not correct marginal errors in a crowded field.
+
 
 # Keyword arguments
 
@@ -1487,6 +1485,13 @@ function fit_all_stars_simultaneous(
         n_stars, params, errors, row_y, row_x, row_flux, row_bkg, valid, failure_msgs, FT, ny, nx)
 
     union_pix, nbr_blocks = _build_neighbors(pixels, S2, n_active, p, FT)
+    # `nbr_blocks` is reassigned in place to a compacted (smaller) structure
+    # as stars freeze when `solver === :cg` (step 6 below); `nbr_blocks_full`
+    # keeps the original, un-compacted pair list -- covering every star pair
+    # whose stamps ever overlapped, frozen or not -- for the end-of-fit
+    # marginal-covariance computation in step 7, which needs every
+    # cross-term regardless of freeze order.
+    nbr_blocks_full = nbr_blocks
     chol_cache = solver === :cholesky ? _build_cholesky_cache(nbr_blocks, n_active, p) : nothing
 
     # -------------------------------------------------------------------
@@ -1671,32 +1676,33 @@ function fit_all_stars_simultaneous(
         errors[row, :] .= zero(FT)
     end
 
-    # Errors: rebuild stamp values at final θ (every star, live or frozen --
-    # this is a one-time end-of-fit pass, not the per-iteration loop, so
-    # there is no per-star skip to apply here), invert per-star diagonal block.
+    # Errors: rebuild stamp values at final θ (every star, live or frozen),
+    # then invert the global H via Takahashi's recursion so marginal errors
+    # include coupling with blended neighbors (KnownWeightsCovarianceEstimator
+    # assumed; ReweightedCovarianceEstimator not yet supported here).
     _fill_stamps!(stamp, psf, free_names_val, fixed, θ, w, model_img,
         grad_col, dy_off, dx_off, anchor_y, anchor_x, row_y, row_x, row_flux, trues(n_active), fill_scratch)
+    _accumulate_H!(Hdiag, nbr_blocks_full, stamp)
+    err_cache = _build_cholesky_cache(nbr_blocks_full, n_active, p)
+    _refill_cholesky!(err_cache, Hdiag, nbr_blocks_full, trues(n_active))
+
+    shifts = FT(1.0e-6) .* FT(10) .^ (0:6) # escalate shift on PosDefException, as elsewhere in this file
+    Σ_scaled = nothing
+    for (attempt, shift) in enumerate(shifts)
+        try
+            Σ_scaled = selected_inverse_diagonal_blocks(err_cache.H, p; shift)
+            break
+        catch e
+            e isa PosDefException || rethrow()
+            attempt == length(shifts) && rethrow()
+        end
+    end
 
     for (j, i) in enumerate(active)
-        blk = zeros(FT, p, p)
-        @inbounds for m in 1:S2
-            fi = pixels[m, j]
-            fi != 0 || continue
-            for k in 1:p, l in 1:p
-                blk[k, l] += stamp.values[k, m, j] * stamp.values[l, m, j]
-            end
-        end
+        cov = zeros(FT, p, p)
         for k in 1:p, l in 1:p
-            blk[k, l] *= stamp.colnorm[k, j] * stamp.colnorm[l, j]
+            cov[k, l] = Σ_scaled[k, l, j] / (stamp.colnorm[k, j] * stamp.colnorm[l, j])
         end
-        tr = zero(FT)
-        for k in 1:p
-            tr += blk[k, k]
-        end
-        for k in 1:p
-            blk[k, k] += FT(1.0e-12) * tr
-        end
-        cov = covariance!(covariance_estimator, blk, cost, dof)
         _extract_errors!(errors, cov, free_idx, is_fixed, i)
     end
 

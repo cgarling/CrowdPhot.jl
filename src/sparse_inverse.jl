@@ -2,15 +2,6 @@
 # Sparse selected inversion (Takahashi's recursion)
 # ==============================================================================
 #
-# Not yet wired into any public entry point. `fit_all_stars_simultaneous`
-# (psf_photometry_simultaneous.jl) currently reports per-star errors from
-# only the diagonal block of its Gauss-Newton Hessian `H`, ignoring
-# covariance with blended neighbors (see that function's docstring). The
-# mathematically correct marginal covariance is the corresponding diagonal
-# block of `inv(H)`, not `inv(H_diagonal_block)`; these functions compute
-# exactly that, at the fill-in positions of `H`'s sparse Cholesky
-# factorization, without ever forming a dense `n x n` inverse.
-#
 # `selected_inverse` and `selected_inverse_diagonal_blocks` are the two
 # entry points meant to be called directly; `_selected_inverse_permuted` and
 # `_depermute_selected_inverse` are internal steps of `selected_inverse`
