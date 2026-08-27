@@ -27,6 +27,26 @@ this method can give good results even in crowded fields.
 MultiPassPhotResult
 ```
 
+### Goodness-of-fit and morphology diagnostics
+
+Alongside the fitted parameters, [`MultiPassPhotResult`](@ref) carries several
+per-star diagnostics computed on the final pass over exactly the fitting box:
+
+- `chisq` (reduced ``\chi^2``, L2) and `qfit` / `qfit_expected` / `qfit_z`
+  (absolute-residual, L1) measure how well the PSF model fits the data.
+- `crowding` flags blend contamination from neighbors.
+- `spread_model` / `spread_model_err` is a star/galaxy separator
+  for developed for 
+  [SExtractor](https://sextractor.readthedocs.io/en/latest/Model.html).
+  It compares the data against the local PSF
+  and against the PSF convolved with a small circular exponential disk
+  (scalelength ``\mathrm{FWHM}/16``); the value is near zero for point sources,
+  positive for extended sources, and negative for detections sharper than the
+  PSF. The reference disk FWHM defaults to a Gaussian-equivalent estimate from
+  the PSF's effective area and can be overridden with the `spread_model_fwhm`
+  keyword. `spread_model` is only meaningful when `psf` is an accurate model of
+  the true PSF with its shape parameters held fixed via `fixed`.
+
 ## Fitting function
 
 ```@docs

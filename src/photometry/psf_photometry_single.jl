@@ -78,6 +78,23 @@ length (the number of input sources).
   indicate an isolated source; positive values indicate contamination by
   neighbor light.  Computed on the final pass; check `valid` and `converged`
   before interpreting.
+- `spread_model::Vector{T}`: SExtractor star/galaxy discriminant:
+  ```math
+  \\mathrm{spread\\_model} = \\frac{\\boldsymbol{G}^\\mathsf{T} \\mathbf{W} \\boldsymbol{p}}
+  {\\boldsymbol{\\phi}^\\mathsf{T} \\mathbf{W} \\boldsymbol{p}}
+  - \\frac{\\boldsymbol{\\phi}^\\mathsf{T} \\mathbf{W} \\boldsymbol{G}}
+  {\\boldsymbol{\\phi}^\\mathsf{T} \\mathbf{W} \\boldsymbol{\\phi}}
+  ```
+  where ``\\boldsymbol{p}`` is the neighbor-subtracted background-subtracted image,
+  ``\\boldsymbol{\\phi}`` the unit-flux local PSF, ``\\boldsymbol{G}`` the PSF
+  convolved with a circular exponential disk of scalelength ``\\rm FWHM/16``,
+  and ``\\mathbf{W}`` the inverse-variance weights (unit weights when `inv_var`
+  is not supplied, which changes the value).  Near zero for point sources,
+  positive for extended sources, negative for detections sharper than the PSF
+  (e.g. cosmic rays).
+- `spread_model_err::Vector{T}`: 1-sigma uncertainty on `spread_model` from
+  pixel-noise propagation of the weighted estimator.  `NaN` when `inv_var` was
+  not provided.
 """
 struct MultiPassPhotResult{T}
     y::Vector{T}
@@ -95,6 +112,8 @@ struct MultiPassPhotResult{T}
     qfit_expected::Vector{T}
     qfit_z::Vector{T}
     crowding::Vector{T}
+    spread_model::Vector{T}
+    spread_model_err::Vector{T}
     n_iter::Vector{Int}
     n_passes::Int
     n_failed::Int
@@ -253,6 +272,7 @@ function fit_all_stars(
         n_passes::Integer = 3,
         fixed::NamedTuple = (;),
         inv_var = nothing,
+        spread_model_fwhm::Union{Nothing, Real} = nothing,
         kws...,
     ) where {T}
     FT = float(T)
@@ -265,7 +285,7 @@ function fit_all_stars(
     n_params, n_stars = size(params)
     n_stars == 0 && return MultiPassPhotResult(
         FT[], FT[], FT[], FT[], FT[], FT[], FT[], FT[],
-        falses(0), falses(0), FT[], FT[], FT[], FT[], FT[], Int[], Int(0), Int(0), String[], Matrix{FT}(undef, 0, 0),
+        falses(0), falses(0), FT[], FT[], FT[], FT[], FT[], FT[], FT[], Int[], Int(0), Int(0), String[], Matrix{FT}(undef, 0, 0),
     )
 
     # Map PSF property names to matrix row indices.
@@ -299,6 +319,12 @@ function fit_all_stars(
     # axis (worst case: a star centered on a half-integer coordinate).
     S_max = 2 * ceil(Int, fit_rad) + 2
     model_stamp = Matrix{FT}(undef, S_max, S_max)
+    # spread_model reference: one field-constant exponential-disk kernel, plus a
+    # reused buffer for the per-star PSF-convolved-with-disk stamp.
+    spread_fwhm = spread_model_fwhm === nothing ?
+        _spread_fwhm(psf, FT(params[row_y, 1]), FT(params[row_x, 1])) : FT(spread_model_fwhm)
+    spread_kernel = isfinite(spread_fwhm) && spread_fwhm > 0 ? _exp_disk_kernel_bandlimited(spread_fwhm, FT; half = ceil(Int, fit_rad)) : nothing
+    g_stamp = Matrix{FT}(undef, S_max, S_max)
 
     # -------------------------------------------------------------------
     # 4. Per-star state vectors
@@ -310,6 +336,8 @@ function fit_all_stars(
     qfit_expected = fill(convert(FT, NaN), n_stars)
     qfit_z = fill(convert(FT, NaN), n_stars)
     crowding = fill(convert(FT, NaN), n_stars)
+    spread_model = fill(convert(FT, NaN), n_stars)
+    spread_model_err = fill(convert(FT, NaN), n_stars)
     n_iter = zeros(Int, n_stars)
     n_failed = 0
     failure_msgs = String[]
@@ -381,8 +409,11 @@ function fit_all_stars(
                 if pass == n_passes
                     ms = PSF.render!(model_stamp, best, yr, xr)
                     ivv = inv_var === nothing ? nothing : view(inv_var, yr, xr)
-                    _star_diagnostics!(qfit, qfit_expected, qfit_z, crowding, idx, best,
-                        view(image, yr, xr), view(residual, yr, xr), ms, ivv, length(free_idx))
+                    gs = spread_kernel === nothing ? nothing :
+                        correlate!(view(g_stamp, axes(ms)...), ms, spread_kernel, :zero)
+                    _star_diagnostics!(qfit, qfit_expected, qfit_z, crowding,
+                        spread_model, spread_model_err, idx, best,
+                        view(image, yr, xr), view(residual, yr, xr), ms, gs, ivv, length(free_idx))
                 end
             catch e
                 # Undo the add-back so the residual stays consistent.
@@ -432,6 +463,7 @@ function fit_all_stars(
 
     return MultiPassPhotResult(
         y, x, y_err, x_err, flux, flux_err, bkg, bkg_err,
-        converged, valid, chisq, qfit, qfit_expected, qfit_z, crowding, n_iter, Int(n_passes), n_failed, failure_msgs, residual,
+        converged, valid, chisq, qfit, qfit_expected, qfit_z, crowding,
+        spread_model, spread_model_err, n_iter, Int(n_passes), n_failed, failure_msgs, residual,
     )
 end

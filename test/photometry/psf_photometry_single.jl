@@ -244,6 +244,8 @@ end
         @test result.qfit_expected isa Vector{Float64}
         @test result.qfit_z isa Vector{Float64}
         @test result.crowding isa Vector{Float64}
+        @test result.spread_model isa Vector{Float64}
+        @test result.spread_model_err isa Vector{Float64}
         @test result.n_failed isa Int
         @test result.failure_msgs isa Vector{String}
         @test result.residual isa Matrix{Float64}
@@ -262,5 +264,72 @@ end
         result = fit_all_stars(image, psf, sources_bad, 5; n_passes = 2, max_iter = 100)
         @test sum(result.valid) == 5  # 5 good + 1 bad rejected
         @test !result.valid[6]
+    end
+
+    @testset "spread_model" begin
+        srng = StableRNG(7)
+        fwhm_psf = 2.5
+        psf = CircularGaussianPSF(y = 0.0, x = 0.0, fwhm = fwhm_psf, flux = 1.0, bkg = 0.0)
+
+        # Point source: spread_model ~ 0 when fit with the matching PSF.
+        img = fill(20.0, (60, 60))
+        CrowdPhot.PSF.add_star!(img, CircularGaussianPSF(y = 30.4, x = 29.7, fwhm = fwhm_psf, flux = 5000.0, bkg = 0.0))
+        iv = fill(1 / 20.0, size(img))
+        cat = (; y = [30.4], x = [29.7], flux = [5000.0])
+        r = fit_all_stars(img, psf, cat, 8; n_passes = 2, max_iter = 100, fixed = (; bkg = 20.0, fwhm = fwhm_psf), inv_var = iv)
+        @test r.valid[1]
+        @test isapprox(r.spread_model[1], 0.0; atol = 3e-3)
+        @test isfinite(r.spread_model_err[1]) && r.spread_model_err[1] > 0
+
+        # spread_model_err is NaN without inv_var; the value stays finite.
+        r_noiv = fit_all_stars(img, psf, cat, 8; n_passes = 2, max_iter = 100, fixed = (; bkg = 20.0, fwhm = fwhm_psf))
+        @test isfinite(r_noiv.spread_model[1])
+        @test isnan(r_noiv.spread_model_err[1])
+
+        # Extended sources: spread_model > 0 and increases with injected width.
+        function spread_for_width(w)
+            im = fill(20.0, (60, 60))
+            CrowdPhot.PSF.add_star!(im, CircularGaussianPSF(y = 30.4, x = 29.7, fwhm = w, flux = 5000.0, bkg = 0.0))
+            rr = fit_all_stars(im, psf, cat, 8; n_passes = 2, max_iter = 100,
+                fixed = (; bkg = 20.0, fwhm = fwhm_psf), inv_var = fill(1 / 20.0, size(im)))
+            rr.spread_model[1]
+        end
+        widths = [2.5, 3.0, 4.0, 6.0]
+        sm = spread_for_width.(widths)
+        @test all(sm[2:end] .> 5e-4)
+        @test issorted(sm)
+
+        # Sharper than the PSF (single hot pixel): spread_model < 0.
+        spike = fill(20.0, (40, 40))
+        spike[20, 20] += 3000.0
+        rspk = fit_all_stars(spike, psf, (; y = [20.0], x = [20.0], flux = [3000.0]), 8;
+            n_passes = 2, max_iter = 100, fixed = (; bkg = 20.0, fwhm = fwhm_psf), inv_var = fill(1 / 20.0, size(spike)))
+        @test rspk.valid[1]
+        @test rspk.spread_model[1] < -1e-3
+
+        # Explicit spread_model_fwhm changes the reference-disk scale, hence the
+        # spread_model magnitude for an extended source (a noiseless point
+        # source stays at the structural zero regardless of the kernel).
+        ext = fill(20.0, (60, 60))
+        CrowdPhot.PSF.add_star!(ext, CircularGaussianPSF(y = 30.4, x = 29.7, fwhm = 4.0, flux = 5000.0, bkg = 0.0))
+        r_auto = fit_all_stars(ext, psf, cat, 8; n_passes = 2, max_iter = 100,
+            fixed = (; bkg = 20.0, fwhm = fwhm_psf), inv_var = fill(1 / 20.0, size(ext)))
+        r_big = fit_all_stars(ext, psf, cat, 8; n_passes = 2, max_iter = 100,
+            fixed = (; bkg = 20.0, fwhm = fwhm_psf), inv_var = fill(1 / 20.0, size(ext)), spread_model_fwhm = 8.0)
+        @test r_auto.spread_model[1] > 0
+        @test r_big.spread_model[1] > r_auto.spread_model[1]
+    end
+
+    @testset "_exp_disk_kernel invariants" begin
+        for fw in (1.5, 2.5, 4.0)
+            K = CrowdPhot._exp_disk_kernel(fw, Float64)
+            @test size(K) == (5, 5)
+            @test sum(K) ≈ 1.0
+            @test K ≈ reverse(K; dims = 1)
+            @test K ≈ reverse(K; dims = 2)
+            @test argmax(K) == CartesianIndex(3, 3)
+        end
+        # Broader reference disk removes more from the kernel center.
+        @test CrowdPhot._exp_disk_kernel(6.0, Float64)[3, 3] < CrowdPhot._exp_disk_kernel(2.0, Float64)[3, 3]
     end
 end
