@@ -1686,10 +1686,11 @@ function fit_all_stars_simultaneous(
     err_cache = _build_cholesky_cache(nbr_blocks_full, n_active, p)
     _refill_cholesky!(err_cache, Hdiag, nbr_blocks_full, trues(n_active))
 
-    shifts = FT(1.0e-6) .* FT(10) .^ (0:6) # escalate shift on PosDefException, as elsewhere in this file
+    shifts = FT(1.0e-12) .* FT(10) .^ (0:6) # escalate shift on PosDefException, as elsewhere in this file
     Σ_scaled = nothing
     for (attempt, shift) in enumerate(shifts)
         try
+            println("Attempting covariance computation with shift = $shift")
             Σ_scaled = selected_inverse_diagonal_blocks(err_cache.H, p; shift)
             break
         catch e

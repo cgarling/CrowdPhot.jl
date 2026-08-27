@@ -8,6 +8,20 @@
 # only, not meant for standalone use.
 
 """
+    _SELECTED_INVERSE_DICT_THRESHOLD
+
+Column-degree cutoff used by [`_selected_inverse_permuted`](@ref) to decide,
+per column, whether to precompute a `Dict`-based row-to-storage-position
+lookup (worthwhile once a column's rows get probed often enough to amortize
+building the `Dict`) or to fall back to a direct binary search over that
+column's own row indices (cheaper for the many columns with only a handful
+of entries, where building a `Dict` costs more than it saves). Chosen
+empirically: below this, binary search wins; above it, the `Dict` wins, and
+the win grows with column degree.
+"""
+const _SELECTED_INVERSE_DICT_THRESHOLD = 16
+
+"""
     _selected_inverse_permuted(L::SparseArrays.SparseMatrixCSC{T}) where {T} -> SparseArrays.SparseMatrixCSC{T, Int}
 
 Internal step of [`selected_inverse`](@ref): the core Takahashi
@@ -29,6 +43,17 @@ recursion needs was itself part of some earlier (larger-index) column's
 nonzero pattern. The diagonal entry `Σ[j, j]` is filled last, from the
 freshly computed off-diagonal entries of column `j`.
 
+Every write goes straight to a known position in `Σ.nzval`: `Σ` copies
+`L`'s exact `(colptr, rowval)`, so a given loop index `idx` addresses the
+same stored entry in both, and no search is needed to place a value. Every
+off-diagonal *read* (`Σ[max(i, k), min(i, k)]`) resolves its position
+through [`_SELECTED_INVERSE_DICT_THRESHOLD`](@ref)'s hybrid lookup instead
+of `SparseMatrixCSC`'s generic `getindex`. Profiling showed that generic
+`getindex`/`setindex!` path -- not the recursion's arithmetic -- dominates
+wall time once fill-in (and hence average column degree) grows, e.g. with a
+large `fit_rad` or a dense field; avoiding it recovers a large part of that
+cost without changing the algorithm or its exactness.
+
 # Arguments
 - `L::SparseArrays.SparseMatrixCSC{T}`: sparse lower-triangular Cholesky
   factor (as returned by, e.g., `SparseArrays.sparse(cholesky(A).L)`).
@@ -39,9 +64,44 @@ freshly computed off-diagonal entries of column `j`.
 """
 function _selected_inverse_permuted(L::SparseArrays.SparseMatrixCSC{T}) where {T}
     n = size(L, 1)
-    Σ = SparseArrays.SparseMatrixCSC(n, n, copy(L.colptr), copy(L.rowval), zeros(T, SparseArrays.nnz(L)))
     rows = L.rowval
     vals = L.nzval
+    colptr = L.colptr
+    Σ = SparseArrays.SparseMatrixCSC(n, n, copy(colptr), copy(rows), zeros(T, SparseArrays.nnz(L)))
+    Σnz = Σ.nzval
+
+    # Per-column row->position lookup, built once up front: `Dict` for
+    # columns large enough to amortize it, `nothing` (binary-search
+    # fallback) otherwise. See `_SELECTED_INVERSE_DICT_THRESHOLD`.
+    colmap = Vector{Union{Nothing, Dict{Int, Int}}}(nothing, n)
+    @inbounds for m in 1:n
+        r = SparseArrays.nzrange(L, m)
+        if length(r) > _SELECTED_INVERSE_DICT_THRESHOLD
+            d = Dict{Int, Int}()
+            sizehint!(d, length(r))
+            for idx in r
+                d[rows[idx]] = idx
+            end
+            colmap[m] = d
+        end
+    end
+
+    # Position of Σ[row, col] (row >= col) in `Σnz`/`rows`. `row` is
+    # guaranteed structurally present in column `col` by the clique
+    # argument in the docstring above.
+    _pos(col, row) = let d = colmap[col]
+        if d === nothing
+            a, b = colptr[col], colptr[col + 1] - 1
+            @inbounds while a < b
+                mid = (a + b) >>> 1
+                rows[mid] < row ? (a = mid + 1) : (b = mid)
+            end
+            a
+        else
+            d[row]
+        end
+    end
+
     @inbounds for j in n:-1:1
         r = SparseArrays.nzrange(L, j)
         lo, hi = first(r), last(r)
@@ -52,16 +112,18 @@ function _selected_inverse_permuted(L::SparseArrays.SparseMatrixCSC{T}) where {T
             for idx2 in (lo + 1):hi
                 k = rows[idx2]
                 # max/min: Σ only stores i >= j positions.
-                s += vals[idx2] * Σ[max(i, k), min(i, k)]
+                pos = k >= i ? _pos(i, k) : _pos(k, i)
+                s += vals[idx2] * Σnz[pos]
             end
-            Σ[i, j] = -s / Ljj
+            Σnz[idx] = -s / Ljj
         end
         sd = zero(T)
         for idx2 in (lo + 1):hi
-            k = rows[idx2]
-            sd += vals[idx2] * Σ[max(j, k), min(j, k)]
+            # Σ[rows[idx2], j] was just written above at this same nzval
+            # position -- idx2 addresses it directly, no lookup needed.
+            sd += vals[idx2] * Σnz[idx2]
         end
-        Σ[j, j] = 1 / Ljj^2 - sd / Ljj
+        Σnz[lo] = 1 / Ljj^2 - sd / Ljj
     end
     return Σ
 end
