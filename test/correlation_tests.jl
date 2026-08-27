@@ -172,6 +172,48 @@ end
         @test out[4:6, 4:6] ≈ kern
     end
 
+    @testset "kernel larger than image (small postage stamp)" begin
+        # Regression: an oversized kernel (radius exceeding the image) used to
+        # drive the border-strip loops out of bounds, writing past `out` under
+        # @inbounds and corrupting the heap (surfaced as a GC segfault when
+        # called repeatedly, e.g. under BenchmarkTools.@benchmark).
+        for (H, W) in ((5, 5), (5, 20), (20, 5), (3, 3), (2, 2), (1, 1)),
+            ksz in (7, 9, 15, 21),
+            border in (:replicate, :zero)
+
+            stamp = rand(rng, H, W)
+            ref = border === :replicate ? _direct_corr : _direct_corr_zero
+
+            # full 2D inseparable kernel
+            kern = rand(rng, ksz, ksz) .- 0.5
+            out = correlate(stamp, kern, border)
+            @test size(out) == (H, W)
+            @test out ≈ ref(stamp, kern) rtol = 1e-12
+
+            # separable rank-1 kernel (row pass + column pass)
+            u = rand(rng, ksz)
+            v = rand(rng, ksz)
+            ksep = u * v'
+            @test correlate(stamp, ksep, border) ≈ ref(stamp, ksep) rtol = 1e-12
+
+            # pre-factored 1D tuple (each 1D pass sees an oversized kernel)
+            fac = (reshape(u, ksz, 1), reshape(v, 1, ksz))
+            @test correlate(stamp, fac, border) ≈ ref(stamp, u * v') rtol = 1e-12
+        end
+    end
+
+    @testset "oversized kernel: repeated in-place calls (no heap corruption)" begin
+        stamp = rand(rng, Float32, 5, 5)
+        kern = rand(rng, Float32, 15, 15) .- 0.5f0
+        out = similar(stamp)
+        expected = _direct_corr(stamp, kern)
+        for _ in 1:50_000
+            correlate!(out, stamp, kern, :replicate)
+        end
+        GC.gc()
+        @test out ≈ expected rtol = 1e-4
+    end
+
     @testset "error: mismatched output axes" begin
         img = rand(rng, 10, 10)
         kern = rand(rng, 3, 3)
