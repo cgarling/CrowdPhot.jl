@@ -1724,9 +1724,10 @@ function fit_all_stars_simultaneous(
 
     global_resid = data .- model_img
     resid_mat = reshape(global_resid, ny, nx)
-    # Reuse model_cand (no longer needed) as the neighbor-subtracted residual
-    # buffer: clean_resid = global_residual + own_model.
-    clean_resid = reshape(model_cand, ny, nx)
+    # Small per-star model-render buffer for the diagnostics, reused across
+    # stars.  A ±fit_rad box spans at most 2*ceil(fit_rad)+2 pixels per axis.
+    S_max = 2 * ceil(Int, fit_rad) + 2
+    model_stamp = Matrix{FT}(undef, S_max, S_max)
 
     for (j, i) in enumerate(active)
         valid[i] || continue
@@ -1736,18 +1737,17 @@ function fit_all_stars_simultaneous(
         xr = floor(Int, m.x - FT_fit):ceil(Int, m.x + FT_fit)
         yr, xr = _clamp_inds(yr, xr, image)
         (isempty(yr) || isempty(xr)) && continue
-        inds = CartesianIndices((yr, xr))
-        for pix in inds
-            clean_resid[pix] = resid_mat[pix] + evaluate(m, pix)
-        end
+        ms = PSF.render!(model_stamp, m, yr, xr)
+        resid_stamp = view(resid_mat, yr, xr)
+        ivv = inv_var === nothing ? nothing : view(inv_var, yr, xr)
         _star_diagnostics!(qfit, qfit_expected, qfit_z, crowding, i, m,
-            image, clean_resid, inds, inv_var, p)
+            view(image, yr, xr), resid_stamp, ms, ivv, p)
         num = zero(FT)
         n_pix_good = 0
-        for pix in inds
-            iv = inv_var !== nothing ? inv_var[pix] : one(FT)
+        for k in CartesianIndices(resid_stamp)
+            iv = ivv !== nothing ? ivv[k] : one(FT)
             if isfinite(iv) && iv > 0
-                num += iv * resid_mat[pix]^2
+                num += iv * resid_stamp[k]^2
                 n_pix_good += 1
             end
         end

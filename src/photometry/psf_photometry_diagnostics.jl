@@ -2,30 +2,38 @@
 #
 # `fit_all_stars` (sequential) and `fit_all_stars_simultaneous` compute the
 # same qfit / qfit_expected / qfit_z / crowding statistics so their results
-# compare field-for-field.  The math below is extracted verbatim from the
-# sequential path (psf_photometry_single.jl) so both arms share one
-# implementation; only the "neighbor-subtracted residual" input differs.
+# compare field-for-field.  The math below is extracted from the sequential
+# path (psf_photometry_single.jl) so both arms share one implementation.  All
+# inputs are stamp-local: `(length(yr), length(xr))` blocks aligned to the
+# star's fitting box, so the only per-arm difference is how those blocks are
+# produced.
 
 """
     _star_diagnostics!(qfit, qfit_expected, qfit_z, crowding, idx,
-                       model, image, clean_resid, inds, inv_var, n_free)
+                       model, image, resid, star_model, inv_var, n_free)
 
 Compute the per-star `qfit`, `qfit_expected`, `qfit_z`, and `crowding`
 diagnostics for star `idx` and write them into the corresponding vectors.
 
-`clean_resid` must be the *neighbor-subtracted* residual image: the observed
-data with every other star's best-fit model removed, but with this star's own
-model still present.  For the sequential path this is the working residual at
-diagnostics time; for the simultaneous path it is `global_residual + own_model`.
+`image`, `resid`, `star_model`, and `inv_var` are all *stamp-local* matrices of
+the same shape, covering the star's fitting box:
 
-`image` is the original data (used for the `crowding` "dirty" flux), `model`
-is the star's best-fit model, `inds` is the fitting box, and `n_free` is the
-number of free parameters (used to correct `qfit_z` for fitting leverage).
+- `resid` is the residual of this star's fit: the observed data with every
+  other star's best-fit model removed *and* this star's own model subtracted.
+- `star_model` is this star's best-fit model rendered over the box
+  (`evaluate(model, y, x)`).  The neighbor-subtracted "clean" value the
+  crowding statistic needs is reconstructed pixel-wise as
+  `resid[I] + star_model[I]`.
+- `image` is the original data (used for the `crowding` "dirty" flux).
+- `inv_var` is the per-pixel inverse variance, or `nothing` for unweighted.
+
+Only the scalar `flux`/`bkg` of `model` are read here.  `n_free` is the number
+of free parameters (used to correct `qfit_z` for fitting leverage).
 """
 function _star_diagnostics!(
         qfit::AbstractVector, qfit_expected::AbstractVector, qfit_z::AbstractVector,
-        crowding::AbstractVector, idx::Int, model, image, clean_resid,
-        inds, inv_var, n_free::Int
+        crowding::AbstractVector, idx::Int, model, image, resid, star_model,
+        inv_var, n_free::Int
     )
     FT = float(eltype(image))
     flux = FT(model.flux)
@@ -37,16 +45,16 @@ function _star_diagnostics!(
     num_clean = zero(FT)
     num_dirty = zero(FT)
     den_crowd = zero(FT)
-    for pix in inds
-        model_val = evaluate(model, pix)
-        wp = inv_var !== nothing ? inv_var[pix] : one(FT)
+    for I in CartesianIndices(star_model)
+        model_val = star_model[I]
+        wp = inv_var !== nothing ? inv_var[I] : one(FT)
         if isfinite(wp) && wp > 0
-            qfit_val += abs(clean_resid[pix] - model_val)
+            qfit_val += abs(resid[I])
             # Unit-flux PSF kernel for the crowding calculation.
             Pp = (model_val - bkg) * inv_flux
             wP = wp * Pp
-            num_clean += wP * (clean_resid[pix] - bkg)
-            num_dirty += wP * (image[pix] - bkg)
+            num_clean += wP * (resid[I] + model_val - bkg)
+            num_dirty += wP * (image[I] - bkg)
             den_crowd += wP * Pp
         end
     end
@@ -60,8 +68,8 @@ function _star_diagnostics!(
         sigma_sum = zero(FT)
         sigma2_sum = zero(FT)
         n_pix_good = 0
-        for pix in inds
-            iv = inv_var[pix]
+        for I in CartesianIndices(inv_var)
+            iv = inv_var[I]
             if isfinite(iv) && iv > 0
                 sigma_i = inv(sqrt(iv))
                 sigma_sum += sigma_i

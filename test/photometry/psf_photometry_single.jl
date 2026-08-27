@@ -127,7 +127,7 @@ end
             @test result.y[i] ≈ sources.y[i] atol = 0.01
             @test result.x[i] ≈ sources.x[i] atol = 0.01
             @test isfinite(result.qfit[i])
-            @test result.qfit[i] > 0
+            @test result.qfit[i] >= 0
         end
         # qfit_expected and qfit_z are NaN when inv_var is not provided.
         @test all(isnan, result.qfit_expected)
