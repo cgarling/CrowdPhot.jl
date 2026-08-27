@@ -351,6 +351,54 @@ function render(model::AbstractPSFModel{T}) where T
 end
 
 """
+    render!(buf::AbstractMatrix, model::AbstractPSFModel,
+        yr::AbstractUnitRange{<:Integer}, xr::AbstractUnitRange{<:Integer})
+
+Evaluate `model` at each image pixel `(y, x)` for `y in yr, x in xr` and write
+the result *stamp-locally* into `buf`: `buf[i, j] = evaluate(model, yr[i],
+xr[j])` for `i in 1:length(yr), j in 1:length(xr)`.  Unlike [`add_star!`](@ref)
+this overwrites (no accumulation) and decouples the destination indices from
+the image coordinates, so one small stamp buffer can be reused across many
+stars at arbitrary image positions.
+
+`buf` must be at least `length(yr) x length(xr)`; only that top-left block is
+touched.  Returns `view(buf, 1:length(yr), 1:length(xr))`, the block filled.
+
+!!! note
+    The `LV.@turbo` path requires `eltype(buf) == T` for
+    `model::AbstractPSFModel{T}` and `_turbo_safe(model)`; otherwise a plain
+    scalar loop is used.
+"""
+function render!(buf::AbstractMatrix{T}, model::AbstractPSFModel{T}, yr::AbstractUnitRange{<:Integer}, xr::AbstractUnitRange{<:Integer}) where {T}
+    ny, nx = length(yr), length(xr)
+    y0, x0 = first(yr) - 1, first(xr) - 1
+    if _turbo_safe(model)
+        LV.@turbo for j in 1:nx
+            for i in 1:ny
+                buf[i, j] = evaluate(model, i + y0, j + x0)
+            end
+        end
+    else
+        @inbounds for j in 1:nx
+            @simd for i in 1:ny
+                buf[i, j] = evaluate(model, i + y0, j + x0)
+            end
+        end
+    end
+    return view(buf, 1:ny, 1:nx)
+end
+function render!(buf::AbstractMatrix, model::AbstractPSFModel, yr::AbstractUnitRange{<:Integer}, xr::AbstractUnitRange{<:Integer})
+    ny, nx = length(yr), length(xr)
+    y0, x0 = first(yr) - 1, first(xr) - 1
+    @inbounds for j in 1:nx
+        @simd for i in 1:ny
+            buf[i, j] = evaluate(model, i + y0, j + x0)
+        end
+    end
+    return view(buf, 1:ny, 1:nx)
+end
+
+"""
     add_star!(out::AbstractMatrix, model::AbstractPSFModel,
               yr::AbstractUnitRange{<:Integer}, xr::AbstractUnitRange{<:Integer})
 

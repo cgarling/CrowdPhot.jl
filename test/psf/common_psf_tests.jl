@@ -1,4 +1,4 @@
-using CrowdPhot.PSF: CircularGaussianPSF, GaussianPSF, CircularGaussianPRF, GaussianPRF, CircularMoffatPSF, MoffatPSF, evaluate, centroid, integral, evaluate_fg, evaluate_fgh, AbstractPSFModel, extent, render, theta, amplitude, background, fwhm, peak, effective_area, AiryPSF, ImagePSF, GriddedPSFModel, add_star!, subtract_star!
+using CrowdPhot.PSF: CircularGaussianPSF, GaussianPSF, CircularGaussianPRF, GaussianPRF, CircularMoffatPSF, MoffatPSF, evaluate, centroid, integral, evaluate_fg, evaluate_fgh, AbstractPSFModel, extent, render, theta, amplitude, background, fwhm, peak, effective_area, AiryPSF, ImagePSF, GriddedPSFModel, add_star!, subtract_star!, render!
 import ConstructionBase
 using Test
 
@@ -50,6 +50,18 @@ function test_common(model::AbstractPSFModel{T}) where {T}
     subtract_star!(image, model)
     @test all(iszero, image)
 
+    # render!: stamp-local write over an explicit image-coordinate box.
+    ex_i = extent(Int, model)
+    yr = ex_i[1][1]:ex_i[1][2]
+    xr = ex_i[2][1]:ex_i[2][2]
+    buf = fill(T(NaN), length(yr) + 3, length(xr) + 3)  # oversized on purpose
+    ms = render!(buf, model, yr, xr)
+    @test size(ms) == (length(yr), length(xr))
+    for (i, yy) in enumerate(yr), (jj, xx) in enumerate(xr)
+        @test ms[i, jj] ≈ evaluate(model, yy, xx) rtol = sqrt(eps(T))
+    end
+    @test all(isnan, buf[(length(yr) + 1):end, :])  # untouched block preserved
+
     # Conversion rules
     other_elt = T === Float64 ? Float32 : Float64
     convert_type = if model isa GriddedPSFModel
@@ -75,6 +87,12 @@ function test_common(model::AbstractPSFModel{T}) where {T}
     end
     subtract_star!(image_mixed, model)
     @test all(x -> abs(x) < sqrt(eps(other_elt)), image_mixed)
+    # render! eltype-mismatch fallback (scalar loop, no @turbo)
+    buf_mixed = fill(other_elt(NaN), length(inds.indices[1]) + 1, length(inds.indices[2]) + 1)
+    ms_mixed = render!(buf_mixed, model, inds.indices...)
+    for (i, yy) in enumerate(inds.indices[1]), (jj, xx) in enumerate(inds.indices[2])
+        @test ms_mixed[i, jj] ≈ evaluate(model, yy, xx) rtol = mixed_rtol
+    end
 
     # API functions
     @test @inferred(centroid(model)) isa Tuple{T, T}

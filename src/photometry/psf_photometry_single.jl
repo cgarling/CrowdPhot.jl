@@ -294,6 +294,11 @@ function fit_all_stars(
     # 3. Copy image for progressive subtraction
     # -------------------------------------------------------------------
     residual = Matrix{FT}(image)
+    # Small per-star model-render buffer for the final-pass diagnostics, reused
+    # across stars.  A ±fit_rad box spans at most 2*ceil(fit_rad)+2 pixels per
+    # axis (worst case: a star centered on a half-integer coordinate).
+    S_max = 2 * ceil(Int, fit_rad) + 2
+    model_stamp = Matrix{FT}(undef, S_max, S_max)
 
     # -------------------------------------------------------------------
     # 4. Per-star state vectors
@@ -366,17 +371,19 @@ function fit_all_stars(
                 chisq[idx] = result.chisq
                 n_iter[idx] += result.iterations
 
-                # Compute qfit and crowding on the final pass, before
-                # subtraction, over exactly the same pixels as the fit.  The
-                # working `residual` at this point is the neighbor-subtracted
-                # image (this star's own model not yet subtracted).
-                if pass == n_passes
-                    _star_diagnostics!(qfit, qfit_expected, qfit_z, crowding,
-                        idx, best, image, residual, inds, inv_var, length(free_idx))
-                end
-
                 # Subtract the updated best-fit model.
                 PSF.subtract_star!(residual, best, yr, xr)
+
+                # Compute qfit and crowding on the final pass, over exactly the
+                # same pixels as the fit.  `residual` is now this star's fit
+                # residual (neighbors and own model both removed); render its
+                # own model into the stamp buffer and pass stamp-local views.
+                if pass == n_passes
+                    ms = PSF.render!(model_stamp, best, yr, xr)
+                    ivv = inv_var === nothing ? nothing : view(inv_var, yr, xr)
+                    _star_diagnostics!(qfit, qfit_expected, qfit_z, crowding, idx, best,
+                        view(image, yr, xr), view(residual, yr, xr), ms, ivv, length(free_idx))
+                end
             catch e
                 # Undo the add-back so the residual stays consistent.
                 if pass > 1
