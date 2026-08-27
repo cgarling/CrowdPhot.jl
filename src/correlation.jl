@@ -102,7 +102,8 @@ the input image is made.  The interior pixels (where the full kernel
 footprint lies within the image bounds) use the `@turbo` fast path described
 above.  The thin border strips use per-access bounds checks via `_getpixel`
 and remain plain (non-vectorized, non-threaded) `@inbounds` loops, since
-`@turbo` cannot see through those function calls.
+`@turbo` cannot see through those function calls. Kernels larger than the
+image are supported.
 """
 function correlate(img::AbstractMatrix{T}, kernel, border::Symbol=:replicate) where {T}
     S = promote_type(T, _eltype_kernel(kernel))
@@ -378,28 +379,30 @@ function _correlate_rows!(out::AbstractMatrix, img::AbstractMatrix,
         end
     end
 
-    # Top border: rows 1 .. r.  Row index may underflow.
-    if r >= 1
-        @inbounds for col in 1:W, row in 1:r
-            acc = z
-            for j in 1:kr
-                ir = row + j - r - 1
-                acc += _getpixel_row(img, ir, col, Val{B}()) * kernel[j, 1]
-            end
-            out[row, col] = acc
+    # Border strips, clamped to the image and made disjoint so a kernel whose
+    # radius exceeds the image height cannot write outside `out`.  When r >= H
+    # the top strip covers every row and the bottom strip is empty.
+    rt = min(r, H)                # top strip: rows 1 .. rt
+    rb = max(H - r + 1, rt + 1)   # bottom strip: rows rb .. H (disjoint from top)
+
+    # Top border: rows 1 .. rt.  Row index may underflow.
+    @inbounds for col in 1:W, row in 1:rt
+        acc = z
+        for j in 1:kr
+            ir = row + j - r - 1
+            acc += _getpixel_row(img, ir, col, Val{B}()) * kernel[j, 1]
         end
+        out[row, col] = acc
     end
 
-    # Bottom border: rows H-r+1 .. H.  Row index may overflow.
-    if r >= 1
-        @inbounds for col in 1:W, row in H-r+1:H
-            acc = z
-            for j in 1:kr
-                ir = row + j - r - 1
-                acc += _getpixel_row(img, ir, col, Val{B}()) * kernel[j, 1]
-            end
-            out[row, col] = acc
+    # Bottom border: rows rb .. H.  Row index may overflow.
+    @inbounds for col in 1:W, row in rb:H
+        acc = z
+        for j in 1:kr
+            ir = row + j - r - 1
+            acc += _getpixel_row(img, ir, col, Val{B}()) * kernel[j, 1]
         end
+        out[row, col] = acc
     end
 
     return out
@@ -427,28 +430,30 @@ function _correlate_cols!(out::AbstractMatrix, img::AbstractMatrix,
         end
     end
 
-    # Left border: cols 1 .. c.  Column index may underflow.
-    if c >= 1
-        @inbounds for col in 1:c, row in 1:H
-            acc = z
-            for j in 1:kc
-                ic = col + j - c - 1
-                acc += _getpixel_col(img, row, ic, Val{B}()) * kernel[1, j]
-            end
-            out[row, col] = acc
+    # Border strips, clamped to the image and made disjoint so a kernel whose
+    # radius exceeds the image width cannot write outside `out`.  When c >= W
+    # the left strip covers every column and the right strip is empty.
+    ct = min(c, W)                # left strip: cols 1 .. ct
+    cl = max(W - c + 1, ct + 1)   # right strip: cols cl .. W (disjoint from left)
+
+    # Left border: cols 1 .. ct.  Column index may underflow.
+    @inbounds for col in 1:ct, row in 1:H
+        acc = z
+        for j in 1:kc
+            ic = col + j - c - 1
+            acc += _getpixel_col(img, row, ic, Val{B}()) * kernel[1, j]
         end
+        out[row, col] = acc
     end
 
-    # Right border: cols W-c+1 .. W.  Column index may overflow.
-    if c >= 1
-        @inbounds for col in W-c+1:W, row in 1:H
-            acc = z
-            for j in 1:kc
-                ic = col + j - c - 1
-                acc += _getpixel_col(img, row, ic, Val{B}()) * kernel[1, j]
-            end
-            out[row, col] = acc
+    # Right border: cols cl .. W.  Column index may overflow.
+    @inbounds for col in cl:W, row in 1:H
+        acc = z
+        for j in 1:kc
+            ic = col + j - c - 1
+            acc += _getpixel_col(img, row, ic, Val{B}()) * kernel[1, j]
         end
+        out[row, col] = acc
     end
 
     return out
@@ -479,37 +484,42 @@ function _correlate_2d!(out::AbstractMatrix, img::AbstractMatrix,
         end
     end
 
-    # Top strip: rows 1..r, all columns.  Row index may underflow.
+    # Border strips, clamped to the image and made disjoint so a kernel whose
+    # radius exceeds the image cannot write outside `out`.  When r >= H (or
+    # c >= W) the top (left) strip spans the whole axis and its partner is
+    # empty; the top/bottom strips together then cover every row.
+    rt = min(r, H)                # top strip: rows 1 .. rt
+    rb = max(H - r + 1, rt + 1)   # bottom strip: rows rb .. H (disjoint from top)
+    ct = min(c, W)                # left strip: cols 1 .. ct
+    cl = max(W - c + 1, ct + 1)   # right strip: cols cl .. W (disjoint from left)
+
+    # Top strip: rows 1..rt, all columns.  Row index may underflow.
     # (Includes the four corner regions -- no separate corner handling needed.)
-    if r >= 1
-        @inbounds for col in 1:W, row in 1:r
-            acc = z
-            for kc_i in 1:kc, kr_i in 1:kr
-                ir = row + kr_i - r - 1
-                ic = col + kc_i - c - 1
-                acc += _getpixel(img, ir, ic, Val{B}()) * kernel[kr_i, kc_i]
-            end
-            out[row, col] = acc
+    @inbounds for col in 1:W, row in 1:rt
+        acc = z
+        for kc_i in 1:kc, kr_i in 1:kr
+            ir = row + kr_i - r - 1
+            ic = col + kc_i - c - 1
+            acc += _getpixel(img, ir, ic, Val{B}()) * kernel[kr_i, kc_i]
         end
+        out[row, col] = acc
     end
 
-    # Bottom strip: rows H-r+1..H, all columns.  Row index may overflow.
-    if r >= 1
-        @inbounds for col in 1:W, row in H-r+1:H
-            acc = z
-            for kc_i in 1:kc, kr_i in 1:kr
-                ir = row + kr_i - r - 1
-                ic = col + kc_i - c - 1
-                acc += _getpixel(img, ir, ic, Val{B}()) * kernel[kr_i, kc_i]
-            end
-            out[row, col] = acc
+    # Bottom strip: rows rb..H, all columns.  Row index may overflow.
+    @inbounds for col in 1:W, row in rb:H
+        acc = z
+        for kc_i in 1:kc, kr_i in 1:kr
+            ir = row + kr_i - r - 1
+            ic = col + kc_i - c - 1
+            acc += _getpixel(img, ir, ic, Val{B}()) * kernel[kr_i, kc_i]
         end
+        out[row, col] = acc
     end
 
-    # Left strip: middle rows, cols 1..c.  Only column index may underflow;
+    # Left strip: middle rows, cols 1..ct.  Only column index may underflow;
     # row index is always in bounds for rows ri..re.
-    if c >= 1 && ri <= re
-        @inbounds for col in 1:c, row in ri:re
+    if ri <= re
+        @inbounds for col in 1:ct, row in ri:re
             acc = z
             for kc_i in 1:kc, kr_i in 1:kr
                 ic = col + kc_i - c - 1
@@ -520,9 +530,9 @@ function _correlate_2d!(out::AbstractMatrix, img::AbstractMatrix,
         end
     end
 
-    # Right strip: middle rows, cols W-c+1..W.  Only column index may overflow.
-    if c >= 1 && ri <= re
-        @inbounds for col in W-c+1:W, row in ri:re
+    # Right strip: middle rows, cols cl..W.  Only column index may overflow.
+    if ri <= re
+        @inbounds for col in cl:W, row in ri:re
             acc = z
             for kc_i in 1:kc, kr_i in 1:kr
                 ic = col + kc_i - c - 1
