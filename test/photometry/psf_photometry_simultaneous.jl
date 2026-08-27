@@ -577,6 +577,35 @@ end
         end
     end
 
+    @testset "spread_model matches sequential path" begin
+        rng8 = StableRNG(21)
+        fwhm_psf = 2.5
+        psf = CircularGaussianPSF(y = 0.0, x = 0.0, fwhm = fwhm_psf, flux = 1.0, bkg = 0.0)
+        # isolated stars + one injected broadened Gaussian
+        img = fill(20.0, (90, 90))
+        pts = [(20.5, 20.5), (20.5, 68.5), (68.5, 20.5)]
+        for (yy, xx) in pts
+            CrowdPhot.PSF.add_star!(img, CircularGaussianPSF(y = yy, x = xx, fwhm = fwhm_psf, flux = 4000.0, bkg = 0.0))
+        end
+        CrowdPhot.PSF.add_star!(img, CircularGaussianPSF(y = 68.5, x = 68.5, fwhm = 5.0, flux = 4000.0, bkg = 0.0))
+        img_sub = img .- 20.0
+        cat = (; y = [first.(pts); 68.5], x = [last.(pts); 68.5], flux = fill(4000.0, 4))
+        iv = fill(1 / 20.0, size(img))
+        fixed = (; fwhm = fwhm_psf, bkg = 0.0)
+        rseq = fit_all_stars(img_sub, psf, cat, 7; fixed, n_passes = 3, max_iter = 100, inv_var = iv)
+        rsim = fit_all_stars_simultaneous(img_sub, psf, cat, 7; fixed, max_iter = 40, inv_var = iv)
+        for i in 1:3  # the isolated point sources
+            @test rseq.valid[i] && rsim.valid[i]
+            @test isapprox(rseq.spread_model[i], 0.0; atol = 3e-3)
+            @test isapprox(rsim.spread_model[i], 0.0; atol = 3e-3)
+            @test isapprox(rseq.spread_model[i], rsim.spread_model[i]; atol = 2e-3)
+        end
+        # the extended source: positive in both, and consistent
+        @test rseq.spread_model[4] > 5e-3
+        @test rsim.spread_model[4] > 5e-3
+        @test isapprox(rseq.spread_model[4], rsim.spread_model[4]; rtol = 0.25)
+    end
+
     @testset "recovery vs truth" begin
         rng3 = StableRNG(7)
         psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=2.0, flux=1.0, bkg=0.0)

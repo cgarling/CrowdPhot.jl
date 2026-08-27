@@ -1349,6 +1349,7 @@ function fit_all_stars_simultaneous(
         fit_rad::Real;
         fixed::NamedTuple = (;),
         inv_var = nothing,
+        spread_model_fwhm::Union{Nothing, Real} = nothing,
         inner_iterations::Int = 5,
         cg_tol::Real = 1.0e-6,
         max_step::Real = 0.25,
@@ -1397,7 +1398,7 @@ function fit_all_stars_simultaneous(
     n_params, n_stars = size(params)
     n_stars == 0 && return MultiPassPhotResult(
         FT[], FT[], FT[], FT[], FT[], FT[], FT[], FT[],
-        falses(0), falses(0), FT[], FT[], FT[], FT[], FT[], Int[], Int(0), Int(0), String[], Matrix{FT}(undef, 0, 0),
+        falses(0), falses(0), FT[], FT[], FT[], FT[], FT[], FT[], FT[], Int[], Int(0), Int(0), String[], Matrix{FT}(undef, 0, 0),
     )
 
     prop_names = collect(keys(ConstructionBase.getproperties(psf)))
@@ -1721,6 +1722,8 @@ function fit_all_stars_simultaneous(
     qfit_expected = fill(convert(FT, NaN), n_stars)
     qfit_z = fill(convert(FT, NaN), n_stars)
     crowding = fill(convert(FT, NaN), n_stars)
+    spread_model = fill(convert(FT, NaN), n_stars)
+    spread_model_err = fill(convert(FT, NaN), n_stars)
 
     global_resid = data .- model_img
     resid_mat = reshape(global_resid, ny, nx)
@@ -1728,6 +1731,12 @@ function fit_all_stars_simultaneous(
     # stars.  A ±fit_rad box spans at most 2*ceil(fit_rad)+2 pixels per axis.
     S_max = 2 * ceil(Int, fit_rad) + 2
     model_stamp = Matrix{FT}(undef, S_max, S_max)
+    # spread_model reference: one field-constant exponential-disk kernel + a
+    # reused buffer for the per-star PSF-convolved-with-disk stamp.
+    spread_fwhm = isnothing(spread_model_fwhm) ?
+        _spread_fwhm(psf, FT(params[row_y, 1]), FT(params[row_x, 1])) : FT(spread_model_fwhm)
+    spread_kernel = isfinite(spread_fwhm) && spread_fwhm > 0 ? _exp_disk_kernel_bandlimited(spread_fwhm, FT; half = ceil(Int, fit_rad)) : nothing
+    g_stamp = Matrix{FT}(undef, S_max, S_max)
 
     for (j, i) in enumerate(active)
         valid[i] || continue
@@ -1740,8 +1749,11 @@ function fit_all_stars_simultaneous(
         ms = PSF.render!(model_stamp, m, yr, xr)
         resid_stamp = view(resid_mat, yr, xr)
         ivv = inv_var === nothing ? nothing : view(inv_var, yr, xr)
-        _star_diagnostics!(qfit, qfit_expected, qfit_z, crowding, i, m,
-            view(image, yr, xr), resid_stamp, ms, ivv, p)
+        gs = spread_kernel === nothing ? nothing :
+            correlate!(view(g_stamp, axes(ms)...), ms, spread_kernel, :zero)
+        _star_diagnostics!(qfit, qfit_expected, qfit_z, crowding,
+            spread_model, spread_model_err, i, m,
+            view(image, yr, xr), resid_stamp, ms, gs, ivv, p)
         num = zero(FT)
         n_pix_good = 0
         for k in CartesianIndices(resid_stamp)
@@ -1787,7 +1799,7 @@ function fit_all_stars_simultaneous(
     return MultiPassPhotResult(
         y, x, y_err, x_err, flux, flux_err, bkg, bkg_err,
         converged, valid, chisq, qfit, qfit_expected, qfit_z, crowding,
-        n_iter, n_run, n_failed, failure_msgs, residual,
+        spread_model, spread_model_err, n_iter, n_run, n_failed, failure_msgs, residual,
     )
 end
 
@@ -1798,6 +1810,7 @@ function _empty_simultaneous_result(n_stars, params, errors, row_y, row_x, row_f
         params[row_y, :], params[row_x, :], errors[row_y, :], errors[row_x, :],
         params[row_flux, :], errors[row_flux, :], bkg, bkg_err,
         falses(n_stars), valid, zeros(FT, n_stars),
+        fill(convert(FT, NaN), n_stars), fill(convert(FT, NaN), n_stars),
         fill(convert(FT, NaN), n_stars), fill(convert(FT, NaN), n_stars),
         fill(convert(FT, NaN), n_stars), fill(convert(FT, NaN), n_stars),
         zeros(Int, n_stars), Int(0), n_stars, failure_msgs, zeros(FT, ny, nx),
