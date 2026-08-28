@@ -2,7 +2,9 @@ module CrowdPhot
 
 import ConstructionBase
 using FillArrays: Fill
+import Krylov
 using LinearAlgebra: cholesky, cholesky!, ldiv!, dot, norm, I, Symmetric, pinv, PosDefException, svd
+import LinearOperators
 import LoopVectorization as LV
 import LossFunctions
 using Printf: @sprintf

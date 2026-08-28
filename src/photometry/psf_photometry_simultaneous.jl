@@ -5,10 +5,12 @@
 # `fit_all_stars` with every other pipeline stage (background, detection,
 # morphology, PSF model) held fixed.
 #
-# The solve object is the normal-equation matrix `H = J'WJ` (never `J`),
-# accumulated directly from per-star stamp derivatives.  The default solver
-# is preconditioned conjugate gradient on `H`; a CHOLMOD Cholesky solve is
-# available as an exact oracle.
+# The linear subproblem of each damped Gauss-Newton step is solved with Krylov.jl
+# on the weighted, column-equilibrated Jacobian `J`, applied
+# matrix-free straight from the per-star stamp derivatives -- `J` is never
+# materialized and no explicit normal matrix or star-pair structure is built.
+# Pixels shared between overlapping stars are handled implicitly by the
+# scatter in the forward product `apply_J!`.
 
 # ==============================================================================
 # Stamp derivative operator
@@ -41,11 +43,12 @@ struct StampDerivatives{T, I <: Integer}
 end
 
 """
-    apply_JT!(z, Jm, u)
+    apply_JT!(z, Jm, u, live)
 
 Compute `z = Jm' * u` where `u` is the *weighted* residual
 `sqrt.(w) .* (model .- data)` and `z` is the equilibrated gradient
-`D⁻¹ J' r` (i.e. `b_scaled`).  `z` is filled in place.
+`D⁻¹ J' r` (i.e. `b_scaled`).  `z` is filled in place.  Non-`live` (frozen)
+stars are skipped, leaving their `z` slice at `0`.
 """
 function apply_JT!(z::AbstractVector, Jm::StampDerivatives, u::AbstractVector, live)
     p = Jm.p
@@ -69,58 +72,62 @@ function apply_JT!(z::AbstractVector, Jm::StampDerivatives, u::AbstractVector, l
 end
 
 """
+    apply_J!(y, Jm, v, live, sbuf)
     apply_J!(y, Jm, v)
 
-Compute `y = Jm * v` (additive, `y` filled in place).  Reference path only
-(the default solver iterates on `H`, never `J`); used for the adjoint test.
+Compute `y = Jm * v` (`y` filled in place).  `sbuf` is a length-`S²` scratch
+vector.  Non-`live` (frozen) stars are skipped.  The convenience form
+allocates `live`/`sbuf`.
 """
-function apply_J!(y::AbstractVector, Jm::StampDerivatives, v::AbstractVector)
+function apply_J!(y::AbstractVector, Jm::StampDerivatives, v::AbstractVector, live, sbuf::AbstractVector)
     p = Jm.p
     S2 = Jm.S2
     n_active = size(Jm.values, 3)
     fill!(y, zero(eltype(y)))
     @inbounds for a in 0:(n_active - 1)
+        live[a + 1] || continue
         base = a * p
-        for m in 1:S2
-            fi = Jm.pixels[m, a + 1]
-            fi != 0 || continue
-            acc = zero(eltype(y))
+        # Dense, non-aliased per-star product into `sbuf` (no pixel access, so
+        # it vectorizes); a masked stamp entry has `Jm.values == 0`, so `sbuf`
+        # is `0` there and the plain masked scatter below can skip it.
+        LV.@turbo for m in 1:S2
+            acc = zero(eltype(sbuf))
             for k in 1:p
                 acc += Jm.values[k, m, a + 1] * v[base + k]
             end
-            y[fi] += acc
+            sbuf[m] = acc
+        end
+        for m in 1:S2
+            fi = Jm.pixels[m, a + 1]
+            fi != 0 || continue
+            y[fi] += sbuf[m]
         end
     end
     return y
 end
 
-# ==============================================================================
-# Neighbor model (the sparsity pattern of H)
-# ==============================================================================
-
-# Off-diagonal p x p blocks of H, stored flat (CSR-style) rather than as one
-# heap object per star-pair.  At high crowding the pair count can reach into
-# the millions, so a `Vector` of small mutable structs, each separately
-# allocating its own `Matrix` and two `Vector`s, multiplies both memory and
-# allocation count far beyond the raw data size and makes `_accumulate_H!`/
-# `_apply_H!` pointer-chase through scattered heap objects instead of walking
-# contiguous arrays.  `pair_a[t] > pair_b[t]` always (lower triangle); pair
-# `t`'s shared stamp-pixel offsets are `shared_ma[offsets[t]:offsets[t+1]-1]`
-# (and `shared_mb` likewise).
-struct NeighborBlocks{T}
-    pair_a::Vector{Int32}
-    pair_b::Vector{Int32}
-    offsets::Vector{Int}
-    shared_ma::Vector{Int32}
-    shared_mb::Vector{Int32}
-    B::Array{T, 3}
+function apply_J!(y::AbstractVector, Jm::StampDerivatives, v::AbstractVector)
+    return apply_J!(y, Jm, v, trues(size(Jm.values, 3)), Vector{eltype(Jm.values)}(undef, Jm.S2))
 end
 
-Base.length(nb::NeighborBlocks) = length(nb.pair_a)
+"""
+    _jacobian_operator(stamp, live, sbuf, npix, n) -> LinearOperator
 
-# ---------------------------------------------------------------------------
-# Build the fixed stamp footprint and the neighbor structure once.
-# ---------------------------------------------------------------------------
+Wrap the weighted, column-equilibrated Jacobian as a matrix-free
+`npix × n` `LinearOperator`: `op * v` calls [`apply_J!`](@ref), `op' * u`
+calls [`apply_JT!`](@ref).  The closures capture `stamp` (whose `values` are
+refreshed in place each outer iteration) and `live` (mutated as stars
+freeze), so a single operator built once is valid for the whole fit.
+"""
+function _jacobian_operator(stamp::StampDerivatives{FT}, live, sbuf, npix::Int, n::Int) where {FT}
+    fwd = (res, v) -> apply_J!(res, stamp, v, live, sbuf)
+    adj = (res, u) -> apply_JT!(res, stamp, u, live)
+    return LinearOperators.LinearOperator(FT, npix, n, false, false, fwd, adj, adj)
+end
+
+# ==============================================================================
+# Fixed stamp footprint
+# ==============================================================================
 
 function _build_stamps!(image, params, row_y, row_x, row_flux, fit_rad, w, FT)
     ny, nx = size(image)
@@ -191,125 +198,21 @@ function _build_stamps!(image, params, row_y, row_x, row_flux, fit_rad, w, FT)
     )
 end
 
-function _build_neighbors(pixels, S2, n_active, p, FT)
-    # Count usable pixels.
-    nrec = 0
-    @inbounds for a in 1:n_active, m in 1:S2
-        pixels[m, a] != 0 && (nrec += 1)
+# Sorted, unique flat indices of every image pixel covered by at least one
+# stamp -- the support over which the cost and residual are evaluated.  A
+# length-`npix` mask (not a growing vector + sort) keeps this linear in the
+# stamp count and cheap in memory even at whole-frame sizes.
+function _touched_pixels(pixels, npix::Int)
+    mask = falses(npix)
+    @inbounds for fi in pixels
+        fi != 0 && (mask[fi] = true)
     end
-    rec_pix = Vector{Int}(undef, nrec)
-    rec_star = Vector{Int32}(undef, nrec)
-    rec_off = Vector{Int32}(undef, nrec)
-    k = 0
-    @inbounds for a in 1:n_active, m in 1:S2
-        fi = pixels[m, a]
-        fi != 0 || continue
-        k += 1
-        rec_pix[k] = fi
-        rec_star[k] = a - 1
-        rec_off[k] = m - 1
-    end
-
-    perm = sortperm(rec_pix)
-
-    # Pass 1: count union pixels and total raw (unordered star-pair, shared
-    # pixel) records, so pass 2 can fill preallocated arrays instead of
-    # growing them with `push!`, which has to dynamically resize the array
-    n_union = 0
-    total_shared = 0
-    i = 1
-    n = nrec
-    while i <= n
-        j = i
-        while j <= n && rec_pix[perm[j]] == rec_pix[perm[i]]
-            j += 1
-        end
-        len = j - i
-        n_union += 1
-        total_shared += (len * (len - 1)) ÷ 2
-        i = j
-    end
-
-    union_pix = Vector{Int}(undef, n_union)
-    pair_a = Vector{Int32}(undef, total_shared)
-    pair_b = Vector{Int32}(undef, total_shared)
-    pair_ma = Vector{Int32}(undef, total_shared)
-    pair_mb = Vector{Int32}(undef, total_shared)
-
-    # Pass 2: fill union pixels and raw pair records.
-    ui = 0
-    t = 0
-    i = 1
-    while i <= n
-        j = i
-        while j <= n && rec_pix[perm[j]] == rec_pix[perm[i]]
-            j += 1
-        end
-        ui += 1
-        union_pix[ui] = rec_pix[perm[i]]
-        len = j - i
-        @inbounds for u in 1:len
-            su = rec_star[perm[i + u - 1]]
-            mu = rec_off[perm[i + u - 1]]
-            for v in (u + 1):len
-                sv = rec_star[perm[i + v - 1]]
-                mv = rec_off[perm[i + v - 1]]
-                t += 1
-                if su > sv
-                    pair_a[t] = su; pair_b[t] = sv
-                    pair_ma[t] = mu; pair_mb[t] = mv
-                else
-                    pair_a[t] = sv; pair_b[t] = su
-                    pair_ma[t] = mv; pair_mb[t] = mu
-                end
-            end
-        end
-        i = j
-    end
-
-    if total_shared == 0
-        return union_pix, NeighborBlocks{FT}(
-            Int32[], Int32[], Int[], Int32[], Int32[], zeros(FT, p, p, 0))
-    end
-
-    # Group raw records by (a, b) via one sort: equal keys are contiguous
-    # after sorting, so the sorted shared-pixel arrays ARE the flat per-pair
-    # storage directly -- no further `push!`-based grouping into per-pair
-    # containers is needed.
-    key = Vector{Int64}(undef, total_shared)
-    @inbounds for t in 1:total_shared
-        key[t] = Int64(pair_a[t]) * n_active + pair_b[t]
-    end
-    ord = sortperm(key)
-    shared_ma = pair_ma[ord]
-    shared_mb = pair_mb[ord]
-    sorted_key = key[ord]
-
-    npair = 1
-    @inbounds for t in 2:total_shared
-        sorted_key[t] != sorted_key[t - 1] && (npair += 1)
-    end
-
-    out_a = Vector{Int32}(undef, npair)
-    out_b = Vector{Int32}(undef, npair)
-    offsets = Vector{Int}(undef, npair + 1)
-    bi = 0
-    @inbounds for t in 1:total_shared
-        if t == 1 || sorted_key[t] != sorted_key[t - 1]
-            bi += 1
-            offsets[bi] = t
-            out_a[bi] = pair_a[ord[t]]
-            out_b[bi] = pair_b[ord[t]]
-        end
-    end
-    offsets[npair + 1] = total_shared + 1
-
-    B = zeros(FT, p, p, npair)
-    return union_pix, NeighborBlocks{FT}(out_a, out_b, offsets, shared_ma, shared_mb, B)
+    return findall(mask)
 end
 
+
 # ==============================================================================
-# Fill (render value + gradient), H accumulation, matvec
+# Fill (render value + gradient), model render, cost
 # ==============================================================================
 
 function _fill_stamps!(
@@ -326,7 +229,7 @@ function _fill_stamps!(
     # live columns being recomputed below), or the eps(FT) floor two lines
     # down turns a stale zero into a ~4.5e15 rescale applied again every
     # iteration, overflowing stamp.values to Inf within a couple of outer
-    # iterations and leaking NaN into a still-live neighbor's H block.
+    # iterations and leaking NaN into a still-live star's operator column.
     @inbounds for a in 0:(n_active - 1)
         live[a + 1] || continue
         base = a * p
@@ -665,395 +568,6 @@ function _cost!(model_img, data, w, union_pix)
     return cost
 end
 
-"""
-    _accumulate_H!(Hdiag, nb, stamp)
-
-Fill the diagonal blocks `Hdiag` and the off-diagonal blocks `nb.B` from the
-current `stamp` values.
-
-Both loops are written to vectorize under `LV.@turbo`:
-
-- The diagonal-block loop drops the `stamp.pixels[m, a] != 0` mask check
-  present in earlier versions. It is provably redundant, not just
-  unnecessary: `_fill_stamps!` only ever writes `stamp.values[:, m, a]` at
-  pixels with `stamp.pixels[m, a] != 0`, its column-equilibration pass
-  multiplies every (including masked) entry by a finite scale, and
-  `stamp.values` starts zero-filled at construction -- so masked entries are
-  `0` for the entire fit and contribute `0` to the sum whether or not they
-  are skipped. A `continue`-based skip is also, independently, not legal
-  inside a `@turbo` (or even a plain `@simd`) loop body.
-- The off-diagonal loop cannot be one flat `@turbo` block: different pairs
-  have different-length shared-pixel runs (`nb.offsets`), and every shared
-  pixel in a pair's run must accumulate into that *same* pair's `p x p`
-  block, which rules out treating the whole flat `shared_ma`/`shared_mb`
-  array as one independent-iteration reduction. Instead each pair gets its
-  own `@turbo` block over `(s, k, l)`, gathering `stamp.values` through the
-  `shared_ma`/`shared_mb` offsets.
-
-Measured together, this cut `_accumulate_H!`'s wall time by `~3.2x` on an
-otherwise-identical fit (`N = 10,000` active stars, `fit_rad = 5`) with
-bitwise-irrelevant differences from the scalar path (`rtol = 1e-10`).
-"""
-function _accumulate_H!(Hdiag, nb::NeighborBlocks, stamp::StampDerivatives)
-    p = stamp.p
-    S2 = stamp.S2
-    n_active = size(stamp.values, 3)
-    values = stamp.values
-    fill!(Hdiag, zero(eltype(Hdiag)))
-    LV.@turbo for a in 1:n_active, m in 1:S2, k in 1:p, l in 1:p
-        Hdiag[k, l, a] += values[k, m, a] * values[l, m, a]
-    end
-
-    npair = length(nb)
-    pair_a = nb.pair_a
-    pair_b = nb.pair_b
-    offsets = nb.offsets
-    shared_ma = nb.shared_ma
-    shared_mb = nb.shared_mb
-    B = nb.B
-    @inbounds for t in 1:npair
-        a = pair_a[t] + 1
-        b = pair_b[t] + 1
-        lo = offsets[t]
-        hi = offsets[t + 1] - 1
-        @inbounds for k in 1:p, l in 1:p
-            B[k, l, t] = zero(eltype(B))
-        end
-        LV.@turbo for s in lo:hi, k in 1:p, l in 1:p
-            ma = shared_ma[s] + Int32(1)
-            mb = shared_mb[s] + Int32(1)
-            B[k, l, t] += values[k, ma, a] * values[l, mb, b]
-        end
-    end
-    return Hdiag
-end
-
-function _apply_H!(y, Hdiag, nb::NeighborBlocks, x)
-    p = size(Hdiag, 1)
-    n_active = size(Hdiag, 3)
-    fill!(y, zero(eltype(y)))
-    @inbounds for a in 0:(n_active - 1)
-        base = a * p
-        for k in 1:p
-            acc = zero(eltype(y))
-            for l in 1:p
-                acc += Hdiag[k, l, a + 1] * x[base + l]
-            end
-            y[base + k] += acc
-        end
-    end
-    npair = length(nb)
-    @inbounds for t in 1:npair
-        a = nb.pair_a[t]
-        b = nb.pair_b[t]
-        ba = a * p
-        bb = b * p
-        for k in 1:p
-            acc_row = zero(eltype(y))
-            acc_col = zero(eltype(y))
-            for l in 1:p
-                acc_row += nb.B[k, l, t] * x[bb + l]
-                acc_col += nb.B[l, k, t] * x[ba + l]
-            end
-            y[ba + k] += acc_row
-            y[bb + k] += acc_col
-        end
-    end
-    return y
-end
-
-function _apply_A!(y, Hdiag, nbr_blocks, λ, x)
-    _apply_H!(y, Hdiag, nbr_blocks, x)
-    @. y += λ * x
-    return y
-end
-
-# ==============================================================================
-# Block-Jacobi preconditioner and preconditioned CG
-# ==============================================================================
-
-function _build_precond!(Mblocks, Hdiag, λ)
-    p, _, n_active = size(Hdiag)
-    FT = eltype(Hdiag)
-    @inbounds for a in 1:n_active
-        if p == 3
-            a11 = Hdiag[1, 1, a] + λ
-            a12 = Hdiag[1, 2, a]
-            a13 = Hdiag[1, 3, a]
-            a22 = Hdiag[2, 2, a] + λ
-            a23 = Hdiag[2, 3, a]
-            a33 = Hdiag[3, 3, a] + λ
-            Minv = inv(@SMatrix [a11 a12 a13; a12 a22 a23; a13 a23 a33])
-            Mblocks[1, 1, a] = Minv[1, 1]; Mblocks[1, 2, a] = Minv[1, 2]; Mblocks[1, 3, a] = Minv[1, 3]
-            Mblocks[2, 1, a] = Minv[2, 1]; Mblocks[2, 2, a] = Minv[2, 2]; Mblocks[2, 3, a] = Minv[2, 3]
-            Mblocks[3, 1, a] = Minv[3, 1]; Mblocks[3, 2, a] = Minv[3, 2]; Mblocks[3, 3, a] = Minv[3, 3]
-        else
-            blk = zeros(FT, p, p)
-            for k in 1:p, l in 1:p
-                blk[k, l] = Hdiag[k, l, a]
-            end
-            for k in 1:p
-                blk[k, k] += λ
-            end
-            Minv = inv(blk)
-            for k in 1:p, l in 1:p
-                Mblocks[k, l, a] = Minv[k, l]
-            end
-        end
-    end
-    return Mblocks
-end
-
-function _apply_precond!(z, Mblocks, r)
-    p, _, n_active = size(Mblocks)
-    @inbounds for a in 0:(n_active - 1)
-        base = a * p
-        for k in 1:p
-            acc = zero(eltype(z))
-            for l in 1:p
-                acc += Mblocks[k, l, a + 1] * r[base + l]
-            end
-            z[base + k] = acc
-        end
-    end
-    return z
-end
-
-"""
-    _mask_frozen!(v, frozen_list, p)
-
-Zero every frozen star's `p`-slice of `v` in place. `frozen_list` holds
-`0`-based star indices; used inside [`_pcg!`](@ref) after every `_apply_A!`
-call so that a still-live neighbor's search direction can never leak a
-nonzero value into a frozen star's slot within the current solve (see the
-correctness analysis in `_pcg!`'s docstring).
-"""
-function _mask_frozen!(v, frozen_list, p)
-    @inbounds for s in frozen_list
-        base = s * p
-        for k in 1:p
-            v[base + k] = zero(eltype(v))
-        end
-    end
-    return v
-end
-
-"""
-    _pcg!(δ, Hdiag, nbr_blocks, λ, rhs, Mblocks, inner_iterations, r, z, pk, Ap, frozen_list, p, cg_tol)
-
-Block-Jacobi preconditioned CG solve of `(H + λI) δ = rhs`.
-
-`frozen_list` (`0`-based star indices no longer being fit) is used to zero
-`Ap`'s frozen-star slices immediately after every [`_apply_A!`](@ref) call.
-This is required for correctness, not just cheap insurance: `_apply_H!`'s
-off-diagonal term writes `y[frozen] += B' * x[active]` for any pair still
-touching a frozen star, so even with `rhs[frozen] == 0` (guaranteed by
-[`apply_JT!`](@ref) skipping frozen stars) a still-live neighbor's nonzero
-search direction would otherwise leak into `Ap[frozen]` on the very first
-`_apply_A!` call, then propagate into `r`/`z`/`pk` on later CG iterations,
-leaving a "frozen" star with a nonzero `δ` at the end of the solve. Masking
-`Ap` every iteration keeps `pk`/`r`/`z`/`δ` at frozen slices at exactly `0`
-by induction, so CG runs exactly on the reduced (frozen coordinates
-projected out) system rather than an approximation of it.
-
-`inner_iterations` is an upper cap; the loop also stops early as soon as the
-true (unpreconditioned) relative residual `‖rhs − Aδ‖ / ‖rhs‖` drops to
-`cg_tol` or below. This only ever *shortens* a solve relative to running the
-full cap, so it is a safe, accuracy-preserving performance win for the
-common case: an isolated or lightly-blended star's system is solved exactly
-in 1-2 iterations by the block-Jacobi preconditioner, and the loop no longer
-burns the rest of the cap on a converged answer.
-
-Do **not** treat `cg_tol`/`inner_iterations` as a knob for fixing bright-star
-precision in crowded fields by making the solve *more* exact -- raising
-`inner_iterations` (or tightening `cg_tol`) beyond what the default already
-resolves does not self-correct a genuinely degenerate, tightly-blended group
-of stars; it actively destabilizes it. A star's true position/flux update in
-a near-null-space direction (e.g. two heavily overlapping stars whose fluxes
-are almost exchangeable at fixed total light) is only weakly determined by
-the data, and CG resolves that ill-conditioned direction more and more
-precisely the more iterations it is given -- amplifying noise into large,
-sometimes negative, flux swings instead of converging to a better answer.
-Nothing in the outer Levenberg-Marquardt loop guards against this: `λ` and
-step acceptance are driven by the *global* cost across all stars, so a step
-that blows up one small degenerate group can still be accepted because the
-much larger well-behaved population dominates the sum. A full sweep of
-`cg_tol` at `inner_iterations = 50` on a realistic crowded field (see
-`experiments/simul-solve/`) showed a monotonic trade: tighter `cg_tol`
-buys smaller bright-star bias but a proportionally larger population of
-stars whose flux diverges to a non-positive value, with no tolerance that
-improves one without worsening the other. The fix for that failure mode
-belongs in the damping/acceptance logic (something that protects a
-degenerate subgroup specifically), not in the CG stopping rule.
-"""
-function _pcg!(δ, Hdiag, nbr_blocks, λ, rhs, Mblocks, inner_iterations, r, z, pk, Ap, frozen_list, p, cg_tol)
-    FT = eltype(δ)
-    fill!(δ, zero(FT))
-    r .= rhs
-    rhs_norm = norm(rhs)
-    rhs_norm == 0 && return δ
-    _apply_precond!(z, Mblocks, r)
-    pk .= z
-    rz = dot(r, z)
-    rz == 0 && return δ
-    for _ in 1:inner_iterations
-        _apply_A!(Ap, Hdiag, nbr_blocks, λ, pk)
-        _mask_frozen!(Ap, frozen_list, p)
-        pap = dot(pk, Ap)
-        pap == 0 && break
-        α = rz / pap
-        @. δ += α * pk
-        @. r -= α * Ap
-        norm(r) <= FT(cg_tol) * rhs_norm && break
-        _apply_precond!(z, Mblocks, r)
-        rz_new = dot(r, z)
-        rz_new == 0 && break
-        β = rz_new / rz
-        @. pk = z + β * pk
-        rz = rz_new
-    end
-    return δ
-end
-
-"""
-    CholeskySolverCache{T}
-
-Cached CHOLMOD state for the `:cholesky` oracle solver.  The sparsity
-pattern of `H`'s lower triangle is fixed for the whole fit (§4.2's fixed
-stamp anchor), so it is built once from the neighbor structure; only the
-numeric values change every outer iteration.  `diag_pos`/`pair_pos` map each
-logical `Hdiag`/`nb.B` entry to its position in the *unsorted* triplet list
-built at cache-construction time, and `invord` maps that triplet position to
-its final slot in `H.nzval` -- together they let [`_refill_cholesky!`](@ref)
-write refreshed values directly into `H.nzval` without rebuilding the sparse
-structure. `F` holds the CHOLMOD factorization, built lazily on first use and
-thereafter reused via `cholesky!` (reanalyzing only the numeric factorization,
-not the symbolic structure) as `λ` and the values change from iteration to
-iteration and trial to trial.
-"""
-mutable struct CholeskySolverCache{T}
-    H::SparseArrays.SparseMatrixCSC{T, Int}
-    diag_pos::Array{Int, 3}
-    pair_pos::Array{Int, 3}
-    invord::Vector{Int}
-    F::Any
-end
-
-function _build_cholesky_cache(nb::NeighborBlocks{FT}, n_active::Int, p::Int) where {FT}
-    n = p * n_active
-    npair = length(nb)
-    ndiag = n_active * (p * (p + 1)) ÷ 2
-    ntot = ndiag + npair * p * p
-
-    rows = Vector{Int}(undef, ntot)
-    cols = Vector{Int}(undef, ntot)
-    diag_pos = zeros(Int, p, p, n_active)
-    pair_pos = zeros(Int, p, p, npair)
-
-    # Only the lower triangle (k >= l) of each diagonal block is needed: it
-    # is symmetric by construction, and `Symmetric(H, :L)` mirrors the rest.
-    # Every off-diagonal pair block lies entirely below the global diagonal
-    # (pair_a[t] > pair_b[t] guarantees ba + k > bb + l for all k, l in
-    # 1:p), so the full p x p block is stored for pairs.
-    t = 0
-    @inbounds for a in 0:(n_active - 1)
-        base = a * p
-        for k in 1:p, l in 1:k
-            t += 1
-            rows[t] = base + k
-            cols[t] = base + l
-            diag_pos[k, l, a + 1] = t
-        end
-    end
-    @inbounds for tt in 1:npair
-        a = nb.pair_a[tt]
-        b = nb.pair_b[tt]
-        ba = a * p
-        bb = b * p
-        for k in 1:p, l in 1:p
-            t += 1
-            rows[t] = ba + k
-            cols[t] = bb + l
-            pair_pos[k, l, tt] = t
-        end
-    end
-
-    # Sort the fixed (row, col) pattern once; `invord` recovers, for each
-    # triplet built above, its final position in H.nzval, so later refills
-    # never need to re-sort or rebuild the sparse structure.
-    ord = sortperm(1:ntot; by = i -> (cols[i], rows[i]))
-    invord = invperm(ord)
-    rowval = rows[ord]
-
-    colptr = zeros(Int, n + 1)
-    colptr[1] = 1
-    @inbounds for c in cols
-        colptr[c + 1] += 1
-    end
-    cumsum!(colptr, colptr)
-
-    H = SparseArrays.SparseMatrixCSC(n, n, colptr, rowval, zeros(FT, ntot))
-    return CholeskySolverCache{FT}(H, diag_pos, pair_pos, invord, nothing)
-end
-
-"""
-    _refill_cholesky!(cache, Hdiag, nb, live)
-
-Write the current `Hdiag`/`nb.B` values into `cache.H.nzval` in place.  The
-sparsity pattern built by [`_build_cholesky_cache`](@ref) never changes, so
-this is the only per-outer-iteration cost; no triplets are rebuilt and no
-sparse matrix is reallocated.
-
-For any pair with a frozen (non-`live`) endpoint, `zero(FT)` is written
-instead of `nb.B[:,:,tt]`.  This cannot be handled by structurally dropping
-the pair (the whole point of the cached, fixed sparsity pattern is to reuse
-CHOLMOD's symbolic factorization), but it does not need to be: with the
-cross term zeroed and that star's right-hand side already `0` (frozen stars
-are skipped by [`apply_JT!`](@ref)), the frozen star's row of
-`(H + λI) δ = rhs` collapses to `Hdiag[frozen] · δ_frozen = 0`, and since
-`Hdiag[frozen] + λI` is positive definite this gives `δ_frozen = 0` exactly
--- the same reduced system [`_pcg!`](@ref) solves via its `Ap` masking.
-"""
-function _refill_cholesky!(cache::CholeskySolverCache{FT}, Hdiag, nb::NeighborBlocks, live) where {FT}
-    p, _, n_active = size(Hdiag)
-    npair = length(nb)
-    @inbounds for a in 1:n_active
-        for k in 1:p, l in 1:k
-            t = cache.diag_pos[k, l, a]
-            cache.H.nzval[cache.invord[t]] = Hdiag[k, l, a]
-        end
-    end
-    @inbounds for tt in 1:npair
-        a = nb.pair_a[tt] + 1
-        b = nb.pair_b[tt] + 1
-        frozen_pair = !live[a] || !live[b]
-        for k in 1:p, l in 1:p
-            t = cache.pair_pos[k, l, tt]
-            cache.H.nzval[cache.invord[t]] = frozen_pair ? zero(FT) : nb.B[k, l, tt]
-        end
-    end
-    return cache.H
-end
-
-"""
-    _solve_cholesky!(δ, cache, λ, rhs)
-
-Solve `(H + λI) δ = rhs` using the cached sparse `H` (values already
-refreshed by [`_refill_cholesky!`](@ref)).  The first call performs a full
-symbolic + numeric factorization; every subsequent call reuses the symbolic
-analysis via `cholesky!`, redoing only the numeric factorization for the
-current `λ` shift, per §5.2/§6.2.
-"""
-function _solve_cholesky!(δ, cache::CholeskySolverCache, λ, rhs)
-    Hs = Symmetric(cache.H, :L)
-    if cache.F === nothing
-        cache.F = cholesky(Hs; shift = λ)
-    else
-        cholesky!(cache.F, Hs; shift = λ)
-    end
-    δ .= cache.F \ rhs
-    return δ
-end
 
 # ==============================================================================
 # Position step cap (§6.3)
@@ -1135,66 +649,6 @@ function _freeze_remaining!(live, frozen_at, star_converged, iter)
     return live
 end
 
-"""
-    _compact_neighbors(nb::NeighborBlocks{FT}, live, p) where {FT}
-
-Drop every pair with a non-`live` (frozen) endpoint from `nb`, returning a
-new, smaller `NeighborBlocks`. A single linear scan of the existing flat
-arrays -- no sort, unlike [`_build_neighbors`](@ref), since compaction only
-ever removes entries, never regroups them. Star indices in the surviving
-pairs are *not* renumbered. `B`'s values are not carried over: the next
-`_accumulate_H!` call refills them from scratch regardless.
-
-Purely a performance optimization (shrinks the per-pair loops that dominate
-`_accumulate_H!`/`_apply_H!` at high crowding, per `experiments/simul-solve/
-report.md` §6): correctness for the `:cg` solver does not depend on when, or
-whether, this runs, because [`_pcg!`](@ref) already masks frozen-star slices
-out of every `Ap` (see its docstring). Only called for `solver === :cg`; the
-`:cholesky` path instead zeroes frozen-touching pair values in place (see
-[`_refill_cholesky!`](@ref)) since its sparse pattern is fixed for the whole
-fit.
-"""
-function _compact_neighbors(nb::NeighborBlocks{FT}, live, p) where {FT}
-    npair = length(nb)
-    nkeep = 0
-    @inbounds for t in 1:npair
-        (live[nb.pair_a[t] + 1] && live[nb.pair_b[t] + 1]) && (nkeep += 1)
-    end
-    nkeep == npair && return nb
-    if nkeep == 0
-        return NeighborBlocks{FT}(Int32[], Int32[], Int[], Int32[], Int32[], zeros(FT, p, p, 0))
-    end
-    new_pair_a = Vector{Int32}(undef, nkeep)
-    new_pair_b = Vector{Int32}(undef, nkeep)
-    new_offsets = Vector{Int}(undef, nkeep + 1)
-    new_offsets[1] = 1
-    total_new = 0
-    @inbounds for t in 1:npair
-        (live[nb.pair_a[t] + 1] && live[nb.pair_b[t] + 1]) || continue
-        total_new += nb.offsets[t + 1] - nb.offsets[t]
-    end
-    new_shared_ma = Vector{Int32}(undef, total_new)
-    new_shared_mb = Vector{Int32}(undef, total_new)
-    bi = 0
-    si = 0
-    @inbounds for t in 1:npair
-        (live[nb.pair_a[t] + 1] && live[nb.pair_b[t] + 1]) || continue
-        bi += 1
-        new_pair_a[bi] = nb.pair_a[t]
-        new_pair_b[bi] = nb.pair_b[t]
-        lo = nb.offsets[t]
-        hi = nb.offsets[t + 1] - 1
-        len = hi - lo + 1
-        copyto!(new_shared_ma, si + 1, nb.shared_ma, lo, len)
-        copyto!(new_shared_mb, si + 1, nb.shared_mb, lo, len)
-        si += len
-        new_offsets[bi + 1] = si + 1
-    end
-    return NeighborBlocks{FT}(
-        new_pair_a, new_pair_b, new_offsets, new_shared_ma, new_shared_mb,
-        zeros(FT, p, p, nkeep),
-    )
-end
 
 """
     _g_tol_local(j, p, colnorm_flat, b_scaled, C_r, g_tol)
@@ -1250,9 +704,11 @@ end
     fit_all_stars_simultaneous(image, psf, sources, fit_rad; kws...) -> MultiPassPhotResult
 
 Simultaneous PSF-fitting photometry: optimize the parameters of every source
-at once with a damped Gauss-Newton / Levenberg-Marquardt loop over the normal
-matrix `H = J'WJ`, accumulated directly from per-star stamp derivatives.  The
-default solver is preconditioned conjugate gradient on `H`.
+at once with a damped Gauss-Newton / Levenberg-Marquardt loop.  Each step's
+linear subproblem is solved with a method from Krylov.jl (LSQR by default)
+on the weighted, column-equilibrated Jacobian `J`, applied matrix-free straight
+from the per-star stamp derivatives -- `J` is never materialized and no explicit
+normal matrix or star-pair structure is built.
 
 Every non-fitting concern (background, detection, morphology, PSF model,
 diagnostics) is shared with [`fit_all_stars`](@ref); only the optimizer
@@ -1285,41 +741,44 @@ error.
   over the same pixels in both arms.
 - No robust reweighting: `reweight`, `scale_estimator`, and `weight_reset_tol`
   are not accepted.
-- Errors invert the per-star diagonal block of `H`; like `fit_all_stars` this
-  ignores covariance with blended neighbors, so `flux_err`/`y_err`/`x_err`
+- Errors invert the per-star diagonal block of `H = JᵀJ`; like `fit_all_stars`
+  this ignores covariance with blended neighbors, so `flux_err`/`y_err`/`x_err`
   compare directly but are not correct marginal errors in a crowded field.
 
 # Keyword arguments
 
-- `inner_iterations::Int = 5`: CG iteration upper cap per damping trial.
-- `cg_tol::Real = 1.0e-6`: relative-residual stopping tolerance for the
-  inner CG solve, `‖rhs − Aδ‖ / ‖rhs‖ <= cg_tol`; lets an isolated or
-  lightly-blended star's system (solved exactly by the block-Jacobi
-  preconditioner) exit CG in 1-2 iterations instead of always burning the
-  full cap. This is a safe performance optimization only: raising
-  `inner_iterations` or tightening `cg_tol` to make the solve more exact is
-  **not** a safe way to improve bright-star precision in a crowded field --
-  it resolves genuinely near-degenerate, tightly-blended groups' weakly
-  determined directions more precisely, which amplifies noise into large
-  (sometimes non-positive) flux swings rather than converging to a better
-  answer, with no outer-loop safeguard against it (`λ`/acceptance are driven
-  by the global cost, not per-group). See `_pcg!`'s docstring for the full
-  analysis.
+- `solver::Symbol = :lsqr`: symbol specifying the algorithm used to solve the
+  linearized subproblem; any solver available through
+  the generic interface of [Krylov.jl](https://jso.dev/Krylov.jl/stable/generic_interface/#Krylov.krylov_solve) can be used; `:lsqr` and `:lsmr` are common choices.
+- `inner_iterations::Int = 10`: iteration cap for the inner linear solve per
+  damping trial. Kept small on purpose -- solving the linear subproblem
+  accurately against a stale linearization is wasted work.
+- `linear_tol::Real = 1.0e-6`: `atol`/`btol` for the inner linear solve; lets an
+  isolated or lightly-blended star's subsystem exit early instead of always
+  burning the full cap.
+
+  !!! note
+      Raising `inner_iterations` or tightening `linear_tol` to make the solve
+      more exact is **not** a safe way to improve bright-star precision in a
+      crowded field. A genuinely near-degenerate, tightly-blended group's
+      weakly determined directions (e.g. two overlapping stars whose fluxes
+      are nearly exchangeable) get resolved more and more precisely the more
+      the linear solver is allowed to work, amplifying noise into large
+      (sometimes non-positive) flux swings rather than converging to a
+      better answer. Nothing in the outer loop guards against this: `λ` and
+      step acceptance are driven by the *global* cost, so a step that blows
+      up one small group can still be accepted. The fix belongs in the
+      damping/acceptance logic, not the inner-solve stopping rule. (LSQR
+      works with `κ(J)` rather than `κ(J)²` for the normal equations, so it
+      is better conditioned than CG-on-`H` would be, but the failure mode is
+      the same.)
 - `max_step::Real = 0.25`: per-star position step cap in pixels. Too large
   risks shooting past the actual minimum in the direction of the gradient
   in a single step; too small risks slowing convergence.  Recommend setting
   this to a small factor of the initial centroid uncertainty so that a star
   can reach its true position in a few steps, but not catastrophically
   overshoot it.
-- `solver::Symbol = :cg`: `:cg` (block-Jacobi PCG on `H`) or `:cholesky`
-  (exact CHOLMOD oracle).
 - `max_trials::Int = 8`: damping retries per outer iteration.
-- `freeze_compaction_frac::Real = 0.05`: `solver = :cg` only.  Once at least
-  this fraction of `n_active` stars have frozen since the last compaction,
-  `NeighborBlocks` is compacted to drop pairs touching frozen stars.  A pure
-  performance tuning knob (like `inner_iterations`/`max_trials`), not a
-  correctness one: `:cg` masks frozen stars out of every CG iteration
-  regardless of compaction cadence (see `_pcg!`'s docstring).
 - `max_iter::Integer = 40` maximum number of outer iterations
 - `x_tol::Real = 1.0e-5`: per-star rescaled step-norm convergence test
 - `f_tol::Real = 1.0e-4`: whole-system relative cost improvement test
@@ -1350,12 +809,11 @@ function fit_all_stars_simultaneous(
         fixed::NamedTuple = (;),
         inv_var = nothing,
         spread_model_fwhm::Union{Nothing, Real} = nothing,
-        inner_iterations::Int = 5,
-        cg_tol::Real = 1.0e-6,
+        solver::Symbol = :lsqr,
+        inner_iterations::Int = 10,
+        linear_tol::Real = 1.0e-6,
         max_step::Real = 0.25,
-        solver::Symbol = :cg,
         max_trials::Int = 8,
-        freeze_compaction_frac::Real = 0.05,
         max_iter::Integer = 40,
         x_tol::Real = 1.0e-5,
         f_tol::Real = 1.0e-4,
@@ -1372,10 +830,9 @@ function fit_all_stars_simultaneous(
     FT = float(T)
     max_iter > 0 || throw(ArgumentError("max_iter must be positive"))
     inner_iterations > 0 || throw(ArgumentError("inner_iterations must be positive"))
-    cg_tol > 0 || throw(ArgumentError("cg_tol must be positive"))
+    linear_tol > 0 || throw(ArgumentError("linear_tol must be positive"))
     max_trials > 0 || throw(ArgumentError("max_trials must be positive"))
-    0 < freeze_compaction_frac <= 1 || throw(ArgumentError("freeze_compaction_frac must be in (0, 1]"))
-    solver in (:cg, :cholesky) || throw(ArgumentError("solver must be :cg or :cholesky, got $(repr(solver))"))
+    solver in (:lsqr, :lsmr) || throw(ArgumentError("solver must be :lsqr or :lsmr, got $(repr(solver))"))
     damping isa LevenbergDamping && throw(ArgumentError(
         "LevenbergDamping is not supported by fit_all_stars_simultaneous: it " *
         "conflicts with the column-equilibrated x_tol scaling. Use MarquardtDamping."
@@ -1469,7 +926,7 @@ function fit_all_stars_simultaneous(
     end
 
     # -------------------------------------------------------------------
-    # 3. Stamp footprint and neighbor structure (built once)
+    # 3. Stamp footprint (built once)
     # -------------------------------------------------------------------
     built = _build_stamps!(image, params, row_y, row_x, row_flux, fit_rad, w, FT)
     pixels = built.pixels
@@ -1487,8 +944,7 @@ function fit_all_stars_simultaneous(
     n_active == 0 && return _empty_simultaneous_result(
         n_stars, params, errors, row_y, row_x, row_flux, row_bkg, valid, failure_msgs, FT, ny, nx)
 
-    union_pix, nbr_blocks = _build_neighbors(pixels, S2, n_active, p, FT)
-    chol_cache = solver === :cholesky ? _build_cholesky_cache(nbr_blocks, n_active, p) : nothing
+    union_pix = _touched_pixels(pixels, npix)
 
     # -------------------------------------------------------------------
     # 4. Working buffers
@@ -1507,33 +963,30 @@ function fit_all_stars_simultaneous(
     model_img = zeros(FT, npix)
     model_cand = zeros(FT, npix)
     wt_resid = zeros(FT, npix)
+    mrhs = Vector{FT}(undef, npix)    # -wt_resid, the linear solve right-hand side
     render_buf = Vector{FT}(undef, S2)
     render_scratch = _render_scratch(psf, round(Int, sqrt(S2)), FT)
     fill_scratch = _fill_scratch(psf, round(Int, sqrt(S2)), FT)
 
-    Hdiag = zeros(FT, p, p, n_active)
-    Mblocks = zeros(FT, p, p, n_active)
-
-    b_scaled = Vector{FT}(undef, n)
+    b_scaled = Vector{FT}(undef, n)   # Jᵀ·wt_resid, for the g_tol cosine tests
     δ_scaled = Vector{FT}(undef, n)
     δ = Vector{FT}(undef, n)
-    rhs = Vector{FT}(undef, n)
     D = Vector{FT}(undef, n)
-    r = Vector{FT}(undef, n)
-    z = Vector{FT}(undef, n)
-    pk = Vector{FT}(undef, n)
-    Ap = Vector{FT}(undef, n)
-
-    colnorm_flat = reshape(stamp.colnorm, n)
+    sbuf = Vector{FT}(undef, S2)      # matrix-free operator scratch: one star's stamp
 
     # Per-star freezing state (§ "Per-star convergence and freezing" above).
     live = trues(n_active)
     frozen_at = zeros(Int, n_active)
     star_converged = falses(n_active)
-    frozen_list = Int[]
-    n_since_compaction = 0
-    compaction_batch = max(1, ceil(Int, freeze_compaction_frac * n_active))
     data_work = copy(data)
+
+    # Matrix-free `J` operator and reusable workspace.  The operator
+    # closes over `stamp`/`live`, both mutated in place across outer iterations,
+    # so it is built once.
+    J_op = _jacobian_operator(stamp, live, sbuf, npix, n)
+    ws = Krylov.krylov_workspace(Val(solver), npix, n, Vector{FT})
+
+    colnorm_flat = reshape(stamp.colnorm, n)
 
     # -------------------------------------------------------------------
     # 5. Initial fill and cost
@@ -1555,8 +1008,7 @@ function fit_all_stars_simultaneous(
         _fill_stamps!(stamp, psf, free_names_val, fixed, θ, w, model_img,
             grad_col, dy_off, dx_off, anchor_y, anchor_x, row_y, row_x, row_flux, live, fill_scratch)
         cost = _residual_cost!(wt_resid, model_img, data_work, w, union_pix)
-        _accumulate_H!(Hdiag, nbr_blocks, stamp)
-        solver === :cholesky && _refill_cholesky!(chol_cache, Hdiag, nbr_blocks, live)
+        @. mrhs = -wt_resid
         apply_JT!(b_scaled, stamp, wt_resid, live)
 
         # g_converged (levenberg_marquardt.jl:535-540), reduced-cost denominator.
@@ -1582,13 +1034,13 @@ function fit_all_stars_simultaneous(
         accepted = false
         f_converged = false
         for trial in 1:max_trials
-            @. rhs = -b_scaled
-            if solver === :cg
-                _build_precond!(Mblocks, Hdiag, λ)
-                _pcg!(δ_scaled, Hdiag, nbr_blocks, λ, rhs, Mblocks, inner_iterations, r, z, pk, Ap, frozen_list, p, cg_tol)
-            else
-                _solve_cholesky!(δ_scaled, chol_cache, λ, rhs)
-            end
+            # Damping goes through the solver's own `λ` (Tikhonov) term: since
+            # `δ_scaled = D·δ`, penalizing `λ²‖δ_scaled‖²` is exactly Marquardt's
+            # `‖D·δ‖²`, and the operator is reused across trials with no rebuild.
+            λ_solve = sqrt(FT(λ))
+            Krylov.krylov_solve!(ws, J_op, mrhs; λ = λ_solve, itmax = inner_iterations,
+                atol = FT(linear_tol), btol = FT(linear_tol))
+            δ_scaled .= Krylov.solution(ws)
 
             @. δ = δ_scaled / colnorm_flat
             _cap_position_step!(δ, max_step, p, k_y, k_x)
@@ -1604,9 +1056,9 @@ function fit_all_stars_simultaneous(
 
             if show_trace
                 status = cost_cand < cost ? "accepted" : "rejected"
-                println("Iter $(lpad(iter, 4)) trial $(lpad(trial, 2)) | converged = $(@sprintf("%5.2f%%", round(100 * length(frozen_list) / length(live), RoundDown; digits=2))) | cost = $(@sprintf("%.4e", cost)) -> $(@sprintf("%.4e", cost_cand)) | λ = $(@sprintf("%.2e", λ)) | ||g|| = $(@sprintf("%8.4f", gnorm)) | $status")
+                println("Iter $(lpad(iter, 4)) trial $(lpad(trial, 2)) | converged = $(@sprintf("%5.2f%%", round(100 * count(!, live) / length(live), RoundDown; digits=2))) | cost = $(@sprintf("%.4e", cost)) -> $(@sprintf("%.4e", cost_cand)) | λ = $(@sprintf("%.2e", λ)) | ||g|| = $(@sprintf("%8.4f", gnorm)) | $status")
                 if trial == max_trials
-                    println("*** Max inner trials reached (`inner_iterations`) during outer iteration $(iter) ***")
+                    println("*** Max damping trials (`max_trials`) reached during outer iteration $(iter) ***")
                 end
             end
 
@@ -1641,13 +1093,7 @@ function fit_all_stars_simultaneous(
                     live[j] = false
                     frozen_at[j] = iter
                     star_converged[j] = true
-                    push!(frozen_list, j - 1)
-                    n_since_compaction += 1
                 end
-            end
-            if solver === :cg && n_since_compaction >= compaction_batch
-                nbr_blocks = _compact_neighbors(nbr_blocks, live, p)
-                n_since_compaction = 0
             end
             if !any(live)
                 converged = true
