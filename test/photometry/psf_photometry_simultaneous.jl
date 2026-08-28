@@ -1,18 +1,16 @@
 using CrowdPhot
 using CrowdPhot: CircularGaussianPSF, StampDerivatives, apply_JT!, apply_J!,
-    _accumulate_H!, _build_neighbors, _pcg!, _build_precond!, _apply_H!,
-    NeighborBlocks, _clamp_inds,
-    _build_cholesky_cache, _refill_cholesky!, _solve_cholesky!,
-    _compact_neighbors, _mask_frozen!, _fill_stamps!
+    _jacobian_operator, _clamp_inds, _fill_stamps!
 using CrowdPhot.PSF
 using ConstructionBase
-using LinearAlgebra: dot, norm, I, Symmetric
+using Krylov: lsqr!, lsmr!, LsqrWorkspace, LsmrWorkspace, solution
+using LinearAlgebra: dot, norm, I
 using StableRNGs
 using Statistics: median, quantile
 using Test
 
-# Build the full (npix x n) Jacobian from a StampDerivatives so the adjoint
-# identity and H accumulation can be checked against dense linear algebra.
+# Build the full (npix x n) Jacobian from a StampDerivatives so the operator
+# and LSQR step can be checked against dense linear algebra.
 function dense_J(stamp::StampDerivatives)
     p, S2, n_active = size(stamp.values)
     J = zeros(stamp.npix, n_active * p)
@@ -26,25 +24,6 @@ function dense_J(stamp::StampDerivatives)
         end
     end
     return J
-end
-
-function assemble_H_dense(Hdiag, nb::NeighborBlocks, p, n_active)
-    n = p * n_active
-    H = zeros(n, n)
-    for a in 0:(n_active - 1)
-        for k in 1:p, l in 1:p
-            H[a * p + k, a * p + l] = Hdiag[k, l, a + 1]
-        end
-    end
-    for t in 1:length(nb)
-        a = nb.pair_a[t]
-        b = nb.pair_b[t]
-        for k in 1:p, l in 1:p
-            H[a * p + k, b * p + l] = nb.B[k, l, t]
-            H[b * p + l, a * p + k] = nb.B[k, l, t]
-        end
-    end
-    return H
 end
 
 # Column-equilibrate a stamp (as the real fill does) so H has unit diagonal.
@@ -155,284 +134,88 @@ end
         apply_J!(y, stamp, v)
         apply_JT!(z, stamp, u, trues(n_active))
         @test dot(u, y) ≈ dot(z, v) rtol = 1e-12
-    end
 
-    @testset "H accumulation matches dense J'WJ" begin
-        p = 3
-        S2 = 9
-        n_active = 6
-        npix = 30
-        pixels = zeros(Int32, S2, n_active)
-        for a in 1:n_active
-            for m in 1:S2
-                fi = mod(m + (a - 1) * 2 - 1, npix) + 1
-                pixels[m, a] = fi
-            end
-        end
-        stamp = StampDerivatives{Float64, Int32}(
-            randn(rng, p, S2, n_active), pixels, zeros(p, n_active), npix, p, S2)
-        union_pix, nbr_blocks = _build_neighbors(pixels, S2, n_active, p, Float64)
-        Hdiag = zeros(p, p, n_active)
-        _accumulate_H!(Hdiag, nbr_blocks, stamp)
-
+        # Both products agree with the explicit dense Jacobian.
         J = dense_J(stamp)
-        H_dense = J' * J
-        H_acc = assemble_H_dense(Hdiag, nbr_blocks, p, n_active)
-        @test H_acc ≈ H_dense rtol = 1e-10 atol = 1e-12
-        # diag(H_scaled) == 1 only holds for equilibrated values; check the
-        # block agreement directly instead.
+        @test y ≈ J * v rtol = 1e-12
+        @test z ≈ J' * u rtol = 1e-12
+
+        # A frozen star drops its columns from J: `apply_J!` ignores that
+        # star's slice of `v`, and `apply_JT!` leaves its slice of `z` at 0.
+        live = trues(n_active); live[2] = false
+        Jm = copy(J); Jm[:, (2 - 1) * p + 1:2 * p] .= 0
+        apply_J!(y, stamp, v, live, zeros(S2))
+        apply_JT!(z, stamp, u, live)
+        @test y ≈ Jm * v rtol = 1e-12
+        @test z ≈ Jm' * u rtol = 1e-12
+        @test all(iszero, view(z, (2 - 1) * p + 1:2 * p))
     end
 
-    @testset "PCG matches dense damped solve" begin
-        p = 3
-        S2 = 9
-        n_active = 6
-        npix = 8 * n_active + 8
-        pixels = zeros(Int32, S2, n_active)
-        # Light overlap (1 shared pixel between adjacent stars) so H is
-        # well-conditioned and PCG converges tightly.
-        for a in 1:n_active
-            for m in 1:S2
-                fi = mod(m + (a - 1) * 8 - 1, npix) + 1
-                pixels[m, a] = fi
-            end
-        end
-        stamp = StampDerivatives{Float64, Int32}(
-            randn(rng, p, S2, n_active), pixels, zeros(p, n_active), npix, p, S2)
-        equilibrate!(stamp)
-        _, nbr_blocks = _build_neighbors(pixels, S2, n_active, p, Float64)
-        Hdiag = zeros(p, p, n_active)
-        _accumulate_H!(Hdiag, nbr_blocks, stamp)
-        H = assemble_H_dense(Hdiag, nbr_blocks, p, n_active)
-        H = Symmetric(H)  # accumulate produces the full symmetric block structure
-
-        λ = 1.0e-3
-        n = p * n_active
-        rhs = randn(rng, n)
-        δ_dense = (Matrix(H) + λ * Matrix{Float64}(I, n, n)) \ rhs
-
-        Mblocks = zeros(p, p, n_active)
-        _build_precond!(Mblocks, Hdiag, λ)
-        δ = zeros(n)
-        _pcg!(δ, Hdiag, nbr_blocks, λ, rhs, Mblocks, n,
-            zeros(n), zeros(n), zeros(n), zeros(n), Int[], p, 0.0)
-        @test δ ≈ δ_dense rtol = 1e-8 atol = 1e-10
-    end
-
-    @testset "Cholesky cache matches dense damped solve" begin
+    @testset "matrix-free operator matches dense J" begin
         p = 3
         S2 = 9
         n_active = 6
         npix = 30
         pixels = zeros(Int32, S2, n_active)
-        for a in 1:n_active
-            for m in 1:S2
-                fi = mod(m + (a - 1) * 2 - 1, npix) + 1
-                pixels[m, a] = fi
-            end
-        end
-        stamp = StampDerivatives{Float64, Int32}(
-            randn(rng, p, S2, n_active), pixels, zeros(p, n_active), npix, p, S2)
-        _, nbr_blocks = _build_neighbors(pixels, S2, n_active, p, Float64)
-        Hdiag = zeros(p, p, n_active)
-        _accumulate_H!(Hdiag, nbr_blocks, stamp)
-        H1 = assemble_H_dense(Hdiag, nbr_blocks, p, n_active)
-
-        cache = _build_cholesky_cache(nbr_blocks, n_active, p)
-        live_all = trues(n_active)
-        _refill_cholesky!(cache, Hdiag, nbr_blocks, live_all)
-
-        n = p * n_active
-        rhs = randn(rng, n)
-        λ1 = 1.0e-3
-        δ1_dense = (H1 + λ1 * Matrix{Float64}(I, n, n)) \ rhs
-        δ1 = zeros(n)
-        _solve_cholesky!(δ1, cache, λ1, rhs)
-        @test δ1 ≈ δ1_dense rtol = 1e-8 atol = 1e-10
-
-        # A second linearization: new stamp values, refill in place, reuse F.
-        stamp2 = StampDerivatives{Float64, Int32}(
-            randn(rng, p, S2, n_active), pixels, zeros(p, n_active), npix, p, S2)
-        _accumulate_H!(Hdiag, nbr_blocks, stamp2)
-        H2 = assemble_H_dense(Hdiag, nbr_blocks, p, n_active)
-        _refill_cholesky!(cache, Hdiag, nbr_blocks, live_all)
-        λ2 = 5.0e-2
-        δ2_dense = (H2 + λ2 * Matrix{Float64}(I, n, n)) \ rhs
-        δ2 = zeros(n)
-        _solve_cholesky!(δ2, cache, λ2, rhs)
-        @test δ2 ≈ δ2_dense rtol = 1e-8 atol = 1e-10
-    end
-
-    @testset "_refill_cholesky! zeroes frozen-touching pairs" begin
-        p = 3
-        S2 = 9
-        n_active = 6
-        npix = 30
-        pixels = zeros(Int32, S2, n_active)
-        for a in 1:n_active
-            for m in 1:S2
-                fi = mod(m + (a - 1) * 2 - 1, npix) + 1
-                pixels[m, a] = fi
-            end
-        end
-        stamp = StampDerivatives{Float64, Int32}(
-            randn(rng, p, S2, n_active), pixels, zeros(p, n_active), npix, p, S2)
-        _, nbr_blocks = _build_neighbors(pixels, S2, n_active, p, Float64)
-        Hdiag = zeros(p, p, n_active)
-        _accumulate_H!(Hdiag, nbr_blocks, stamp)
-        @test length(nbr_blocks) > 0  # this fixture must actually have pairs
-
-        cache = _build_cholesky_cache(nbr_blocks, n_active, p)
-        live = trues(n_active)
-        live[3] = false  # freeze star 3 (1-based)
-        _refill_cholesky!(cache, Hdiag, nbr_blocks, live)
-
-        for t in 1:length(nbr_blocks)
-            a = nbr_blocks.pair_a[t] + 1
-            b = nbr_blocks.pair_b[t] + 1
-            frozen_pair = a == 3 || b == 3
-            for k in 1:p, l in 1:p
-                pos = cache.invord[cache.pair_pos[k, l, t]]
-                if frozen_pair
-                    @test cache.H.nzval[pos] == 0.0
-                else
-                    @test cache.H.nzval[pos] == nbr_blocks.B[k, l, t]
-                end
-            end
-        end
-    end
-
-    @testset "_pcg! masking keeps frozen block exactly zero" begin
-        p = 3
-        S2 = 9
-        n_active = 3
-        npix = 8 * n_active + 8
-        pixels = zeros(Int32, S2, n_active)
-        for a in 1:n_active
-            for m in 1:S2
-                fi = mod(m + (a - 1) * 8 - 1, npix) + 1
-                pixels[m, a] = fi
-            end
+        for a in 1:n_active, m in 1:S2
+            pixels[m, a] = mod(m + (a - 1) * 2 - 1, npix) + 1
         end
         stamp = StampDerivatives{Float64, Int32}(
             randn(rng, p, S2, n_active), pixels, zeros(p, n_active), npix, p, S2)
         equilibrate!(stamp)
-        _, nbr_blocks = _build_neighbors(pixels, S2, n_active, p, Float64)
-        @test length(nbr_blocks) > 0
-        Hdiag = zeros(p, p, n_active)
-        _accumulate_H!(Hdiag, nbr_blocks, stamp)
-
-        λ = 1.0e-3
+        J = dense_J(stamp)
         n = p * n_active
-        rhs = randn(rng, n)
-        rhs[(3 - 1) * p + 1:3 * p] .= 0.0  # star 3 frozen -> rhs slice is 0
 
-        Mblocks = zeros(p, p, n_active)
-        _build_precond!(Mblocks, Hdiag, λ)
+        live = trues(n_active)
+        op = _jacobian_operator(stamp, live, zeros(S2), npix, n)
+        v = randn(rng, n)
+        u = randn(rng, npix)
+        @test op * v ≈ J * v rtol = 1e-12
+        @test op' * u ≈ J' * u rtol = 1e-12
 
-        # Masked: frozen_list = [2] (0-based index of star 3).
-        δ_masked = zeros(n)
-        _pcg!(δ_masked, Hdiag, nbr_blocks, λ, rhs, Mblocks, n,
-            zeros(n), zeros(n), zeros(n), zeros(n), [2], p, 0.0)
-        @test all(iszero, view(δ_masked, (3 - 1) * p + 1:3 * p))
-
-        # Unmasked (frozen_list = []): if star 3 has any live neighbor with a
-        # nonzero pair block, its slice should NOT stay zero -- this is the
-        # negative control demonstrating the leakage the mask prevents.
-        δ_unmasked = zeros(n)
-        _pcg!(δ_unmasked, Hdiag, nbr_blocks, λ, rhs, Mblocks, n,
-            zeros(n), zeros(n), zeros(n), zeros(n), Int[], p, 0.0)
-        @test any(!iszero, view(δ_unmasked, (3 - 1) * p + 1:3 * p))
+        # `op` closes over `live`: freezing a star zeroes its columns in place.
+        live[3] = false
+        Jm = copy(J); Jm[:, (3 - 1) * p + 1:3 * p] .= 0
+        @test op * v ≈ Jm * v rtol = 1e-12
+        @test op' * u ≈ Jm' * u rtol = 1e-12
     end
 
-    @testset "_pcg! cg_tol stops early without sacrificing accuracy" begin
+    @testset "LSQR/LSMR step matches dense damped normal-equation solve" begin
         p = 3
         S2 = 9
         n_active = 6
         npix = 8 * n_active + 8
         pixels = zeros(Int32, S2, n_active)
-        for a in 1:n_active
-            for m in 1:S2
-                fi = mod(m + (a - 1) * 8 - 1, npix) + 1
-                pixels[m, a] = fi
-            end
+        # Light overlap (1 shared pixel between adjacent stars) so JᵀJ is
+        # well-conditioned and the Krylov solves converge tightly.
+        for a in 1:n_active, m in 1:S2
+            pixels[m, a] = mod(m + (a - 1) * 8 - 1, npix) + 1
         end
         stamp = StampDerivatives{Float64, Int32}(
             randn(rng, p, S2, n_active), pixels, zeros(p, n_active), npix, p, S2)
         equilibrate!(stamp)
-        _, nbr_blocks = _build_neighbors(pixels, S2, n_active, p, Float64)
-        Hdiag = zeros(p, p, n_active)
-        _accumulate_H!(Hdiag, nbr_blocks, stamp)
-
-        λ = 1.0e-3
+        J = dense_J(stamp)
         n = p * n_active
-        rhs = randn(rng, n)
-        δ_dense = (Matrix(assemble_H_dense(Hdiag, nbr_blocks, p, n_active)) +
-            λ * Matrix{Float64}(I, n, n)) \ rhs
 
-        Mblocks = zeros(p, p, n_active)
-        _build_precond!(Mblocks, Hdiag, λ)
+        μ = 1.0e-3                       # Marquardt damping (the outer-loop `λ`)
+        b = randn(rng, npix)             # weighted residual RHS
+        δ_dense = (J' * J + μ * Matrix{Float64}(I, n, n)) \ (J' * b)
 
-        # A loose cg_tol with a generous iteration cap should still recover
-        # the accurate dense solution -- the residual check, not the cap, is
-        # what's doing the stopping.
-        δ = zeros(n)
-        _pcg!(δ, Hdiag, nbr_blocks, λ, rhs, Mblocks, n,
-            zeros(n), zeros(n), zeros(n), zeros(n), Int[], p, 1e-10)
-        @test δ ≈ δ_dense rtol = 1e-6 atol = 1e-9
+        for (wsT, solve!) in ((LsqrWorkspace, lsqr!), (LsmrWorkspace, lsmr!))
+            live = trues(n_active)
+            op = _jacobian_operator(stamp, live, zeros(S2), npix, n)
+            ws = wsT(npix, n, Vector{Float64})
+            solve!(ws, op, b; λ = sqrt(μ), itmax = 200, atol = 1e-12, btol = 1e-12)
+            @test solution(ws) ≈ δ_dense rtol = 1e-7 atol = 1e-9
 
-        # A cap far below what a fixed-iteration solve would need still
-        # gives an accurate answer once cg_tol is satisfied, as long as the
-        # cap isn't reached first.
-        δ_capped = zeros(n)
-        _pcg!(δ_capped, Hdiag, nbr_blocks, λ, rhs, Mblocks, 2 * n,
-            zeros(n), zeros(n), zeros(n), zeros(n), Int[], p, 1e-10)
-        @test δ_capped ≈ δ_dense rtol = 1e-6 atol = 1e-9
-
-        # A tiny cap below what's needed to reach cg_tol leaves a real,
-        # detectable residual -- confirms the cap still binds when it must.
-        δ_undersolved = zeros(n)
-        _pcg!(δ_undersolved, Hdiag, nbr_blocks, λ, rhs, Mblocks, 1,
-            zeros(n), zeros(n), zeros(n), zeros(n), Int[], p, 1e-10)
-        @test !isapprox(δ_undersolved, δ_dense; rtol = 1e-6, atol = 1e-9)
+            # A frozen star: its slice of the step stays exactly 0 (its columns
+            # of `op` are structurally zero and the solver starts from 0).
+            live[2] = false
+            solve!(ws, op, randn(rng, npix); λ = sqrt(μ), itmax = 200, atol = 1e-12, btol = 1e-12)
+            @test all(iszero, view(solution(ws), (2 - 1) * p + 1:2 * p))
+        end
     end
 
-    @testset "_compact_neighbors preserves indices and structure" begin
-        p = 3
-        S2 = 9
-        n_active = 8
-        npix = 40
-        pixels = zeros(Int32, S2, n_active)
-        for a in 1:n_active
-            for m in 1:S2
-                fi = mod(m + (a - 1) * 2 - 1, npix) + 1
-                pixels[m, a] = fi
-            end
-        end
-        _, nbr_blocks = _build_neighbors(pixels, S2, n_active, p, Float64)
-        @test length(nbr_blocks) > 0
-
-        live = trues(n_active)
-        live[2] = false
-        live[5] = false
-        compacted = _compact_neighbors(nbr_blocks, live, p)
-
-        expected_keep = count(1:length(nbr_blocks)) do t
-            live[nbr_blocks.pair_a[t] + 1] && live[nbr_blocks.pair_b[t] + 1]
-        end
-        @test length(compacted) == expected_keep
-        @test all(live[compacted.pair_a[t] + 1] && live[compacted.pair_b[t] + 1] for t in 1:length(compacted))
-        # Star indices are not renumbered: every surviving pair's (a, b) must
-        # appear, unchanged, among the original pairs.
-        orig_pairs = Set((nbr_blocks.pair_a[t], nbr_blocks.pair_b[t]) for t in 1:length(nbr_blocks))
-        @test all((compacted.pair_a[t], compacted.pair_b[t]) in orig_pairs for t in 1:length(compacted))
-        @test compacted.offsets[end] - 1 == length(compacted.shared_ma)
-
-        # Freezing everyone matches _build_neighbors's empty-pair convention.
-        compacted_empty = _compact_neighbors(nbr_blocks, falses(n_active), p)
-        @test length(compacted_empty) == 0
-        @test isempty(compacted_empty.offsets)
-    end
 
     @testset "isolated star matches fit_all_stars" begin
         circ_psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=2.0, flux=1.0, bkg=0.0)
@@ -462,20 +245,20 @@ end
             @test r_sim.y ≈ r_seq.y atol = 1e-10
             @test r_sim.x ≈ r_seq.x atol = 1e-10
             @test r_sim.flux ≈ sources.flux rtol = 1e-10
-            # The cholesky oracle agrees with the default CG solver.
-            r_chol = fit_all_stars_simultaneous(img_sub, psf, cat, 5;
-                fixed, solver = :cholesky, max_iter = 40, x_tol=1e-8)
-            @test r_chol.flux ≈ r_sim.flux rtol = 1e-10
-            @test r_chol.y ≈ r_sim.y atol = 1e-10
+            # LSMR agrees with the default LSQR solver.
+            r_lsmr = fit_all_stars_simultaneous(img_sub, psf, cat, 5;
+                fixed, solver = :lsmr, max_iter = 40, inner_iterations = 10, x_tol = 1e-8)
+            @test r_lsmr.flux ≈ r_sim.flux rtol = 1e-9
+            @test r_lsmr.y ≈ r_sim.y atol = 1e-9
         end
     end
 
-    @testset "Cholesky/CG agree in a crowded fit that forces mid-fit freezing" begin
+    @testset "LSQR/LSMR agree in a crowded fit that forces mid-fit freezing" begin
         # Unlike the isolated-star fixture above, this one is crowded enough
-        # that most stars freeze well before max_iter -- it exercises _pcg!'s
-        # Ap masking + NeighborBlocks compaction (:cg) against
-        # _refill_cholesky!'s zero-in-place masking (:cholesky) together,
-        # not just the unfrozen path.
+        # that most stars freeze well before max_iter -- it exercises the
+        # matrix-free operator's structural projection of frozen stars, and
+        # cross-checks the two Krylov solvers against each other on a
+        # degenerate, heavily-blended field.
         rng7 = StableRNG(11)
         psf = CircularGaussianPSF(y=0.0, x=0.0, fwhm=2.0, flux=1.0, bkg=0.0)
         image, sources = simulate_image((150, 150), psf, 200;
@@ -486,27 +269,21 @@ end
         cat = (; y=sources.y, x=sources.x, flux=copy(sources.flux))
         fixed = (; fwhm=2.0, bkg=0.0)
         # Disable f_tol, tight `x_tol` (see the isolated-star fixture above for why):
-        # the CG/Cholesky agreement tolerances are tighter than the
-        # default, since a looser `x_tol`
-        # lets the two solvers freeze the same star at slightly different
-        # iterations in this degenerate, heavily-blended fixture.
-        r_cg = fit_all_stars_simultaneous(img_sub, psf, cat, 5; fixed, max_iter=25, x_tol=1e-8, f_tol=0)
-        r_chol = fit_all_stars_simultaneous(img_sub, psf, cat, 5; fixed, max_iter=25, solver=:cholesky, x_tol=1e-8, f_tol=0)
+        # a looser `x_tol` lets the two solvers freeze the same star at
+        # slightly different iterations in this degenerate fixture.
+        r_lsqr = fit_all_stars_simultaneous(img_sub, psf, cat, 5; fixed, max_iter=25, inner_iterations=10, x_tol=1e-8, f_tol=0)
+        r_lsmr = fit_all_stars_simultaneous(img_sub, psf, cat, 5; fixed, max_iter=25, inner_iterations=10, solver=:lsmr, x_tol=1e-8, f_tol=0)
         # This fixture must actually exercise freezing before the fit ends.
-        @test sum(r_cg.n_iter[r_cg.valid] .< r_cg.n_passes) > 0.5 * sum(r_cg.valid)
-        g = r_cg.valid .& r_chol.valid
+        @test sum(r_lsqr.n_iter[r_lsqr.valid] .< r_lsqr.n_passes) > 0.5 * sum(r_lsqr.valid)
+        g = r_lsqr.valid .& r_lsmr.valid
         @test sum(g) > 0.8 * length(g)
-        @test r_cg.flux[g] ≈ r_chol.flux[g] rtol = 1e-2
-        # Positions are compared per-star rather than with `≈ atol=...`, which
-        # for arrays compares 2-norms and so fails as soon as *any* single star
-        # in this deliberately degenerate fixture converges one iteration apart
-        # between the two solvers.  The bulk must
-        # agree far below the centroid noise floor, which is what a genuine
-        # disagreement between `_pcg!`'s Ap masking / `NeighborBlocks`
-        # compaction and `_refill_cholesky!`'s zero-in-place masking would
-        # break.
-        dy = abs.(r_cg.y[g] .- r_chol.y[g])
-        dx = abs.(r_cg.x[g] .- r_chol.x[g])
+        @test r_lsqr.flux[g] ≈ r_lsmr.flux[g] rtol = 1e-2
+        # Positions are compared per-star rather than with `≈ atol=...` (which
+        # for arrays compares 2-norms and fails as soon as *any* single star
+        # converges one iteration apart between the two solvers). The bulk
+        # must agree far below the centroid noise floor.
+        dy = abs.(r_lsqr.y[g] .- r_lsmr.y[g])
+        dx = abs.(r_lsqr.x[g] .- r_lsmr.x[g])
         @test median(dy) < 1e-5
         @test median(dx) < 1e-5
         @test quantile(dy, 0.9) < 1e-3
