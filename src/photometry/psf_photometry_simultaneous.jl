@@ -43,32 +43,45 @@ struct StampDerivatives{T, I <: Integer}
 end
 
 """
+    apply_JT!(z, Jm, u, live, sbuf)
     apply_JT!(z, Jm, u, live)
 
 Compute `z = Jm' * u` where `u` is the *weighted* residual
 `sqrt.(w) .* (model .- data)` and `z` is the equilibrated gradient
-`D⁻¹ J' r` (i.e. `b_scaled`).  `z` is filled in place.  Non-`live` (frozen)
-stars are skipped, leaving their `z` slice at `0`.
+`D⁻¹ J' r` (i.e. `b_scaled`).  `z` is filled in place.  `sbuf` is a
+length-`S²` scratch vector.  Non-`live` (frozen) stars are skipped, leaving
+their `z` slice at `0`.  The convenience form allocates `sbuf`.
 """
-function apply_JT!(z::AbstractVector, Jm::StampDerivatives, u::AbstractVector, live)
+function apply_JT!(z::AbstractVector, Jm::StampDerivatives, u::AbstractVector, live, sbuf::AbstractVector)
     p = Jm.p
     S2 = Jm.S2
     n_active = size(Jm.values, 3)
+    V = Jm.values
     fill!(z, zero(eltype(z)))
     @inbounds for a in 0:(n_active - 1)
         live[a + 1] || continue
         base = a * p
-        for k in 1:p
+        # Gather this star's residual pixels once into `sbuf`, then a dense,
+        # non-aliased `p × S²` reduction that vectorizes.  A masked entry
+        # (`fi == 0`) gathers the clamped `u[1]`, but pairs with
+        # `Jm.values == 0`, so it contributes exactly `0`.
+        for m in 1:S2
+            fi = Jm.pixels[m, a + 1]
+            sbuf[m] = u[ifelse(fi == zero(fi), one(fi), fi)]
+        end
+        LV.@turbo for k in 1:p
             acc = zero(eltype(z))
             for m in 1:S2
-                fi = Jm.pixels[m, a + 1]
-                fi != 0 || continue
-                acc += Jm.values[k, m, a + 1] * u[fi]
+                acc += V[k, m, a + 1] * sbuf[m]
             end
             z[base + k] = acc
         end
     end
     return z
+end
+
+function apply_JT!(z::AbstractVector, Jm::StampDerivatives, u::AbstractVector, live)
+    return apply_JT!(z, Jm, u, live, Vector{eltype(Jm.values)}(undef, Jm.S2))
 end
 
 """
@@ -83,19 +96,32 @@ function apply_J!(y::AbstractVector, Jm::StampDerivatives, v::AbstractVector, li
     p = Jm.p
     S2 = Jm.S2
     n_active = size(Jm.values, 3)
+    V = Jm.values
     fill!(y, zero(eltype(y)))
     @inbounds for a in 0:(n_active - 1)
         live[a + 1] || continue
         base = a * p
         # Dense, non-aliased per-star product into `sbuf` (no pixel access, so
         # it vectorizes); a masked stamp entry has `Jm.values == 0`, so `sbuf`
-        # is `0` there and the plain masked scatter below can skip it.
-        LV.@turbo for m in 1:S2
-            acc = zero(eltype(sbuf))
-            for k in 1:p
-                acc += Jm.values[k, m, a + 1] * v[base + k]
+        # is `0` there and the plain masked scatter below can skip it.  The
+        # `p == 3` branch (the common y/x/flux-all-free case) hoists the three
+        # RHS components to scalars, which the generic `v[base + k]` load inside
+        # the reduction is not.
+        if p == 3
+            v1 = v[base + 1]
+            v2 = v[base + 2]
+            v3 = v[base + 3]
+            LV.@turbo for m in 1:S2
+                sbuf[m] = v1 * V[1, m, a + 1] + v2 * V[2, m, a + 1] + v3 * V[3, m, a + 1]
             end
-            sbuf[m] = acc
+        else
+            LV.@turbo for m in 1:S2
+                acc = zero(eltype(sbuf))
+                for k in 1:p
+                    acc += V[k, m, a + 1] * v[base + k]
+                end
+                sbuf[m] = acc
+            end
         end
         for m in 1:S2
             fi = Jm.pixels[m, a + 1]
@@ -116,18 +142,36 @@ end
 Wrap the weighted, column-equilibrated Jacobian as a matrix-free
 `npix × n` `LinearOperator`: `op * v` calls [`apply_J!`](@ref), `op' * u`
 calls [`apply_JT!`](@ref).  The closures capture `stamp` (whose `values` are
-refreshed in place each outer iteration) and `live` (mutated as stars
-freeze), so a single operator built once is valid for the whole fit.
+refreshed in place each outer iteration), `live` (mutated as stars freeze),
+and `sbuf` (a length-`S²` scratch shared by the forward and adjoint products,
+which the linear solver never runs concurrently), so a single operator built
+once is valid for the whole fit.
 """
 function _jacobian_operator(stamp::StampDerivatives{FT}, live, sbuf, npix::Int, n::Int) where {FT}
     fwd = (res, v) -> apply_J!(res, stamp, v, live, sbuf)
-    adj = (res, u) -> apply_JT!(res, stamp, u, live)
+    adj = (res, u) -> apply_JT!(res, stamp, u, live, sbuf)
     return LinearOperators.LinearOperator(FT, npix, n, false, false, fwd, adj, adj)
 end
 
 # ==============================================================================
 # Fixed stamp footprint
 # ==============================================================================
+
+# Morton (Z-order) key of a 2D integer coordinate: interleave the bits of `y`
+# and `x` so that sorting by the key visits points along a locality-preserving
+# space-filling curve.  Coordinates are image indices (>= 1, well under 2^32).
+function _morton2d(y::Integer, x::Integer)
+    spread(v::UInt64) = begin
+        v &= 0x00000000ffffffff
+        v = (v | (v << 16)) & 0x0000ffff0000ffff
+        v = (v | (v << 8))  & 0x00ff00ff00ff00ff
+        v = (v | (v << 4))  & 0x0f0f0f0f0f0f0f0f
+        v = (v | (v << 2))  & 0x3333333333333333
+        v = (v | (v << 1))  & 0x5555555555555555
+        v
+    end
+    return spread(UInt64(y)) | (spread(UInt64(x)) << 1)
+end
 
 function _build_stamps!(image, params, row_y, row_x, row_flux, fit_rad, w, FT)
     ny, nx = size(image)
@@ -180,6 +224,17 @@ function _build_stamps!(image, params, row_y, row_x, row_flux, fit_rad, w, FT)
             push!(failure_msgs, "star $i: excluded before the solve (no usable pixels or non-finite initial parameters)")
         end
     end
+
+    # Spatially cluster the active stars (Morton / Z-order on the integer
+    # anchor) so catalog-order-scattered neighbors become adjacent in every
+    # per-star loop.  The scatter/gather into the image-shaped
+    # `model_img`/`wt_resid`/step vectors is then cache-local -- measured
+    # ~1.4x on `apply_J!`/`apply_JT!` at whole-frame star counts.  Everything
+    # downstream keys on the 1:n_active position via `active[j]` -> catalog
+    # index, so the order is invisible to the result (up to the
+    # already-order-dependent floating-point rounding of the overlapping-pixel
+    # scatter-add).
+    active = active[sortperm([_morton2d(anchor_y[i], anchor_x[i]) for i in active])]
 
     n_active = length(active)
     pixels_act = zeros(Int32, S2, n_active)
@@ -1009,7 +1064,7 @@ function fit_all_stars_simultaneous(
             grad_col, dy_off, dx_off, anchor_y, anchor_x, row_y, row_x, row_flux, live, fill_scratch)
         cost = _residual_cost!(wt_resid, model_img, data_work, w, union_pix)
         @. mrhs = -wt_resid
-        apply_JT!(b_scaled, stamp, wt_resid, live)
+        apply_JT!(b_scaled, stamp, wt_resid, live, sbuf)
 
         # g_converged (levenberg_marquardt.jl:535-540), reduced-cost denominator.
         # Global fallback: frozen stars' b_scaled is exactly 0 (apply_JT! skips
