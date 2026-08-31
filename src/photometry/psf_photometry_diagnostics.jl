@@ -183,10 +183,10 @@ function _star_diagnostics!(
             if do_spread
                 g_i = (g_model[I] - bkg) * inv_flux
                 Sp += wP * p_i          # sum w * phi * p
-                Sq += wp * g_i * p_i     # sum w * G   * p
-                Sp0 += wP * Pp           # sum w * phi * phi
-                Sq0 += wp * Pp * g_i     # sum w * phi * G
-                SqG += wp * g_i * g_i    # sum w * G   * G
+                Sq += wp * g_i * p_i    # sum w * G   * p
+                Sp0 += wP * Pp          # sum w * phi * phi
+                Sq0 += wp * Pp * g_i    # sum w * phi * G
+                SqG += wp * g_i * g_i   # sum w * G   * G
             end
         end
     end

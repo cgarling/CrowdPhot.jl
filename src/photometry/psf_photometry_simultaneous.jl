@@ -173,6 +173,72 @@ function _morton2d(y::Integer, x::Integer)
     return spread(UInt64(y)) | (spread(UInt64(x)) << 1)
 end
 
+# Ring-ordered (Chebyshev-distance) integer offsets for a ±R box.  Entries
+# `1:(2r+1)^2` are exactly the ±r sub-box for every `r <= R`, so a per-star
+# prefix count selects a centered box of any half-width from one shared table
+# (see `model_S2` in `fit_all_stars_simultaneous`).  Order within a ring is
+# irrelevant -- the model render is a scatter-add.
+function _ring_offsets(R::Int)
+    dy = Int[]
+    dx = Int[]
+    for r in 0:R, a in -r:r, b in -r:r
+        max(abs(a), abs(b)) == r || continue
+        push!(dy, a)
+        push!(dx, b)
+    end
+    return dy, dx
+end
+
+"""
+    _model_radii(psf, model_rad, nsigma, R_fit, R_cap, w, flux_init) -> Vector{Int}
+
+Per-source model-stamp half-width for [`fit_all_stars_simultaneous`](@ref).  The
+model stamp is the box each star's PSF is rendered/subtracted over (distinct from
+the `fit_rad` Jacobian/cost box); making it per-source keeps the faint bulk cheap
+while still subtracting bright stars' wings far enough out that neighbors' cores
+are clean (DAOPHOT's FITRAD vs PSFRAD split).
+
+- A scalar `model_rad` returns one value (rounded up, clamped to `[R_fit, R_cap]`)
+  for every source.
+- `model_rad === :auto`: the half-width is the smallest integer `r` at which the
+  source's annular-mean wing surface brightness `flux_init * <SB_PSF(r)>` drops
+  below `nsigma * sigma_bg`, where `<SB_PSF>` comes from the PSF's own curve of
+  growth and `sigma_bg` is the background noise estimated from the inverse weight
+  vector `w`.  Clamped to `[R_fit, R_cap]`.
+"""
+function _model_radii(psf, model_rad, nsigma, R_fit::Int, R_cap::Int,
+                      w::AbstractVector, flux_init::AbstractVector{FT}) where {FT}
+    n = length(flux_init)
+    model_rad isa Real &&
+        return fill(clamp(round(Int, round(model_rad, RoundUp)), R_fit, R_cap), n)
+    # Quick, conservative background noise estimate from the inverse weight vector.
+    # High w (inverse variance) = low noise so sigma_bg estimate will be low,
+    # leading to a conservatively large model_rad estimate.
+    w_val = quantile(filter(isfinite, w), 0.84)
+    sigma_bg = w_val > 0 ? FT(sqrt(1 / w_val)) : one(FT)
+    unit = ConstructionBase.setproperties(psf,
+        (; y = zero(FT), x = zero(FT), flux = one(FT), bkg = zero(FT)))
+    cog = curve_of_growth(unit, FT.(1:R_cap))
+    ee = cog.flux ./ cog.flux[end]
+    sb = Vector{FT}(undef, R_cap)
+    prev = zero(FT)
+    for r in 1:R_cap
+        sb[r] = max((ee[r] - prev) / (FT(pi) * (r^2 - (r - 1)^2)), zero(FT))
+        prev = ee[r]
+    end
+    thr = FT(nsigma) * sigma_bg
+    out = Vector{Int}(undef, n)
+    for j in 1:n
+        F = max(flux_init[j], zero(FT))
+        r = R_fit
+        while r < R_cap && F * sb[r] > thr
+            r += 1
+        end
+        out[j] = r
+    end
+    return out
+end
+
 function _build_stamps!(image, params, row_y, row_x, row_flux, fit_rad, w, FT)
     ny, nx = size(image)
     n_stars = size(params, 2)
@@ -272,13 +338,15 @@ end
 
 function _fill_stamps!(
         stamp::StampDerivatives{FT}, model_template, free_names_val, fixed,
-        θ, w, model_img, grad_col, dy_off, dx_off, anchor_y, anchor_x,
+        θ, w, grad_col, dy_off, dx_off, anchor_y, anchor_x,
         row_y, row_x, row_flux, live, _fill_scratch_buf
     ) where {FT}
     p = stamp.p
     S2 = stamp.S2
     n_active = size(stamp.values, 3)
-    fill!(model_img, zero(FT))
+    # This fills only the `fit_rad` Jacobian columns; `model_img` (which may
+    # extend past the fit box, per-source `model_rad`) is built separately by
+    # `_render_model!`.
     # No blanket `fill!(stamp.colnorm, ...)`: a frozen star's column must stay
     # bitwise untouched between freeze and the end of the fit (reset only the
     # live columns being recomputed below), or the eps(FT) floor two lines
@@ -299,9 +367,8 @@ function _fill_stamps!(
             fi != 0 || continue
             gy = ay + dy_off[mi]
             gx = ax + dx_off[mi]
-            f, g = evaluate_fg(m, gy, gx)
+            _, g = evaluate_fg(m, gy, gx)
             g1, g2, g3 = g[row_y], g[row_x], g[row_flux]
-            model_img[fi] += f
             sw = sqrt(w[fi])
             for k in 1:p
                 gc = grad_col[k]
@@ -366,7 +433,7 @@ proceeds exactly as the generic method's.
 """
 function _fill_stamps!(
         stamp::StampDerivatives{FT}, model_template::GriddedPSFModel{T2, M}, free_names_val, fixed,
-        θ, w, model_img, grad_col, dy_off, dx_off, anchor_y, anchor_x,
+        θ, w, grad_col, dy_off, dx_off, anchor_y, anchor_x,
         row_y, row_x, row_flux, live,
         fill_scratch_buf::Tuple{NTuple{3, NTuple{4, Matrix{FT}}}, NTuple{3, Vector{FT}}}
     ) where {FT, T2, M <: ImagePSF{T2}}
@@ -375,7 +442,7 @@ function _fill_stamps!(
     S = round(Int, sqrt(S2))
     R = maximum(dy_off)
     n_active = size(stamp.values, 3)
-    fill!(model_img, zero(FT))
+    # Jacobian columns only; `model_img` is built by `_render_model!`.
     (p_val, p_dpdv, p_dpdu), (dsdY_buf, dsdX_buf, s_buf) = fill_scratch_buf
     pv1, pv2, pv3, pv4 = p_val
     pdv1, pdv2, pdv3, pdv4 = p_dpdv
@@ -443,11 +510,9 @@ function _fill_stamps!(
             fi = stamp.pixels[mi, a + 1]
             fi != 0 || continue
             s_val = s_buf[mi]
-            f = muladd(flux, s_val, bkg)
             gy = flux * dsdY_buf[mi]
             gx = flux * dsdX_buf[mi]
             gflux = s_val
-            model_img[fi] += f
             sw = sqrt(w[fi])
             for k in 1:p
                 gc = grad_col[k]
@@ -476,11 +541,10 @@ end
 
 function _render_model!(
         model_img::AbstractVector{FT}, model_template, free_names_val, fixed,
-        θ, p, dy_off, dx_off, anchor_y, anchor_x, pixels, live, render_buf::AbstractVector{FT},
-        _corner_scratch
+        θ, p, mdy_off, mdx_off, model_S2, _model_R, anchor_y, anchor_x, ny::Int, nx::Int,
+        live, render_buf::AbstractVector{FT}, _corner_scratch
     ) where {FT}
     fill!(model_img, zero(FT))
-    S2 = length(dy_off)
     n_active = length(anchor_y)
     @inbounds for a in 0:(n_active - 1)
         live[a + 1] || continue
@@ -488,22 +552,22 @@ function _render_model!(
         m = PSF.model_from_vector(model_template, free_names_val, view(θ, base + 1:base + p), fixed)
         ay = anchor_y[a + 1]
         ax = anchor_x[a + 1]
-        # `evaluate` is declared `LV.can_turbo`-safe for every PSF model
-        # (PSF.jl), so this per-pixel render vectorizes -- but an `LV.@turbo`
-        # loop cannot early-exit (`fi != 0 || continue`, for off-image/masked
-        # stamp positions) and cannot safely scatter into the shared
-        # `model_img` (different stars' stamps can alias the same pixel).
-        # Render every offset (masked or not -- wasted but harmless, since a
-        # masked value is simply never scattered below) into a dense,
-        # non-aliased per-star scratch buffer, then mask-and-accumulate as a
-        # separate, cheap plain loop.
-        LV.@turbo for mi in 1:S2
-            render_buf[mi] = evaluate(m, ay + dy_off[mi], ax + dx_off[mi])
+        # Render this star's model over its per-source `model_rad` box.  The
+        # ring-ordered offset table's first `model_S2[a+1]` entries are exactly
+        # the centered ±`model_R[a+1]` sub-box.  `evaluate` is `LV.can_turbo`-safe
+        # for every PSF model (PSF.jl), so the render vectorizes; the masked
+        # scatter into the shared `model_img` (stamps of different stars alias
+        # the same pixel) is a separate cheap plain loop.  Off-image offsets are
+        # evaluated (harmless) but not scattered.
+        ms2 = model_S2[a + 1]
+        LV.@turbo for mi in 1:ms2
+            render_buf[mi] = evaluate(m, ay + mdy_off[mi], ax + mdx_off[mi])
         end
-        for mi in 1:S2
-            fi = pixels[mi, a + 1]
-            fi != 0 || continue
-            model_img[fi] += render_buf[mi]
+        for mi in 1:ms2
+            gy = ay + mdy_off[mi]
+            gx = ax + mdx_off[mi]
+            (1 <= gy <= ny) & (1 <= gx <= nx) || continue
+            model_img[gy + (gx - 1) * ny] += render_buf[mi]
         end
     end
     return model_img
@@ -537,19 +601,18 @@ buffers, followed by a weighted-sum reduction into `render_buf`.
 """
 function _render_model!(
         model_img::AbstractVector{FT}, model_template::GriddedPSFModel{T2, M}, free_names_val, fixed,
-        θ, p, dy_off, dx_off, anchor_y, anchor_x, pixels, live, render_buf::AbstractVector{FT},
+        θ, p, _mdy_off, _mdx_off, _model_S2, model_R, anchor_y, anchor_x, ny::Int, nx::Int,
+        live, render_buf::AbstractVector{FT},
         corner_scratch::NTuple{3, NTuple{4, Matrix{FT}}}
     ) where {FT, T2, M <: ImagePSF{T2}}
     fill!(model_img, zero(FT))
-    S2 = length(dy_off)
-    S = round(Int, sqrt(S2))
-    R = maximum(dy_off)
+    Smax = size(corner_scratch[1][1], 1)
     n_active = length(anchor_y)
     p_val, p_dpdv, p_dpdu = corner_scratch
     pv1, pv2, pv3, pv4 = p_val
     pdv1, pdv2, pdv3, pdv4 = p_dpdv
     pdu1, pdu2, pdu3, pdu4 = p_dpdu
-    render_mat = reshape(render_buf, S, S)
+    render_mat = reshape(render_buf, Smax, Smax)
     @inbounds for a in 0:(n_active - 1)
         live[a + 1] || continue
         base = a * p
@@ -557,6 +620,8 @@ function _render_model!(
         Y, X, flux, bkg = FT(m.y), FT(m.x), FT(m.flux), FT(m.bkg)
         ay = anchor_y[a + 1]
         ax = anchor_x[a + 1]
+        R = model_R[a + 1]                # per-source model_rad half-width
+        S = 2R + 1
         yr = (ay - R):(ay + R)
         xr = (ax - R):(ax + R)
 
@@ -594,10 +659,11 @@ function _render_model!(
         LV.@turbo for jj in 1:S, ii in 1:S
             render_mat[ii, jj] = muladd(flux, w1 * pv1[ii, jj] + w2 * pv2[ii, jj] + w3 * pv3[ii, jj] + w4 * pv4[ii, jj], bkg)
         end
-        for mi in 1:S2
-            fi = pixels[mi, a + 1]
-            fi != 0 || continue
-            model_img[fi] += render_buf[mi]
+        for jj in 1:S, ii in 1:S
+            gy = ay - R + ii - 1
+            gx = ax - R + jj - 1
+            (1 <= gy <= ny) & (1 <= gx <= nx) || continue
+            model_img[gy + (gx - 1) * ny] += render_mat[ii, jj]
         end
     end
     return model_img
@@ -652,32 +718,34 @@ end
 
 """
     _freeze_star!(θ, data_work, model_template, free_names_val, fixed, p,
-                  dy_off, dx_off, anchor_y, anchor_x, pixels, j)
+                  mdy_off, mdx_off, model_S2, anchor_y, anchor_x, ny, nx, j)
 
 Permanently remove star `j`'s current model contribution from `data_work` by
-evaluating it once over its own stamp footprint (`O(S^2)`, not a masked call
-into [`_render_model!`](@ref), which would redo `O(n_active * S^2)` work to
-extract one star) and subtracting the result. Called exactly once, at the
-outer iteration a star freezes: from then on the star is skipped by every
+evaluating it once over its own `model_rad` box (`O(model_S2)`, not a masked
+call into [`_render_model!`](@ref), which would redo `O(n_active * model_S2)`
+work to extract one star) and subtracting the result. Called exactly once, at
+the outer iteration a star freezes: from then on the star is skipped by every
 per-star loop (`_fill_stamps!`, `apply_JT!`, `_render_model!`), and its light
 is already accounted for in `data_work`, so it never needs to be rendered
-again. `θ` for a frozen star simply stops changing thereafter, so the final
-diagnostics render (against the untouched original `data`, over every star
-unconditionally) reproduces exactly what was subtracted here.
+again. The subtraction spans the full `model_rad` box (not the `fit_rad`
+stamp), so a frozen bright star's wings stop contaminating still-live
+neighbors' fits. `θ` for a frozen star simply stops changing thereafter, so
+the final diagnostics render (against the untouched original `data`, over
+every star unconditionally) reproduces exactly what was subtracted here.
 """
 function _freeze_star!(
         θ, data_work, model_template, free_names_val, fixed, p,
-        dy_off, dx_off, anchor_y, anchor_x, pixels, j
+        mdy_off, mdx_off, model_S2, anchor_y, anchor_x, ny::Int, nx::Int, j
     )
-    S2 = length(dy_off)
     base = (j - 1) * p
     m = PSF.model_from_vector(model_template, free_names_val, view(θ, base + 1:base + p), fixed)
     ay = anchor_y[j]
     ax = anchor_x[j]
-    @inbounds for mi in 1:S2
-        fi = pixels[mi, j]
-        fi != 0 || continue
-        data_work[fi] -= evaluate(m, ay + dy_off[mi], ax + dx_off[mi])
+    @inbounds for mi in 1:model_S2[j]
+        gy = ay + mdy_off[mi]
+        gx = ax + mdx_off[mi]
+        (1 <= gy <= ny) & (1 <= gx <= nx) || continue
+        data_work[gy + (gx - 1) * ny] -= evaluate(m, gy, gx)
     end
     return data_work
 end
@@ -790,10 +858,12 @@ error.
 - Only `(y, x, flux)` may be free per star.  Fix `bkg` (subtract the
   background first and pass `fixed = (; bkg = zero(eltype(image)))`) and fix
   all shape parameters.  Any other free parameter raises an `ArgumentError`.
-- The solver uses a fixed-size stamp of half-width `fit_rad` rounded up
-  to the nearest integer.
-  Diagnostics use the identical box, so `qfit`, `chisq`, and `crowding` are computed
-  over the same pixels in both arms.
+- `fit_rad` (rounded up to the nearest integer) is the half-width of the
+  Jacobian/cost stamp and the diagnostics box, so `qfit`, `chisq`, and
+  `crowding` are computed over the same pixels in both arms.  Each star's
+  model is *rendered and subtracted* over a separate, generally larger
+  `model_rad` box (see below) -- this only affects how far a star's light is
+  removed from its neighbors, not which pixels constrain its parameters.
 - No robust reweighting: `reweight`, `scale_estimator`, and `weight_reset_tol`
   are not accepted.
 - Errors invert the per-star diagonal block of `H = JᵀJ`; like `fit_all_stars`
@@ -811,6 +881,27 @@ error.
 - `linear_tol::Real = 1.0e-6`: `atol`/`btol` for the inner linear solve; lets an
   isolated or lightly-blended star's subsystem exit early instead of always
   burning the full cap.
+- `model_rad::Union{Symbol, Real} = :auto`: half-width of the box each star's
+  model is rendered/subtracted over -- distinct from the `fit_rad` Jacobian
+  box (DAOPHOT's PSF radius vs fitting radius).  `fit_rad` can safely be kept
+  small (~1-1.5 FWHM: it only sets which pixels constrain a star, and fitting
+  a fixed normalized PSF over a truncated core is unbiased, just slightly
+  noisier) as long as `model_rad` reaches out to where the PSF is below the
+  noise, so a bright star's wings are subtracted from its neighbors' cores.
+  With a single radius (`model_rad == fit_rad`) a truncated stamp leaves
+  bright wings unmodeled and neighboring free fluxes absorb them, biasing
+  bright stars low in crowded fields.
+
+  `:auto` (default) sets `model_rad` per source: the smallest radius at which
+  that source's wing surface brightness (from the PSF curve of growth) drops
+  below `model_rad_nsigma` times the background noise (from `inv_var`), so
+  faint sources cost little and bright ones reach far.  Requires `inv_var`.
+  A scalar applies one value to every source (DAOPHOT-style; for testing and
+  validation).  Both forms are clamped to `[ceil(fit_rad), ceil(model_rad_max)]`.
+- `model_rad_max::Real = 10 * fit_rad`: hard cap on the auto `model_rad` (and
+  the size of the internal render buffers).
+- `model_rad_nsigma::Real = 1.0`: the auto threshold, in units of the
+  background per-pixel noise.  Larger values give smaller `model_rad`.
 
   !!! note
       Raising `inner_iterations` or tightening `linear_tol` to make the solve
@@ -867,6 +958,9 @@ function fit_all_stars_simultaneous(
         solver::Symbol = :lsqr,
         inner_iterations::Int = 10,
         linear_tol::Real = 1.0e-6,
+        model_rad::Union{Symbol, Real} = :auto,
+        model_rad_max::Real = 10 * fit_rad,
+        model_rad_nsigma::Real = 1.0,
         max_step::Real = 0.25,
         max_trials::Int = 8,
         max_iter::Integer = 40,
@@ -882,16 +976,22 @@ function fit_all_stars_simultaneous(
         show_trace::Bool = false,
         covariance_estimator = nothing,
     ) where {T}
+
     FT = float(T)
     max_iter > 0 || throw(ArgumentError("max_iter must be positive"))
     inner_iterations > 0 || throw(ArgumentError("inner_iterations must be positive"))
     linear_tol > 0 || throw(ArgumentError("linear_tol must be positive"))
     max_trials > 0 || throw(ArgumentError("max_trials must be positive"))
+    (model_rad === :auto || (model_rad isa Real && model_rad > 0)) ||
+        throw(ArgumentError("model_rad must be :auto or a positive real, got $(repr(model_rad))"))
+    model_rad_max >= fit_rad || throw(ArgumentError("model_rad_max must be >= fit_rad"))
+    model_rad_nsigma > 0 || throw(ArgumentError("model_rad_nsigma must be positive"))
     solver in (:lsqr, :lsmr) || throw(ArgumentError("solver must be :lsqr or :lsmr, got $(repr(solver))"))
     damping isa LevenbergDamping && throw(ArgumentError(
         "LevenbergDamping is not supported by fit_all_stars_simultaneous: it " *
         "conflicts with the column-equilibrated x_tol scaling. Use MarquardtDamping."
     ))
+    fit_rad > 0 || throw(ArgumentError("fit_rad must be positive"))
 
     # Same default-selection rule as `lm_irls` (levenberg_marquardt.jl); there is
     # no IRLS reweighting here, so the choice reduces to whether `inv_var` was given.
@@ -1001,6 +1101,25 @@ function fit_all_stars_simultaneous(
 
     union_pix = _touched_pixels(pixels, npix)
 
+    # Per-source model-render/subtraction box (distinct from the `fit_rad`
+    # Jacobian/cost stamp): auto-scaled from the PSF curve of growth and the
+    # image noise so a bright star's wings are subtracted far enough out that
+    # neighbors' `fit_rad` cores stay clean, without paying that box for the
+    # faint bulk.  One shared ring-ordered offset table (sized to the largest
+    # per-source half-width actually chosen, not the cap) serves every source.
+    (model_rad === :auto && inv_var === nothing) && throw(ArgumentError(
+        "model_rad=:auto requires inv_var (it needs a noise scale); pass inv_var " *
+        "or an explicit scalar model_rad"
+    ))
+    R_fit = round(Int, round(fit_rad, RoundUp))
+    R_cap = ceil(Int, model_rad === :auto ? model_rad_max : max(float(model_rad), float(fit_rad)))
+    model_R = _model_radii(psf, model_rad, model_rad_nsigma, R_fit, R_cap, w,
+        FT[params[row_flux, i] for i in active])
+    R_max = maximum(model_R)
+    mdy_off, mdx_off = _ring_offsets(R_max)
+    model_S2 = Int[(2 * model_R[j] + 1)^2 for j in 1:n_active]
+    Rc_side = 2 * R_max + 1
+
     # -------------------------------------------------------------------
     # 4. Working buffers
     # -------------------------------------------------------------------
@@ -1019,8 +1138,8 @@ function fit_all_stars_simultaneous(
     model_cand = zeros(FT, npix)
     wt_resid = zeros(FT, npix)
     mrhs = Vector{FT}(undef, npix)    # -wt_resid, the linear solve right-hand side
-    render_buf = Vector{FT}(undef, S2)
-    render_scratch = _render_scratch(psf, round(Int, sqrt(S2)), FT)
+    render_buf = Vector{FT}(undef, Rc_side^2)      # sized to the largest model box
+    render_scratch = _render_scratch(psf, Rc_side, FT)
     fill_scratch = _fill_scratch(psf, round(Int, sqrt(S2)), FT)
 
     b_scaled = Vector{FT}(undef, n)   # Jᵀ·wt_resid, for the g_tol cosine tests
@@ -1046,8 +1165,10 @@ function fit_all_stars_simultaneous(
     # -------------------------------------------------------------------
     # 5. Initial fill and cost
     # -------------------------------------------------------------------
-    _fill_stamps!(stamp, psf, free_names_val, fixed, θ, w, model_img,
+    _fill_stamps!(stamp, psf, free_names_val, fixed, θ, w,
         grad_col, dy_off, dx_off, anchor_y, anchor_x, row_y, row_x, row_flux, live, fill_scratch)
+    _render_model!(model_img, psf, free_names_val, fixed, θ, p,
+        mdy_off, mdx_off, model_S2, model_R, anchor_y, anchor_x, ny, nx, live, render_buf, render_scratch)
     cost = _residual_cost!(wt_resid, model_img, data_work, w, union_pix)
     D .= colnorm_flat
 
@@ -1060,8 +1181,10 @@ function fit_all_stars_simultaneous(
     # 6. Outer damped Gauss-Newton / LM loop
     # -------------------------------------------------------------------
     for iter in 1:max_iter
-        _fill_stamps!(stamp, psf, free_names_val, fixed, θ, w, model_img,
+        _fill_stamps!(stamp, psf, free_names_val, fixed, θ, w,
             grad_col, dy_off, dx_off, anchor_y, anchor_x, row_y, row_x, row_flux, live, fill_scratch)
+        _render_model!(model_img, psf, free_names_val, fixed, θ, p,
+            mdy_off, mdx_off, model_S2, model_R, anchor_y, anchor_x, ny, nx, live, render_buf, render_scratch)
         cost = _residual_cost!(wt_resid, model_img, data_work, w, union_pix)
         @. mrhs = -wt_resid
         apply_JT!(b_scaled, stamp, wt_resid, live, sbuf)
@@ -1102,7 +1225,7 @@ function fit_all_stars_simultaneous(
             @. δ_scaled = colnorm_flat * δ
 
             _render_model!(model_cand, psf, free_names_val, fixed, θ .+ δ, p,
-                dy_off, dx_off, anchor_y, anchor_x, pixels, live, render_buf, render_scratch)
+                mdy_off, mdx_off, model_S2, model_R, anchor_y, anchor_x, ny, nx, live, render_buf, render_scratch)
             cost_cand = _cost!(model_cand, data_work, w, union_pix)
             Δcost = cost - cost_cand
 
@@ -1144,7 +1267,7 @@ function fit_all_stars_simultaneous(
                 if _x_tol_local(j, p, D, colnorm_flat, δ_scaled, θ, x_tol) ||
                         _g_tol_local(j, p, colnorm_flat, b_scaled, C_r, g_tol)
                     _freeze_star!(θ, data_work, psf, free_names_val, fixed, p,
-                        dy_off, dx_off, anchor_y, anchor_x, pixels, j)
+                        mdy_off, mdx_off, model_S2, anchor_y, anchor_x, ny, nx, j)
                     live[j] = false
                     frozen_at[j] = iter
                     star_converged[j] = true
@@ -1176,7 +1299,7 @@ function fit_all_stars_simultaneous(
     # Errors: rebuild stamp values at final θ (every star, live or frozen --
     # this is a one-time end-of-fit pass, not the per-iteration loop, so
     # there is no per-star skip to apply here), invert per-star diagonal block.
-    _fill_stamps!(stamp, psf, free_names_val, fixed, θ, w, model_img,
+    _fill_stamps!(stamp, psf, free_names_val, fixed, θ, w,
         grad_col, dy_off, dx_off, anchor_y, anchor_x, row_y, row_x, row_flux, trues(n_active), fill_scratch)
 
     for (j, i) in enumerate(active)
@@ -1216,7 +1339,7 @@ function fit_all_stars_simultaneous(
     # Every star, live or frozen, against the untouched original `data` (not
     # data_work): a frozen star's θ has simply stopped changing since it froze.
     _render_model!(model_img, psf, free_names_val, fixed, θ, p,
-        dy_off, dx_off, anchor_y, anchor_x, pixels, trues(n_active), render_buf, render_scratch)
+        mdy_off, mdx_off, model_S2, model_R, anchor_y, anchor_x, ny, nx, trues(n_active), render_buf, render_scratch)
 
     chisq = zeros(FT, n_stars)
     qfit = fill(convert(FT, NaN), n_stars)

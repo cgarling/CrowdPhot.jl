@@ -11,7 +11,7 @@ using Printf: @sprintf
 import Random
 import SparseArrays
 using StaticArrays: SMatrix, SVector, @SMatrix, @SVector
-using Statistics: median, median!, mean, std
+using Statistics: median, median!, mean, std, quantile
 
 export Background2D
 export sigma_clip, sigma_clip!, calc_total_error
