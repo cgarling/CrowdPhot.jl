@@ -1,6 +1,6 @@
 using CrowdPhot
 using CrowdPhot: CircularGaussianPSF, StampDerivatives, apply_JT!, apply_J!,
-    _jacobian_operator, _clamp_inds, _fill_stamps!
+    _jacobian_operator, _clamp_inds, _fill_stamps!, _ring_offsets, _model_radii
 using CrowdPhot.PSF
 using ConstructionBase
 using Krylov: lsqr!, lsmr!, LsqrWorkspace, LsmrWorkspace, solution
@@ -84,13 +84,12 @@ end
             θ[(a - 1) * p .+ (1:p)] .= (Float64(anchor_y[a]), Float64(anchor_x[a]), 100.0)
         end
         w = ones(npix)
-        model_img = zeros(npix)
         stamp = StampDerivatives{Float64, Int32}(
             zeros(p, S2, n_active), pixels, zeros(p, n_active), npix, p, S2)
 
         live = trues(n_active)
         live[2] = false  # star 2 frozen from the start
-        _fill_stamps!(stamp, psf, free_names_val, fixed, θ, w, model_img,
+        _fill_stamps!(stamp, psf, free_names_val, fixed, θ, w,
             grad_col, dy_off, dx_off, anchor_y, anchor_x, row_y, row_x, row_flux, live, nothing)
         values_before = copy(stamp.values)
         colnorm_before = copy(stamp.colnorm)
@@ -103,7 +102,7 @@ end
         θ2 = copy(θ)
         for _ in 1:5
             θ2[1] += 0.1
-            _fill_stamps!(stamp, psf, free_names_val, fixed, θ2, w, model_img,
+            _fill_stamps!(stamp, psf, free_names_val, fixed, θ2, w,
                 grad_col, dy_off, dx_off, anchor_y, anchor_x, row_y, row_x, row_flux, live, nothing)
         end
         @test stamp.values[:, :, 2] == values_before[:, :, 2]
@@ -239,7 +238,7 @@ end
             # noiseless limit, which needs a tighter `x_tol` than
             # `fit_all_stars_simultaneous`'s default which is appropriate for noisy data.
             r_sim = fit_all_stars_simultaneous(img_sub, psf, cat, 5;
-                fixed, max_iter=40, inner_iterations=10, x_tol=1e-8)
+                fixed, max_iter=40, inner_iterations=10, x_tol=1e-8, model_rad=5)
             @test all(r_sim.valid)
             @test r_sim.flux ≈ r_seq.flux rtol = 1e-10
             @test r_sim.y ≈ r_seq.y atol = 1e-10
@@ -247,7 +246,7 @@ end
             @test r_sim.flux ≈ sources.flux rtol = 1e-10
             # LSMR agrees with the default LSQR solver.
             r_lsmr = fit_all_stars_simultaneous(img_sub, psf, cat, 5;
-                fixed, solver = :lsmr, max_iter = 40, inner_iterations = 10, x_tol = 1e-8)
+                fixed, solver = :lsmr, max_iter = 40, inner_iterations = 10, x_tol = 1e-8, model_rad=5)
             @test r_lsmr.flux ≈ r_sim.flux rtol = 1e-9
             @test r_lsmr.y ≈ r_sim.y atol = 1e-9
         end
@@ -271,8 +270,8 @@ end
         # Disable f_tol, tight `x_tol` (see the isolated-star fixture above for why):
         # a looser `x_tol` lets the two solvers freeze the same star at
         # slightly different iterations in this degenerate fixture.
-        r_lsqr = fit_all_stars_simultaneous(img_sub, psf, cat, 5; fixed, max_iter=25, inner_iterations=10, x_tol=1e-8, f_tol=0)
-        r_lsmr = fit_all_stars_simultaneous(img_sub, psf, cat, 5; fixed, max_iter=25, inner_iterations=10, solver=:lsmr, x_tol=1e-8, f_tol=0)
+        r_lsqr = fit_all_stars_simultaneous(img_sub, psf, cat, 5; fixed, max_iter=25, inner_iterations=10, x_tol=1e-8, f_tol=0, model_rad=5)
+        r_lsmr = fit_all_stars_simultaneous(img_sub, psf, cat, 5; fixed, max_iter=25, inner_iterations=10, solver=:lsmr, x_tol=1e-8, f_tol=0, model_rad=5)
         # This fixture must actually exercise freezing before the fit ends.
         @test sum(r_lsqr.n_iter[r_lsqr.valid] .< r_lsqr.n_passes) > 0.5 * sum(r_lsqr.valid)
         g = r_lsqr.valid .& r_lsmr.valid
@@ -344,7 +343,7 @@ end
         img_sub = image .- 20.0
         cat = (; y=sources.y, x=sources.x, flux=copy(sources.flux))
         fixed = (; fwhm=2.0, bkg=0.0)
-        r = fit_all_stars_simultaneous(img_sub, psf, cat, 5; fixed, max_iter=40)
+        r = fit_all_stars_simultaneous(img_sub, psf, cat, 5; fixed, max_iter=40, model_rad=5)
         for i in 1:length(r.flux)
             r.valid[i] || continue
             yr = floor(Int, r.y[i] - 5):ceil(Int, r.y[i] + 5)
@@ -394,7 +393,7 @@ end
         cat = (; y=sources.y, x=sources.x, flux=copy(sources.flux))
         fixed = (; fwhm=2.0, bkg=0.0)
         r = fit_all_stars_simultaneous(img_sub, psf, cat, 5;
-            fixed, max_iter=15, inner_iterations=10)
+            fixed, max_iter=15, inner_iterations=10, model_rad=5)
         g = r.valid
         @test sum(g) > 0.8 * length(g)
         # Bright sources recover flux more accurately than faint ones.
@@ -415,7 +414,7 @@ end
         img_sub = image .- 50.0
         cat = (; y=sources.y, x=sources.x, flux=copy(sources.flux))
         fixed = (; fwhm=2.0, bkg=0.0)
-        r = fit_all_stars_simultaneous(img_sub, psf, cat, 5; fixed, max_iter=30)
+        r = fit_all_stars_simultaneous(img_sub, psf, cat, 5; fixed, max_iter=30, model_rad=5)
         g = r.valid
         @test sum(g) > 0.5 * length(g)
         # Not every star takes the whole loop to freeze, and not every star
@@ -435,8 +434,8 @@ end
         cat = (; y=sources.y, x=sources.x, flux=copy(sources.flux))
         fixed = (; fwhm=2.0, bkg=0.0)
         K1, K2 = 10, 25
-        r1 = fit_all_stars_simultaneous(img_sub, psf, cat, 5; fixed, max_iter=K1)
-        r2 = fit_all_stars_simultaneous(img_sub, psf, cat, 5; fixed, max_iter=K2)
+        r1 = fit_all_stars_simultaneous(img_sub, psf, cat, 5; fixed, max_iter=K1, model_rad=5)
+        r2 = fit_all_stars_simultaneous(img_sub, psf, cat, 5; fixed, max_iter=K2, model_rad=5)
         # Stars that froze at or before K1 in the longer run took an
         # identical path through the loop in the shorter run (nothing before
         # iteration K1 depends on max_iter), so their final values must
@@ -451,5 +450,101 @@ end
             @test r1.x[i] ≈ r2.x[i] atol = 1e-8
             @test r1.flux[i] ≈ r2.flux[i] rtol = 1e-8
         end
+    end
+
+    @testset "_ring_offsets: prefix boxes" begin
+        R = 5
+        dy, dx = _ring_offsets(R)
+        @test length(dy) == length(dx) == (2R + 1)^2
+        for k in 0:R
+            got = Set(zip(dy[1:(2k + 1)^2], dx[1:(2k + 1)^2]))
+            want = Set((a, b) for a in -k:k, b in -k:k)
+            @test got == want
+        end
+    end
+
+    @testset "_model_radii" begin
+        psf = CircularGaussianPSF(y = 0.0, x = 0.0, fwhm = 2.5, flux = 1.0, bkg = 0.0)
+        R_fit, R_cap = 2, 20
+        w = fill(1 / 125.0, 4000)               # sigma_bg ~ 11.2 ADU
+        # Scalar path: one clamped value for all.
+        @test _model_radii(psf, 7.0, 1.0, R_fit, R_cap, w, Float64[100, 5e4]) == fill(7, 2)
+        @test _model_radii(psf, 1.0, 1.0, R_fit, R_cap, w, Float64[100]) == [R_fit]   # clamped up
+        @test _model_radii(psf, 999.0, 1.0, R_fit, R_cap, w, Float64[100]) == [R_cap] # clamped down
+        # :auto path: monotone non-decreasing in flux, faint -> R_fit, bright grows.
+        fl = Float64[50, 500, 5_000, 50_000, 500_000]
+        rr = _model_radii(psf, :auto, 1.0, R_fit, R_cap, w, fl)
+        @test issorted(rr)
+        @test all(R_fit .<= rr .<= R_cap)
+        @test rr[1] == R_fit          # a faint source's wings are below the noise
+        @test rr[end] > rr[1]         # a bright source needs a larger box
+        # A larger nsigma (looser threshold) never needs a larger box.
+        @test all(_model_radii(psf, :auto, 3.0, R_fit, R_cap, w, fl) .<= rr)
+    end
+
+    @testset "model_rad = :auto requires inv_var" begin
+        psf = CircularGaussianPSF(y = 0.0, x = 0.0, fwhm = 2.0, flux = 1.0, bkg = 0.0)
+        img = zeros(40, 40)
+        cat = (; y = [20.0], x = [20.0], flux = [100.0])
+        @test_throws ArgumentError fit_all_stars_simultaneous(img, psf, cat, 3;
+            fixed = (; fwhm = 2.0, bkg = 0.0), model_rad = :auto)
+        @test_throws "requires inv_var" fit_all_stars_simultaneous(img, psf, cat, 3;
+            fixed = (; fwhm = 2.0, bkg = 0.0))                    # :auto is the default
+        # An explicit scalar model_rad works without inv_var (OLS mode).
+        r = fit_all_stars_simultaneous(img, psf, cat, 3;
+            fixed = (; fwhm = 2.0, bkg = 0.0), model_rad = 3, max_iter = 5)
+        @test length(r.flux) == 1
+    end
+
+    @testset "model_rad fixes the crowded-field wing-truncation bias" begin
+        # A noiseless bright star ringed by faint neighbors: with a single
+        # `fit_rad = 2` stamp (97% of the PSF) the neighbors' free flux absorbs
+        # the bright star's truncated wings and biases it low ~1.5%.  A wide
+        # `model_rad` (auto or scalar) removes it; the Jacobian box stays small.
+        psf = CircularGaussianPSF(y = 0.0, x = 0.0, fwhm = 2.5, flux = 1.0, bkg = 0.0)
+        fixed = (; fwhm = 2.5, bkg = 0.0)
+        ffs(s) = CrowdPhot.flux_for_snr(psf, s; background = 100.0, read_noise = 5.0, gain = 1.0)
+        rng = StableRNG(3)
+        ys = [25.35]; xs = [25.65]; fs = [ffs(300.0)]
+        for _ in 1:40
+            push!(ys, 6 + 38rand(rng)); push!(xs, 6 + 38rand(rng)); push!(fs, ffs(3 + 9rand(rng)))
+        end
+        src = (; y = ys, x = xs, flux = fs)
+        model_only = simulate_image((50, 50), psf, src; background = 0.0, noise = :none)
+        iv = 1.0 ./ (100.0 .+ model_only .+ 25.0)
+        img = Matrix(model_only)
+        cat = (; y = copy(ys), x = copy(xs), flux = copy(fs))
+        common = (; fixed, inv_var = iv, inner_iterations = 30, max_iter = 80, λ_down = 10.0)
+
+        r_single = fit_all_stars_simultaneous(img, psf, cat, 2; common..., model_rad = 2)
+        r_auto = fit_all_stars_simultaneous(img, psf, cat, 2; common..., model_rad = :auto)
+        r_wide = fit_all_stars_simultaneous(img, psf, cat, 2; common..., model_rad = 8)
+
+        bias(r) = (r.flux[1] - fs[1]) / fs[1]
+        @test abs(bias(r_single)) > 5e-3            # the known single-radius bias
+        @test abs(bias(r_auto)) < 1e-3             # auto model_rad removes it
+        @test abs(bias(r_wide)) < 1e-3
+        @test abs(r_auto.y[1] - ys[1]) < 2e-3 && abs(r_auto.x[1] - xs[1]) < 2e-3
+    end
+
+    @testset "model_rad = :auto works for GriddedPSFModel" begin
+        # The :auto path renders a unit PSF and takes its curve of growth; for
+        # an image/gridded PSF that uses the generic (pixel-integrated)
+        # `curve_of_growth` and `ConstructionBase.setproperties`.
+        circ = CircularGaussianPSF(y = 0.0, x = 0.0, fwhm = 2.0, flux = 1.0, bkg = 0.0)
+        node = ImagePSF(render(circ); y = 0.0, x = 0.0, flux = 1.0, bkg = 0.0, oversampling = 1, normalize = true)
+        gpsf = GriddedPSFModel([node], [0.0], [0.0]; y = 0.0, x = 0.0, flux = 1.0, bkg = 0.0)
+        w = fill(1 / 125.0, 4000)
+        rr = _model_radii(gpsf, :auto, 1.0, 2, 15, w, Float64[50, 500, 5_000, 50_000])
+        @test issorted(rr) && all(2 .<= rr .<= 15) && rr[end] > rr[1]
+        rng = StableRNG(42)
+        img, src = simulate_image((128, 128), gpsf, 8; background = 20.0, noise = :none,
+            flux = (600.0, 900.0), min_separation = 8, border = 10, model_radius = 6, rng)
+        iv = fill(1 / 20.0, size(img))
+        cat = (; y = src.y, x = src.x, flux = fill(500.0, length(src.y)))
+        r = fit_all_stars_simultaneous(img .- 20.0, gpsf, cat, 3;
+            fixed = (; bkg = 0.0), inv_var = iv, max_iter = 30, model_rad = :auto)
+        @test all(r.valid)
+        @test r.flux ≈ src.flux rtol = 1e-8
     end
 end
