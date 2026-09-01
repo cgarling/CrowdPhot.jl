@@ -259,6 +259,9 @@ end
         result = matched_filter(img, kern; inv_var, sigma=0.0)
         # Interior of the zero-weight block (outside the kernel's reach).
         @test all(iszero, result.significance_map[20:30, 20:30])
+        # Any peak landing in the fully-masked block (den == 0) gets flux 0,
+        # not NaN, from the weighted-flux fallback.
+        @test all(isfinite, result.peak_fluxes)
         # But should not error
         @test result isa MatchedFilterResult
     end
@@ -349,6 +352,95 @@ end
 
         # Inverse-variance weighted (SEP matched): source is detected
         @test r_weighted.significance_map[y0, x0] >= thresh
+    end
+
+    @testset "NaN inv_var entries zero'd" begin
+        # Non-finite weights (from masked/bad pixels) must not propagate through
+        # the correlations and blank out a kernel-sized zone around them.  They
+        # are replaced with zero weight, so detection continues, ignoring only
+        # the affected pixels.
+        kern = _gaussian_kernel(9, 1.5)
+        y0, x0 = 25.0, 25.0
+
+        img = randn(rng, 50, 50) .* 0.3
+        _place_source!(img, y0, x0, 30.0, 1.5)
+        base_iv = fill(1 / 0.3^2, size(img))
+
+        # Sanity: with clean weights the source is found.
+        r_clean = matched_filter(img, kern; inv_var=copy(base_iv), sigma=5.0)
+        @test !isempty(r_clean.peaks)
+
+        @testset "single NaN near the source" begin
+            iv = copy(base_iv)
+            iv[26, 27] = NaN  # within a kernel radius of the source
+            iv_ref = copy(iv)
+            result = matched_filter(img, kern; inv_var=iv, sigma=5.0)
+
+            @test all(isfinite, result.significance_map)
+            @test !isempty(result.peaks)
+            idx = _nearest_peak(result, y0, x0)
+            @test abs(_peak_ys(result)[idx] - y0) <= 2
+            @test abs(_peak_xs(result)[idx] - x0) <= 2
+            # Caller's array is not mutated.
+            @test isequal(iv, iv_ref)
+        end
+
+        @testset "multiple non-finite entries, also NaN in the image" begin
+            iv = copy(base_iv)
+            iv[26, 27] = NaN
+            iv[24, 23] = Inf
+            iv[40, 40] = -Inf
+            iv_ref = copy(iv)
+            # A masked bad pixel is typically non-finite in both maps.
+            img_bad = copy(img)
+            img_bad[26, 27] = NaN
+            img_bad[24, 23] = NaN
+            result = matched_filter(img_bad, kern; inv_var=iv, sigma=5.0)
+
+            @test all(isfinite, result.significance_map)
+            @test all(isfinite, result.peak_fluxes)
+            @test !isempty(result.peaks)
+            idx = _nearest_peak(result, y0, x0)
+            @test abs(_peak_ys(result)[idx] - y0) <= 2
+            @test abs(_peak_xs(result)[idx] - x0) <= 2
+            @test isequal(iv, iv_ref)
+        end
+    end
+
+    @testset "weighted peak_fluxes ignore masked pixels" begin
+        kern = _gaussian_kernel(11, 1.5)
+        y0, x0, F = 30.0, 30.0, 200.0
+        img = fill(0.0, 60, 60)
+        _place_source!(img, y0, x0, F, 1.5)
+        iv = fill(4.0, size(img))
+
+        @testset "uniform weights match the unweighted estimate" begin
+            r_iv = matched_filter(img, kern; inv_var=copy(iv), sigma=5.0)
+            r_no = matched_filter(img, kern; sigma=5.0)
+            i_iv = _nearest_peak(r_iv, y0, x0)
+            i_no = _nearest_peak(r_no, y0, x0)
+            @test r_iv.peak_fluxes[i_iv] ≈ r_no.peak_fluxes[i_no] rtol = 1e-6
+            @test r_iv.peak_fluxes[i_iv] ≈ F rtol = 0.02
+        end
+
+        @testset "masked pixel in the footprint: flux still recovered" begin
+            for zerosum in (true, false)
+                ivm = copy(iv)
+                ivm[31, 31] = NaN   # masked, non-finite in both maps
+                ivm[29, 28] = 0.0   # masked, finite garbage in the image
+                imgm = copy(img)
+                imgm[31, 31] = NaN
+                imgm[29, 28] = 1e6
+                r = matched_filter(imgm, kern; inv_var=ivm,
+                                   normalize_zerosum=zerosum, sigma=5.0)
+                idx = _nearest_peak(r, y0, x0)
+                @test all(isfinite, r.peak_fluxes)
+                @test r.peak_fluxes[idx] ≈ F rtol = 0.1
+                # The unweighted correlation is NaN at that peak; the
+                # weighted estimate is not.
+                @test isnan(r.smoothed_image[r.peaks[idx]])
+            end
+        end
     end
 end
 
