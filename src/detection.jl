@@ -13,7 +13,7 @@ Result of [`matched_filter`](@ref) source detection.
 
 - `image::AbstractMatrix{T}` — the input image (not copied; caller retains ownership).
 - `inv_var::Union{AbstractMatrix{T}, Nothing}` — the inverse variance map (or `nothing`
-  if uniform weights were assumed; not copied).
+  if uniform weights were assumed) with any non-finite entries set to 0.
 - `smoothed_image::Matrix{T}` — the image correlated with the detection kernel.
 - `smoothed_inv_var::Union{Matrix{T}, Nothing}` — the inverse variance map
   correlated with the squared kernel; used in the denominator of the
@@ -63,8 +63,8 @@ PSF template.
   and must follow that function's requirements (namely, odd dimensions).
   This is typically a rendered PSF model.
 - `inv_var::Union{AbstractMatrix{<:AbstractFloat}, Nothing}`: optional
-  inverse-variance map with the same shape as `image`.  Pixels with zero or
-  `nothing`-suppressed weights are excluded from the significance
+  inverse-variance map with the same shape as `image`.  Pixels with zero,
+  non-finite, or `nothing`-suppressed weights are excluded from the significance
   calculation.  **The weights should represent background-only error** (e.g.
   ``1 / \\sigma_{\\mathrm{bkg}}^2``); do not include source Poisson noise,
   which would inflate the noise estimate at source positions and reduce
@@ -95,6 +95,13 @@ function matched_filter(image::AbstractMatrix{T}, kernel::AbstractMatrix;
         size(inv_var) == size(image) ||
             throw(DimensionMismatch("inv_var size $(size(inv_var)) must match " *
                                     "image size $(size(image))"))
+        # Replace non-finite weights with zero so those pixels are ignored rather
+        # than propagating NaN/Inf through the correlations. Copy first: the map is
+        # stored in the result and the docstring promises the caller's array is
+        # left untouched (and `inv_var` may be a read-only `Fill`).
+        if any(!isfinite, inv_var)
+            inv_var = replace(x -> isfinite(x) ? x : zero(x), inv_var)
+        end
     end
 
     # ----- 1. normalize the kernel -----
@@ -130,7 +137,10 @@ function matched_filter(image::AbstractMatrix{T}, kernel::AbstractMatrix;
     smoothed = correlate(image, K, border)
 
     if inv_var !== nothing
-        weighted_img = inv_var .* image
+        # Guard the product so a non-finite image value at a zero-weight pixel
+        # (a masked bad pixel is typically NaN in both the image and the weight
+        # map) does not leak through as 0 * NaN = NaN.
+        weighted_img = map((w, v) -> iszero(w) ? zero(w * v) : w * v, inv_var, image)
         num = correlate(weighted_img, K, border)
 
         K_sq = K .^ 2
@@ -164,9 +174,20 @@ function matched_filter(image::AbstractMatrix{T}, kernel::AbstractMatrix;
 
     # ----- 4. Extract peak information -----
     peak_sigs = T[significance[p] for p in sig_peaks]
-    # Flux estimate: for both kernel normalizations, smoothed[p] gives the
-    # matched-filter flux estimate directly (kernel scaled so E[corr] = F).
-    peak_fluxes = T[smoothed[p] for p in sig_peaks]
+    # Flux estimate.  Without inv_var the normalized kernel makes smoothed[p] an
+    # unbiased flux estimate directly (E[corr] = F).  With inv_var, use the
+    # weighted estimate num[p]/den[p]/kernel_norm^2, equivalently
+    # significance[p] / (sqrt(den[p]) * kernel_norm^2) since num was overwritten
+    # by significance.  Zero-weight pixels drop out of num and den, so a masked
+    # pixel in the footprint does not contaminate the estimate.
+    if smoothed_inv_var === nothing
+        peak_fluxes = T[smoothed[p] for p in sig_peaks]
+    else
+        kn2 = T(kernel_norm)^2
+        peak_fluxes = T[smoothed_inv_var[p] > 0 ?
+                        significance[p] / (sqrt(smoothed_inv_var[p]) * kn2) : zero(T)
+                        for p in sig_peaks]
+    end
 
     return MatchedFilterResult(
         image,
