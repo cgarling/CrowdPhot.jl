@@ -214,7 +214,10 @@ function _model_radii(psf, model_rad, nsigma, R_fit::Int, R_cap::Int,
     # Quick, conservative background noise estimate from the inverse weight vector.
     # High w (inverse variance) = low noise so sigma_bg estimate will be low,
     # leading to a conservatively large model_rad estimate.
-    w_val = quantile(filter(isfinite, w), 0.84)
+    step = max(1, length(w) ÷ 65536) # downsample to ~65k for speed, still robust
+    _w = w[1:step:end]
+    _w = _w[(_w .> 0) .& isfinite.(_w)]
+    w_val = quantile(_w, 0.84)
     sigma_bg = w_val > 0 ? FT(sqrt(1 / w_val)) : one(FT)
     unit = ConstructionBase.setproperties(psf,
         (; y = zero(FT), x = zero(FT), flux = one(FT), bkg = zero(FT)))
