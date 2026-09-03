@@ -606,4 +606,28 @@ end
             @test isfinite(r.core.normalized_curvature)
         end
     end
+
+    @testset "background keyword threads to centroid_poly" begin
+        x0, y0, fwhm_val, flux_val = 25.4, 25.3, 3.0, 500.0
+        model = CircularGaussianPSF(; x=x0, y=y0, fwhm=fwhm_val, flux=flux_val, bkg=0.0)
+        base = evaluate.(model, 1:50, (1:50)')
+        B = 200.0   # well above the ~49-count peak amplitude
+        mf0 = matched_filter(base, fwhm_val; sigma=4.0)
+        mfB = matched_filter(base .+ B, fwhm_val; sigma=4.0)
+
+        r0 = measure_star_shapes(mf0; half_width=3)[1]
+        rB = measure_star_shapes(mfB; half_width=3, background=B)[1]
+        rbiased = measure_star_shapes(mfB; half_width=3)[1]
+
+        # Passing `background` restores the un-pedestaled core diagnostics.
+        @test rB.core.normalized_curvature ≈ r0.core.normalized_curvature rtol=1e-6
+        @test rB.core.compactness_core ≈ r0.core.compactness_core rtol=1e-6
+        @test rB.core.poly.y ≈ r0.core.poly.y atol=1e-9
+        @test rB.core.poly.x ≈ r0.core.poly.x atol=1e-9
+        # poly.peak is reported including the background.
+        @test rB.core.poly.peak ≈ r0.core.poly.peak + B rtol=1e-6
+
+        # Leaving the pedestal in strongly suppresses the curvature diagnostic.
+        @test rbiased.core.normalized_curvature < 0.5 * r0.core.normalized_curvature
+    end
 end

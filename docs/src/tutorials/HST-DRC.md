@@ -316,7 +316,7 @@ ax6 = Axis(fig[3, 3]; xlabel = "Small-aperture ST magnitude",
            ylabel = "compactness", title = "Compactness 1 / (σ_x² + σ_y²)")
 ylims!(ax6, 0, 10)
 idxs = findall(x -> 0 < x < 10, compactness)
-h6 = hexbin!(ax5, mags[idxs], compactness[idxs]; bins = 80, colorscale=log10)
+h6 = hexbin!(ax6, mags[idxs], compactness[idxs]; bins = 80, colorscale=log10)
 Colorbar(fig[3, 4], h6; label = "Counts")
 
 # Panel 7: Core SROUND vs Aperture SROUND
@@ -363,7 +363,7 @@ the instrumental-magnitude distribution to exclude very bright (potentially
 saturated) and very faint stars, applies a hard constraint on normalized
 core curvature, and then sigma-clips morphological parameters
 (`fwhm.y`, `fwhm.x`, `roundness1_aperture`, `roundness2_aperture`,
-`normalized_curvature`, `compactness_core`) within five instrumental-magnitude bins.
+`normalized_curvature`) within five instrumental-magnitude bins.
 
 ```@example hst-drc
 # Select the brightest 50 stars suitable for PSF fitting

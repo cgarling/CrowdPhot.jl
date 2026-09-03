@@ -390,4 +390,80 @@ end
         @test c3.source == :poly
         @test c3.x ≈ r3.poly.x
     end
+
+    @testset "background keyword" begin
+        B = 50.0
+
+        # Off-center star so the COM de-biasing is visible.
+        img, _ = _make_star(; x0=5.35, y0=5.2, fwhm=2.6, flux=300.0)
+        r0 = centroid_poly(img)                              # no pedestal
+        rB = centroid_poly(img .+ B; background = B)         # pedestal, subtracted
+        rraw = centroid_poly(img .+ B)                       # pedestal, not subtracted
+
+        # Polynomial centroid and its covariance are offset-invariant.
+        @test rB.poly.y ≈ r0.poly.y atol=1e-12
+        @test rB.poly.x ≈ r0.poly.x atol=1e-12
+        @test rB.poly.cov ≈ r0.poly.cov rtol=1e-10
+        @test rB.poly.peak_err ≈ r0.poly.peak_err rtol=1e-10
+
+        # poly.peak is returned including the background.
+        @test rB.poly.peak ≈ r0.poly.peak + B rtol=1e-10
+        @test rraw.poly.peak ≈ r0.poly.peak + B rtol=1e-10
+
+        # Diagnostics computed from background-subtracted values are restored
+        # by passing `background`, and biased when the pedestal is left in.
+        for k in (:normalized_curvature, :compactness_core, :roundness2_core,
+                  :ellipticity_core)
+            @test getproperty(rB, k) ≈ getproperty(r0, k) rtol=1e-9
+        end
+        @test rB.com.y ≈ r0.com.y rtol=1e-10
+        @test rB.com.x ≈ r0.com.x rtol=1e-10
+        @test rraw.normalized_curvature < r0.normalized_curvature   # suppressed
+        @test rraw.compactness_core < r0.compactness_core           # pulled to floor
+        # Pedestal pulls the COM toward the 3×3 box center (5.0); the true
+        # position (5.35) is above it, so the biased COM sits lower.
+        @test 5.0 < rraw.com.x < r0.com.x
+
+        # background = 0 is bit-identical to omitting the keyword.
+        z = centroid_poly(img)
+        zk = centroid_poly(img; background = 0)
+        @test zk.poly.peak === z.poly.peak
+        @test zk.normalized_curvature === z.normalized_curvature
+        @test zk.com.x === z.com.x
+
+        # SROUND (non-uniform weights) is also restored by `background`.
+        rng = StableRNG(42)
+        w = rand(rng, 9, 9) .+ 0.5
+        s0 = centroid_poly(img, w)
+        sB = centroid_poly(img .+ B, w; background = B)
+        @test sB.roundness1_core ≈ s0.roundness1_core rtol=1e-9
+
+        # Over-subtracted background: COM and compactness are NaN, but the
+        # polynomial centroid still succeeds.
+        over = centroid_poly(img .+ 5.0; background = 1e6)
+        @test isnan(over.com.y) && isnan(over.com.x)
+        @test all(isnan, over.com.cov)
+        @test isnan(over.compactness_core)
+        @test isfinite(over.poly.y) && isfinite(over.poly.x)
+
+        # Keyword threads through the 3-arg form and _centroid_poly3.
+        _, mx = findmax(img)
+        i0, j0 = Tuple(mx)
+        r3arg = centroid_poly(img .+ B, Int(i0), Int(j0); background = B)
+        @test r3arg.poly.peak ≈ r0.poly.peak + B rtol=1e-10
+        @test r3arg.compactness_core ≈ r0.compactness_core rtol=1e-9
+
+        patch = @view (img .+ B)[Int(i0)-1:Int(i0)+1, Int(j0)-1:Int(j0)+1]
+        p3 = _centroid_poly3(patch, ones(3,3); background = B)
+        praw = _centroid_poly3(patch, ones(3,3))
+        @test p3.poly.peak ≈ praw.poly.peak       # peak restores background
+        @test p3.normalized_curvature > praw.normalized_curvature
+
+        # Float32 in, Float32 out, and type stable.
+        f32 = Float32.(img .+ 10.0f0)
+        rf = centroid_poly(f32; background = 10.0)
+        @test rf.poly.peak isa Float32
+        @test rf.compactness_core isa Float32
+        @inferred centroid_poly(f32; background = 10.0)
+    end
 end
