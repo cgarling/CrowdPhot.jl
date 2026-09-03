@@ -19,11 +19,21 @@
 # ---------------------------------------------------------------------------
 
 """
-    _centroid_poly3(image, inv_var) -> NamedTuple
+    _centroid_poly3(image, inv_var; background=0) -> NamedTuple
 
 Fit a quadratic 2-D polynomial ``P(x,y) = a + bx + cy + dx² + exy + fy²``
 to a 3×3 patch using weighted least squares with inverse-variance weights
 `inv_var`.
+
+`background` is a scalar subtracted from every pixel before the fit.
+Because the constant design column absorbs a uniform offset exactly, the
+polynomial coefficients ``b`` through ``f`` — and therefore `poly.y`,
+`poly.x`, `poly.cov`, `roundness2_core`, and `ellipticity_core` — are
+unaffected.  It does change the moment-weighted diagnostics (`com`,
+`compactness_core`, `roundness1_core`) and the fitted amplitude used to
+normalize `normalized_curvature`; those quantities are only meaningful on
+background-subtracted data.  `poly.peak` is returned as the fitted image
+value *including* `background`.
 
 # Returns
 A `NamedTuple` with keys `(; poly, com, normalized_curvature, compactness_core, roundness1_core,
@@ -31,22 +41,26 @@ roundness2_core, ellipticity_core)`:
 
 - `poly`: `NamedTuple` `(; y, x, peak, y_err, x_err, peak_err, cov)` with
   the polynomial centroid (row, column) relative to the patch center, the
-  fitted value at the centroid, 1-σ uncertainties, and 3×3 `SMatrix`
-  covariance of `(y, x, peak)`.
+  fitted image value at the centroid (including `background`), 1-σ
+  uncertainties, and 3×3 `SMatrix` covariance of `(y, x, peak)`.
 - `com`: `NamedTuple` `(; y, x, y_err, x_err, cov)` with the
   inverse-variance-weighted center-of-mass centroid and its 2×2
-  covariance on the same 3×3 patch.
-- `normalized_curvature`: negated Laplacian divided by the fitted peak
-  value, ``-(2d + 2f)/\\mathrm{peak} \\approx 16\\log(2)/\\mathrm{FWHM}^2``
+  covariance on the same 3×3 patch.  All fields are `NaN` when the
+  background-subtracted weighted sum ``\\sum w_i (z_i - \\mathrm{background})``
+  is non-positive.
+- `normalized_curvature`: negated Laplacian divided by the fitted
+  amplitude above `background`,
+  ``-(2d + 2f)/\\mathrm{amplitude} \\approx 16\\log(2)/\\mathrm{FWHM}^2``
   for a circular Gaussian.  Flux-independent; broad stellar PSFs have
   lower values than cosmic rays and hot pixels.
 - `compactness_core`: inverse of the total second central moment,
   defined as `1 / (σ_x² + σ_y²)`, where `σ_x²` and `σ_y²` are
-  the inverse‑variance‑weighted second central moments of the pixel flux
-  distribution.  This is a phase‑independent measure of core width:
-  larger values indicate more compact (sharper) profiles.  Returns `NaN`
-  if the estimated variance sum is non‑positive, which occurs for
-  spurious noise peaks, hot pixels, or severely saturated detections.
+  the inverse‑variance‑weighted second central moments of the
+  background‑subtracted pixel values.  Larger values indicate more
+  compact (sharper) profiles.  Returns `NaN` if the weighted sum or the
+  estimated variance sum is non‑positive, which occurs for spurious noise
+  peaks, hot pixels, severely saturated detections, or an over‑subtracted
+  background.
 - `roundness1_core`: DAOPHOT SROUND / photutils `roundness1` convention:
   ``2\\cdot\\Sigma_2/\\Sigma_4`` — ratio of bilateral (2-fold) to fourfold
   symmetry of the 8 neighbor pixels.  0 = symmetric, nonzero = asymmetric.
@@ -88,8 +102,9 @@ make the two diagnostics differ substantially.
 # References
 See [Vakili2016](@citet) for details.
 """
-function _centroid_poly3(image::AbstractMatrix, inv_var::AbstractMatrix)
+function _centroid_poly3(image::AbstractMatrix, inv_var::AbstractMatrix; background::Real = 0)
     FT = float(promote_type(eltype(image), eltype(inv_var)))
+    bg = FT(background)
 
     # Coordinates:
     #
@@ -102,9 +117,9 @@ function _centroid_poly3(image::AbstractMatrix, inv_var::AbstractMatrix)
     # Design row is (1, x, y, x^2, x*y, y^2).
 
     @inbounds begin
-        z11 = FT(image[1,1]); z12 = FT(image[1,2]); z13 = FT(image[1,3])
-        z21 = FT(image[2,1]); z22 = FT(image[2,2]); z23 = FT(image[2,3])
-        z31 = FT(image[3,1]); z32 = FT(image[3,2]); z33 = FT(image[3,3])
+        z11 = FT(image[1,1]) - bg; z12 = FT(image[1,2]) - bg; z13 = FT(image[1,3]) - bg
+        z21 = FT(image[2,1]) - bg; z22 = FT(image[2,2]) - bg; z23 = FT(image[2,3]) - bg
+        z31 = FT(image[3,1]) - bg; z32 = FT(image[3,2]) - bg; z33 = FT(image[3,3]) - bg
 
         w11 = FT(inv_var[1,1]); w12 = FT(inv_var[1,2]); w13 = FT(inv_var[1,3])
         w21 = FT(inv_var[2,1]); w22 = FT(inv_var[2,2]); w23 = FT(inv_var[2,3])
@@ -197,7 +212,8 @@ function _centroid_poly3(image::AbstractMatrix, inv_var::AbstractMatrix)
     yc2 = yc * yc
     xcyc = xc * yc
 
-    peak = a + b * xc + c * yc + d * xc2 + e * xcyc + f * yc2
+    amplitude = a + b * xc + c * yc + d * xc2 + e * xcyc + f * yc2
+    peak = amplitude + bg
 
     # Morphological diagnostics — roundness1_core (SROUND, bilateral vs.
     # fourfold symmetry) and roundness2_core (GROUND, marginal height ratio).
@@ -217,9 +233,10 @@ function _centroid_poly3(image::AbstractMatrix, inv_var::AbstractMatrix)
         zero(FT)
     end
 
-    # Normalized curvature — negated Laplacian divided by peak value.
-    # For a circular Gaussian, this is ≈ 16log(2)/FWHM² and independent of flux.
-    normalized_curvature = -(two_d + two_f) / max(abs(peak), eps(FT))
+    # Normalized curvature — negated Laplacian divided by the fitted
+    # amplitude above `background`.  For a circular Gaussian this is
+    # ≈ 16log(2)/FWHM² and independent of flux.
+    normalized_curvature = -(two_d + two_f) / max(abs(amplitude), eps(FT))
 
     # GROUND from the quadratic fit curvatures (DAOPHOT / photutils roundness2).
     # For a Gaussian, the marginal-fit height HX ∝ 1/σ_x ∝ √|d|, so
@@ -309,7 +326,6 @@ function _centroid_poly3(image::AbstractMatrix, inv_var::AbstractMatrix)
     mean_curvature = -(d + f)
     anisotropy = hypot(d - f, e)
 
-    # curvature_roundness_core
     ellipticity_core =
         if mean_curvature > zero(FT) && anisotropy < mean_curvature
             λ_max = mean_curvature + anisotropy
@@ -323,7 +339,7 @@ function _centroid_poly3(image::AbstractMatrix, inv_var::AbstractMatrix)
     # At the stationary point ∂P/∂x = ∂P/∂y = 0, so d(peak)/dθ simplifies
     # to the basis vector evaluated at the centroid. Note that the third row
     # is exact only if ε = 0 in the Tikhonov regularization above, but
-    # the approximation is very good for small ε. 
+    # the approximation is very good for small ε.
     J = @SMatrix [
         zero(FT)   e * invΔ         -two_d * invΔ   -(2 * c + 2 * two_f * yc) * invΔ   (b + 2 * e * yc) * invΔ   -2 * two_d * yc * invΔ
         zero(FT)  -two_f * invΔ     e * invΔ        -2 * two_f * xc * invΔ             (c + 2 * e * xc) * invΔ   -(2 * b + 2 * two_d * xc) * invΔ
@@ -336,26 +352,38 @@ function _centroid_poly3(image::AbstractMatrix, inv_var::AbstractMatrix)
     x_err = sqrt(max(zero(FT), cov[2,2]))
     peak_err = sqrt(max(zero(FT), cov[3,3]))
 
-    # Inverse-variance-weighted center-of-mass on the 3×3 patch.
-    invR00 = inv(R00)
-    com_x = R10 * invR00
-    com_y = R01 * invR00
+    # Inverse-variance-weighted center-of-mass on the 3×3 patch, and the
+    # inverse of its total second central moment (compactness_core).  After
+    # background subtraction the weighted sum R00 = Σ wᵢ(zᵢ - bg) can be
+    # non-positive for a spurious peak or an over-subtracted background, in
+    # which case the COM and compactness are undefined and returned as NaN;
+    # choose_centroid then falls back to the polynomial centroid.
+    if R00 > 0
+        invR00 = inv(R00)
+        com_x = R10 * invR00
+        com_y = R01 * invR00
 
-    # Delta-method covariance of the ratio estimator com = R / S00.
-    # Var(R_pq) = S_{2p,2q}, Cov(R_pq, R_rs) = S_{p+r, q+s}.
-    invR00_sq = invR00 * invR00
-    var_com_x = (S20 - 2 * com_x * S10 + com_x * com_x * S00) * invR00_sq
-    var_com_y = (S02 - 2 * com_y * S01 + com_y * com_y * S00) * invR00_sq
-    cov_com_xy = (S11 - com_x * S01 - com_y * S10 + com_x * com_y * S00) * invR00_sq
+        # Delta-method covariance of the ratio estimator com = R / S00.
+        # Var(R_pq) = S_{2p,2q}, Cov(R_pq, R_rs) = S_{p+r, q+s}.
+        invR00_sq = invR00 * invR00
+        var_com_x = (S20 - 2 * com_x * S10 + com_x * com_x * S00) * invR00_sq
+        var_com_y = (S02 - 2 * com_y * S01 + com_y * com_y * S00) * invR00_sq
+        cov_com_xy = (S11 - com_x * S01 - com_y * S10 + com_x * com_y * S00) * invR00_sq
+        com_y_err = sqrt(max(zero(FT), var_com_y))
+        com_x_err = sqrt(max(zero(FT), var_com_x))
+
+        var_x = (R20 - 2 * com_x * R10 + com_x * com_x * R00) / R00
+        var_y = (R02 - 2 * com_y * R01 + com_y * com_y * R00) / R00
+        var_sum = var_x + var_y
+        compactness_core = var_sum > 0 ? 1 / var_sum : FT(NaN)
+    else
+        nan = FT(NaN)
+        com_x = com_y = nan
+        var_com_x = var_com_y = cov_com_xy = nan
+        com_x_err = com_y_err = nan
+        compactness_core = nan
+    end
     com_cov = @SMatrix [var_com_y cov_com_xy; cov_com_xy var_com_x]
-    com_y_err = sqrt(max(zero(FT), var_com_y))
-    com_x_err = sqrt(max(zero(FT), var_com_x))
-
-    # inverse of the total second central moment of the pixel flux distribution
-    var_x = (R20 - 2 * com_x * R10 + com_x^2 * R00) / R00
-    var_y = (R02 - 2 * com_y * R01 + com_y^2 * R00) / R00
-    var_sum = var_x + var_y
-    compactness_core = var_sum > 0 ? 1 / var_sum : FT(NaN)
 
     return (; poly = (; y = yc, x = xc, peak,
                       y_err, x_err, peak_err, cov),
@@ -384,6 +412,12 @@ pixel coordinates.
   `image`).  If omitted, a uniform inverse variance `Fill(1, size(image))`
   is used (equivalent to ordinary least squares).  Set entries to zero to
   mask bad or saturated pixels.
+- `background::Real = 0`: scalar background subtracted from the 3×3 core
+  before the fit.  Does not affect the polynomial centroid (`poly.y`,
+  `poly.x`, `poly.cov`) or `roundness2_core` / `ellipticity_core`, but is
+  required for `normalized_curvature`, `compactness_core`,
+  `roundness1_core`, and `com` to be meaningful on data with a nonzero
+  sky level.  `poly.peak` is returned including `background`.
 
 # Returns
 A `NamedTuple` with keys `(; poly, com, normalized_curvature, compactness_core, roundness1_core,
@@ -391,23 +425,24 @@ roundness2_core, ellipticity_core)` where
 
 - `poly` — `NamedTuple` `(; y, x, peak, y_err, x_err, peak_err, cov)`
   with the polynomial centroid in global pixel coordinates (row, column),
-  the fitted value at the centroid, 1-σ uncertainties, and 3×3 `SMatrix`
-  covariance of `(y, x, peak)`.  Access as `result.poly.y`, `result.poly.x`, etc.
+  the fitted image value at the centroid (including `background`), 1-σ
+  uncertainties, and 3×3 `SMatrix` covariance of `(y, x, peak)`.  Access
+  as `result.poly.y`, `result.poly.x`, etc.
 - `com` — `NamedTuple` `(; y, x, y_err, x_err, cov)` with the
   inverse-variance-weighted center-of-mass centroid, its 1-σ
   uncertainties, and its 2×2 `SMatrix` covariance.  Access as
-  `result.com.y`, `result.com.x`, etc.
-- `normalized_curvature` — negated Laplacian divided by the fitted peak
-  value; ``\\approx 16\\log(2)/\\mathrm{FWHM}^2`` for a circular Gaussian.
-  This flux-independent statistic is useful for distinguishing stars from
-  cosmic rays and hot pixels.
+  `result.com.y`, `result.com.x`, etc.  All fields are `NaN` when the
+  background-subtracted weighted sum is non-positive.
+- `normalized_curvature` — negated Laplacian divided by the fitted
+  amplitude above `background`; ``\\approx 16\\log(2)/\\mathrm{FWHM}^2``
+  for a circular Gaussian.  This flux-independent statistic is useful for
+  distinguishing stars from cosmic rays and hot pixels.
 - `compactness_core` — inverse of the total second central moment,
-  defined as `1 / (σ_x² + σ_y²)`, where `σ_x²` and `σ_y²` are
-  the inverse‑variance‑weighted second central moments of the pixel flux
-  distribution.  This is a phase‑independent measure of core width:
-  larger values indicate more compact (sharper) profiles.  Returns `NaN`
-  if the estimated variance sum is non‑positive, which occurs for
-  spurious noise peaks, hot pixels, or severely saturated detections.
+  `1 / (σ_x² + σ_y²)`, where `σ_x²` and `σ_y²` are the
+  inverse‑variance‑weighted second central moments of the
+  background‑subtracted pixel values.  Larger values indicate more
+  compact (sharper) profiles.  Returns `NaN` if the weighted sum or the
+  estimated variance sum is non‑positive.
 - `roundness1_core` — DAOPHOT SROUND / photutils `roundness1`:
   ``2\\cdot\\Sigma_2/\\Sigma_4`` from the 8 neighbor pixels.
   0 = symmetric, nonzero = asymmetric.
@@ -415,6 +450,9 @@ roundness2_core, ellipticity_core)` where
   ``2(\\sqrt{|d|} - \\sqrt{|f|})/(\\sqrt{|d|} + \\sqrt{|f|})``.
   0 = circular core, negative = extended in x (columns),
   positive = extended in y (rows).
+- `ellipticity_core` — rotationally invariant ellipticity of the
+  fitted 3×3 core. Symmetric, round cores have `ellipticity_core ≈ 0`,
+  while elongated cores have `ellipticity_core > 0`.
 
 If the brightest pixel lies on the image border (no full 3×3
 neighborhood), every field is `NaN`:
@@ -425,7 +463,7 @@ neighborhood), every field is `NaN`:
             cov = @SMatrix [NaN NaN NaN; NaN NaN NaN; NaN NaN NaN]),
    com = (; y = NaN, x = NaN, y_err = NaN, x_err = NaN,
           cov = @SMatrix [NaN NaN; NaN NaN]),
-   normalized_curvature = NaN, compactness_core = NaN, 
+   normalized_curvature = NaN, compactness_core = NaN,
    roundness1_core = NaN, roundness2_core = NaN, ellipticity_core = NaN)
 ```
 
@@ -449,14 +487,15 @@ See [Vakili2016](@citet) for details.
 """
 function centroid_poly(
         image::AbstractMatrix{T},
-        inv_var::AbstractMatrix = Fill(one(float(T)), size(image)),
+        inv_var::AbstractMatrix = Fill(one(float(T)), size(image));
+        background::Real = 0,
     ) where {T <: Real}
     _, maxidx = findmax(image)
     i0, j0 = Tuple(maxidx)  # row, column
-    return centroid_poly(image, Int(i0), Int(j0), inv_var)
+    return centroid_poly(image, Int(i0), Int(j0), inv_var; background)
 end
 """
-    centroid_poly(image, i0::Int, j0::Int, inv_var) -> NamedTuple
+    centroid_poly(image, i0::Int, j0::Int, inv_var; background=0) -> NamedTuple
 
 Variant of [`centroid_poly`](@ref) that accepts pre-computed brightest-pixel
 coordinates `i0, j0` (corresponding to pixel `image[i0, j0]`) instead of
@@ -464,13 +503,15 @@ calling `findmax` internally. Useful when the caller has already identified
 the peak pixel (e.g. from a correlation map). `i0` is the row index
 (y-coordinate) and `j0` is the column index (x-coordinate).
 
-Returns the same `NamedTuple` as the two-argument form.
+Returns the same `NamedTuple` as the two-argument form.  See that method
+for the `background` keyword.
 """
 function centroid_poly(
         image::AbstractMatrix{T},
         i0::Int,
         j0::Int,
-        inv_var::AbstractMatrix = Fill(one(float(T)), size(image)),
+        inv_var::AbstractMatrix = Fill(one(float(T)), size(image));
+        background::Real = 0,
     ) where {T <: Real}
     # check that a full 3×3 neighborhood exists
     FT = float(promote_type(T, eltype(inv_var)))
@@ -491,7 +532,7 @@ function centroid_poly(
     wpatch = view(inv_var, i0-1:i0+1, j0-1:j0+1)
 
     # delegate to the 3×3 solver
-    local_result = _centroid_poly3(patch, wpatch)
+    local_result = _centroid_poly3(patch, wpatch; background)
 
     # convert local → global coordinates
     # i0 is row (y), j0 is column (x)

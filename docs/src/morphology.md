@@ -37,15 +37,18 @@ In addition to the centroid and its covariance,
 core of the source within the central 3x3 pixel box at near-zero additional
 cost (see [Morphological Measurements](#Morphological-Measurements) below):
 
-- `normalized_curvature` -- negated Laplacian divided by the fitted peak
-  value; ``\approx 16\log(2)/\mathrm{FWHM}^2`` for a circular Gaussian,
-  flux-independent.
+- `normalized_curvature` -- negated Laplacian divided by the fitted
+  amplitude above `background`; ``\approx 16\log(2)/\mathrm{FWHM}^2`` for a
+  circular Gaussian, flux-independent.
 - `compactness_core` -- inverse of the total second central moment of the light
   distribution; larger for more compact light distributions.
 - `roundness1_core` -- DAOPHOT SROUND / photutils `roundness1` on the 3×3
   patch; 0 = symmetric.
 - `roundness2_core` -- DAOPHOT GROUND / photutils `roundness2` from the
   quadratic fit curvatures; 0 = circular, negative = extended in x.
+- `ellipticity_core` -- rotationally invariant ellipticity of the
+  fitted 3×3 core. Symmetric, round cores have `ellipticity_core ≈ 0`,
+  while elongated cores have `ellipticity_core > 0`.
 
 ```@docs
 centroid_poly
@@ -88,37 +91,109 @@ GROUND can be computed directly from the quadratic coefficients without
 a separate marginal fit.  The aperture version derives the same
 quantity from the second central moments of the full cutout.
 
-For common asymmetries the two statistics correlate — an elliptical
-core or a one-sided spike changes both the second moments and the
-fourfold symmetry.  They diverge when flux is added symmetrically on
-opposite sides (e.g. left *and* right, or top *and* bottom).  This
-keeps ``\sigma^2_{xx} \approx \sigma^2_{yy}`` so GROUND stays near
-zero, but breaks fourfold symmetry so SROUND becomes nonzero.
-Conversely, a feature aligned at exactly 45° can leave SROUND near zero
-while GROUND registers the ellipticity.  Measuring both allows us to
-catch failure modes that either statistic alone would miss.
+For elongation along a row or column, or a one-sided spike, both
+statistics respond: the marginal second moments become unequal (GROUND)
+and fourfold symmetry breaks (SROUND).  GROUND additionally reports the
+*direction* of an axis-aligned stretch through its sign.
+
+Their sensitivities differ for features at intermediate position
+angles.  A source elongated at 45° keeps the marginal widths
+``\sigma^2_{xx} \approx \sigma^2_{yy}`` equal, so GROUND stays near
+zero, while the extra flux along one diagonal breaks fourfold symmetry
+and drives SROUND strongly nonzero.  Isolated off-axis hot pixels
+behave the same way: they inflate ``\sigma^2_{xx}`` and
+``\sigma^2_{yy}`` about equally (GROUND near zero) but register clearly
+in SROUND.  The rotationally invariant
+`ellipticity_core` and `ellipticity_aperture` fields (below) measure
+axis-ratio elongation at any position angle and close GROUND's 45° blind
+spot directly. Measuring several statistics together lets us catch failure
+modes that any one alone would miss.
+
+Departures from a Gaussian that *preserve* fourfold symmetry,
+e.g., a faint ring, leave all three of
+SROUND, GROUND, and ellipticity near zero, so none of these core
+statistics flags them. Such issues are better identified by a PSF-fit
+residual.
+
+### Ellipticity
+
+`ellipticity_core` (from [`centroid_poly`](@ref)) and
+`ellipticity_aperture` (from [`measure_star_shape`](@ref)) are
+rotationally invariant shape statistics:
+
+```math
+\text{ellipticity} = 1 - \sqrt{\lambda_\mathrm{min} / \lambda_\mathrm{max}},
+```
+
+where ``\lambda_\mathrm{min} \le \lambda_\mathrm{max}`` are the
+eigenvalues of a symmetric ``2\times2`` shape matrix.  For the core the
+matrix is the negated Hessian ``-\!H = -\begin{bmatrix}2d & e\\ e & 2f\end{bmatrix}``
+of the quadratic fit, whose eigenvalues are ``\propto`` the inverse
+squared profile widths along the principal axes.  For the aperture it is
+the second-moment covariance ``\begin{bmatrix}\sigma^2_{yy} & \sigma^2_{xy}\\ \sigma^2_{xy} & \sigma^2_{xx}\end{bmatrix}``.
+In both cases ``\text{ellipticity} = 1 - b/a`` where ``b/a`` is the
+minor-to-major axis ratio: ``0`` for a circular source, approaching
+``1`` for a highly elongated one.
+
+Because they use the full ``2\times2`` matrix (including the cross term
+``e`` / ``\sigma^2_{xy}``), these fields detect elongation at any
+position angle, unlike `roundness2_core` / `roundness2_aperture`, which
+compare only axis-aligned marginals and read ``\approx 0`` for a source
+elongated at 45°.  `ellipticity_core` returns `NaN` when the fitted core
+is not a clean local maximum; `ellipticity_aperture` returns `NaN` when
+the moment covariance is not positive definite.
 
 ### Normalized Curvature
 
 The `normalized_curvature` field returned by [`centroid_poly`](@ref)
-is the negated Laplacian of the quadratic fit divided by
-the fitted peak value ``-(2d+2f) / I_0``.  For a Gaussian this approximates
+is the negated Laplacian of the quadratic fit divided by the fitted
+amplitude above `background` ``-(2d+2f) / I_0``.  For a Gaussian this approximates
 ``16\log(2)/\mathrm{FWHM}^2`` and is independent of flux, making it a fast
 discriminator: cosmic rays (single bright pixels) produce larger values
 than stellar PSFs of the expected width. Saturated stars produce lower values
 because their cores are flat.
 
-### Core Compactness
+### Compactness
 
-The `compactness_core` field is the inverse of the total weighted second central moment of the 3×3 core, defined as  
+`compactness_core` (from [`centroid_poly`](@ref)) and
+`compactness_aperture` (from [`measure_star_shape`](@ref)) are the
+inverse of the total weighted second central moment of the light
+distribution:
 
 ```math
 \text{compactness} = \frac{1}{\sigma_x^2 + \sigma_y^2},
 ```
 
-where ``\sigma_x^2`` and ``\sigma_y^2`` are the inverse‑variance‑weighted second central moments of the pixel flux distribution, centered on the center‑of‑mass position. For a Gaussian profile, this quantity is proportional to the inverse of the FWHM squared, serving as a direct measure of the intrinsic core width. Because it is computed from moments centered on the estimated centroid, it is more robust to sub-pixel phase than curvature‑based statistics (e.g., Laplacians).
+where ``\sigma_x^2`` and ``\sigma_y^2`` are the inverse‑variance‑weighted
+second central moments of the pixel values about the estimated centroid,
+taken over the 3×3 core (`compactness_core`) or the full cutout
+(`compactness_aperture`).  For a Gaussian profile this quantity is
+proportional to the inverse of the FWHM squared, so larger values
+indicate more compact (sharper) profiles.  Cosmic rays and hot pixels,
+with negligible spatial extent, produce very large values.
 
-Cosmic rays and hot pixels, which have negligible spatial extent, produce extremely large values, while spurious noise detections that lack a coherent spatial profile yield non‑positive variance estimates and are returned as `NaN`, allowing them to be rejected by a simple `isfinite` check. This makes it a robust, zero‑cost proxy for identifying point‑like sources at the centroiding stage.
+!!! note "`compactness_core` needs the background removed"
+    The compactness moments are weighted by the (background-subtracted)
+    pixel values, so a sky pedestal that is *not* removed biases them.  A
+    flat background has second central moment ``2/3`` per axis on the 3×3
+    core, so an un‑subtracted `compactness_core` is a convex combination of
+    the true source value and ``2/3``, weighted by the sky-to-source count
+    ratio inside the box; for a faint source on a bright sky it collapses
+    to ``\approx 0.75`` regardless of the true width.  `normalized_curvature`
+    is likewise suppressed by an un‑subtracted pedestal through its
+    division by the fitted peak, though its curvature numerator is
+    pedestal-independent.  Pass the sky level via the `background` keyword
+    of [`centroid_poly`](@ref) (or of [`measure_star_shapes`](@ref), which
+    forwards it), or subtract it from the image beforehand.  The polynomial
+    centroid itself is unaffected either way.  `compactness_aperture` is
+    computed on ``\max(0,\,\text{image} - \text{background})`` and needs the
+    same correct `background`.
+
+`compactness_core` returns `NaN` when the weighted moment sum is
+non‑positive (`R00 ≤ 0` or ``\sigma_x^2 + \sigma_y^2 \le 0``), which
+happens for pure-noise peaks; `compactness_aperture` returns `NaN` under
+the analogous degenerate conditions.  This lets non‑stellar detections
+be rejected with a simple `isfinite` check.
 
 ### On sharpness
 
@@ -134,9 +209,11 @@ images, so it belongs in the candidate-selection layer rather than in
 | Aspect | Core (`centroid_poly`) | Aperture (`measure_star_shape`) |
 |--------|----------------------|--------------------------------|
 | Scale | 3×3 central patch | Full cutout |
-| Cost | ~200 ns (free with centroid) | ~1.5 μs (21×21) |
+| Cost | ~200 ns (free with centroid) | ~1.5 μs (21×21), scales with pixel count |
 | Roundness accuracy | Limited by 3×3 sampling | Integrates over full profile |
-| FWHM | Not available | Marginal moment widths (Gaussian approx.) |
+| FWHM | Not available (use `compactness_core`) | Marginal moment widths (Gaussian approx.) |
+| Compactness / ellipticity | From the quadratic Hessian and 3×3 moments | From the full-profile moment covariance |
+| Background | `background` kwarg (centroid unaffected; needed for the diagnostics) | `background` kwarg (subtracted, clamped at 0) |
 | Best use | Fast pre-filter at detection time | Candidate evaluation before PSF fitting |
 
 Note that moment-based morphological measures like the FWHM are biased when

@@ -156,8 +156,9 @@ cutout using inverse-variance-weighted second central moments.
   Defaults to ``2\sqrt{2\log 2} \approx 2.35482``.
 
 # Returns
-`(; fwhm, roundness1_aperture, roundness2_aperture, moment_norm,
-    aperture_sum, aperture_area, aperture_sum_err, centroid)` where
+`(; fwhm, roundness1_aperture, roundness2_aperture, ellipticity_aperture,
+    compactness_aperture, moment_norm, aperture_sum, aperture_area,
+    aperture_sum_err, centroid)` where
 
 - `fwhm::NamedTuple (; y, x, theta)`: moment-based, axis-aligned marginal
   full width at half maximum along the ``y`` (row) and ``x`` (column)
@@ -175,6 +176,18 @@ cutout using inverse-variance-weighted second central moments.
   convention: ``2(\sqrt{\sigma^2_{yy}} - \sqrt{\sigma^2_{xx}})/(\sqrt{\sigma^2_{yy}} + \sqrt{\sigma^2_{xx}})``.
   0 = circular, negative = extended in x (columns),
   positive = extended in y (rows).
+- `ellipticity_aperture::T`: rotationally invariant ellipticity
+  ``1 - \sqrt{\lambda_\mathrm{min}/\lambda_\mathrm{max}}``, where
+  ``\lambda_\mathrm{min} \le \lambda_\mathrm{max}`` are the eigenvalues of
+  the second-moment covariance ``\begin{bmatrix}\sigma^2_{yy} & \sigma^2_{xy}\\ \sigma^2_{xy} & \sigma^2_{xx}\end{bmatrix}``.
+  ``0`` for a circular source, approaching ``1`` as the source becomes
+  highly elongated.  Unlike `roundness2_aperture`, which compares
+  axis-aligned marginals, this registers elongation at any position
+  angle.  `NaN` when the covariance is not positive definite.
+- `compactness_aperture::T`: inverse total second central moment
+  ``1/(\sigma^2_{yy} + \sigma^2_{xx})``.  Proportional to
+  ``1/\mathrm{FWHM}^2`` for a Gaussian; larger for more compact profiles.
+  `NaN` when ``\sigma^2_{yy} + \sigma^2_{xx} \le 0``.
 - `moment_norm::T`: weighted zeroth moment ``M_{00}`` used to normalize
   the shape moments.  When `inv_var` is not uniform this is not a physical
   source flux and should not be used for photometric calibration.
@@ -190,8 +203,9 @@ If ``M_{00} \le 0`` (all pixels at or below background), shape and
 centroid fields are `NaN`; aperture-sum diagnostics are still reported.
 If ``\sigma^2_{yy} \le 0`` or ``\sigma^2_{xx} \le 0``
 (the distribution has no measurable width, e.g. a single bright pixel),
-`fwhm.y` and `fwhm.x` are `NaN` and `roundness2_aperture` is `0`
-(the denominator vanishes → degenerate, treated as isotropic).
+`fwhm.y` and `fwhm.x` are `NaN`, `roundness2_aperture` is `0`
+(the denominator vanishes → degenerate, treated as isotropic), and
+`ellipticity_aperture` and `compactness_aperture` are `NaN`.
 
 # Examples
 ```jldoctest
@@ -231,6 +245,7 @@ function measure_star_shape(
         n = FT(NaN)
         return (; fwhm = (; y = n, x = n, theta = n),
                  roundness1_aperture = n, roundness2_aperture = n,
+                 ellipticity_aperture = n, compactness_aperture = n,
                  moment_norm = FT_M00,
                  aperture_sum = FT(mom.aperture_sum),
                  aperture_area = mom.aperture_area,
@@ -293,6 +308,20 @@ function measure_star_shape(
         zero(FT)
     end
 
+    # Rotationally invariant shape statistics from the 2×2 second-moment
+    # covariance [σ²_yy σ²_xy; σ²_xy σ²_xx].  Its eigenvalues are the
+    # variances along the minor and major principal axes, so
+    # ellipticity_aperture = 1 - sqrt(minor/major) = 1 - b/a registers
+    # elongation at any position angle, unlike roundness2_aperture (which
+    # compares axis-aligned marginals).  compactness_aperture is the
+    # inverse total second central moment, ∝ 1/FWHM² for a Gaussian.
+    total_moment = σ²_yy + σ²_xx
+    moment_anisotropy = hypot((σ²_yy - σ²_xx) / 2, σ²_xy)
+    minor_axis_var = total_moment / 2 - moment_anisotropy
+    major_axis_var = total_moment / 2 + moment_anisotropy
+    ellipticity_aperture = minor_axis_var > 0 ? 1 - sqrt(minor_axis_var / major_axis_var) : FT(NaN)
+    compactness_aperture = total_moment > 0 ? inv(total_moment) : FT(NaN)
+
     # Centroid covariance from the delta method for the ratio estimator.
     inv_M00_sq = inv_M00 * inv_M00
     cent_cov_yy = (FT(mom.W20) - 2 * μ_y * FT(mom.W10) +
@@ -304,6 +333,7 @@ function measure_star_shape(
 
     return (; fwhm = (; y = fwhm_y, x = fwhm_x, theta),
              roundness1_aperture, roundness2_aperture,
+             ellipticity_aperture, compactness_aperture,
              moment_norm = FT_M00,
              aperture_sum = FT(mom.aperture_sum),
              aperture_area = mom.aperture_area,
@@ -357,9 +387,9 @@ For each peak in `result.peaks`, this function:
 
 1. Extracts a square cutout of size ``(2 \\times \\mathtt{half\\_width} + 1)^2``
    centered on the peak pixel from the original image.
-2. Calls [`centroid_poly`](@ref) on the 3×3 core to obtain a sub-pixel
-   centroid (polynomial and center-of-mass) and core diagnostics
-   (normalized curvature, roundness).
+2. Calls [`centroid_poly`](@ref) on the 3×3 core (passing `background`) to
+   obtain a sub-pixel centroid (polynomial and center-of-mass) and core
+   diagnostics (normalized curvature, compactness, roundness, ellipticity).
 3. Calls [`choose_centroid`](@ref) to select the best centroid estimate.
 4. Calls [`measure_star_shape`](@ref) on the full cutout to compute
    aperture-based morphology and rectangular aperture sums.
@@ -375,7 +405,11 @@ pixel coordinates of the original image.
   \\times (2 \\times \\mathtt{half\\_width} + 1)`` pixels.  Defaults to the
   kernel radius plus 2, with a minimum of 3.
 - `background::Real`: scalar background level subtracted before computing
-  image moments.  Defaults to `0`.  Passed to [`measure_star_shape`](@ref).
+  image moments.  Defaults to `0`.  Passed to both
+  [`measure_star_shape`](@ref) and [`centroid_poly`](@ref); the core
+  diagnostics `normalized_curvature`, `compactness_core`,
+  `roundness1_core`, and the center-of-mass are only meaningful when this
+  matches the true sky level.
 - `fwhm_factor::Real`: scale factor from Gaussian σ to FWHM.  Defaults to
   ``2\\sqrt{2\\log 2} \\approx 2.35482``.  Passed to [`measure_star_shape`](@ref).
 - `peaks::Union{AbstractVector{Int}, Nothing}`: optional vector of integer
@@ -397,14 +431,14 @@ has the following fields:
 - `significance`: detection significance at this peak.
 - `matched_filter_flux`: matched-filter flux estimate at this peak.
 - `core`: the full [`centroid_poly`](@ref) result — `(; poly, com,
-  normalized_curvature, roundness1_core, roundness2_core)` with
-  coordinates in global pixels.
+  normalized_curvature, compactness_core, roundness1_core, roundness2_core,
+  ellipticity_core)` with coordinates in global pixels.
 - `centroid`: the chosen centroid `(; y, x, source)` from
   [`choose_centroid`](@ref) in global pixels.  `source` is `:poly` or `:com`.
 - `morphology`: the full [`measure_star_shape`](@ref) result — `(; fwhm,
-  roundness1_aperture, roundness2_aperture, moment_norm, aperture_sum,
-  aperture_area, aperture_sum_err, centroid)` with
-  coordinates in global pixels.
+  roundness1_aperture, roundness2_aperture, ellipticity_aperture,
+  compactness_aperture, moment_norm, aperture_sum, aperture_area,
+  aperture_sum_err, centroid)` with coordinates in global pixels.
 
 !!! note
     If a peak is so close to the image border that no full 3×3
@@ -479,7 +513,7 @@ function measure_star_shapes(
         dx_global = FT(x_start - 1)
 
         # 1. Polynomial centroid on the 3×3 core.
-        core_local = centroid_poly(cutout, i0_cut, j0_cut, ivar_cutout)
+        core_local = centroid_poly(cutout, i0_cut, j0_cut, ivar_cutout; background)
 
         # Convert core coordinates to global.
         core_global = (;
@@ -527,6 +561,8 @@ function measure_star_shapes(
             fwhm = morph_local.fwhm,
             roundness1_aperture = morph_local.roundness1_aperture,
             roundness2_aperture = morph_local.roundness2_aperture,
+            ellipticity_aperture = morph_local.ellipticity_aperture,
+            compactness_aperture = morph_local.compactness_aperture,
             moment_norm = morph_local.moment_norm,
             aperture_sum = morph_local.aperture_sum,
             aperture_area = morph_local.aperture_area,
