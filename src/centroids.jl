@@ -26,8 +26,8 @@ to a 3×3 patch using weighted least squares with inverse-variance weights
 `inv_var`.
 
 # Returns
-A `NamedTuple` with keys `(; poly, com, normalized_curvature, roundness1_core,
-roundness2_core)`:
+A `NamedTuple` with keys `(; poly, com, normalized_curvature, compactness_core, roundness1_core,
+roundness2_core, ellipticity_core)`:
 
 - `poly`: `NamedTuple` `(; y, x, peak, y_err, x_err, peak_err, cov)` with
   the polynomial centroid (row, column) relative to the patch center, the
@@ -40,19 +40,33 @@ roundness2_core)`:
   value, ``-(2d + 2f)/\\mathrm{peak} \\approx 16\\log(2)/\\mathrm{FWHM}^2``
   for a circular Gaussian.  Flux-independent; broad stellar PSFs have
   lower values than cosmic rays and hot pixels.
+- `compactness_core`: inverse of the total second central moment,
+  defined as `1 / (σ_x² + σ_y²)`, where `σ_x²` and `σ_y²` are
+  the inverse‑variance‑weighted second central moments of the pixel flux
+  distribution.  This is a phase‑independent measure of core width:
+  larger values indicate more compact (sharper) profiles.  Returns `NaN`
+  if the estimated variance sum is non‑positive, which occurs for
+  spurious noise peaks, hot pixels, or severely saturated detections.
 - `roundness1_core`: DAOPHOT SROUND / photutils `roundness1` convention:
   ``2\\cdot\\Sigma_2/\\Sigma_4`` — ratio of bilateral (2-fold) to fourfold
   symmetry of the 8 neighbor pixels.  0 = symmetric, nonzero = asymmetric.
-- `roundness2_core`: DAOPHOT GROUND / photutils `roundness2` convention:
+- `roundness2_core`: Approximate DAOPHOT GROUND / photutils `roundness2`,
+  estimated from the quadratic curvature matrix at the fitted peak:
   ``2(\\sqrt{|d|} - \\sqrt{|f|})/(\\sqrt{|d|} + \\sqrt{|f|})``.
   0 = circular core, negative = extended in x (columns),
   positive = extended in y (rows).
+- `ellipticity_core`: rotationally invariant ellipticity of the
+  fitted 3x3 core. Symmetric, round cores have `ellipticity_core ≈ 0`,
+  while elongated cores have `ellipticity_core > 0`.
+  This is typically a more robust measure of the core shape than `roundness2_core`,
+  which can be biased by nonzero cross-terms in the quadratic fit.
 
 The design matrix is fixed (local coordinates `{-1,0,1}²`), so the
 only free inputs are the 9 pixel values and 9 inverse-variance weights.
 
-If the curvature matrix `D = [2d  e;  e  2f]` is near-singular, a small Tikhonov-style regularization is
-added to its diagonal before computing the centroid.  If the data are
+If the curvature matrix `D = [2d  e;  e  2f]` is near-singular,
+a small Tikhonov-style regularization is added to its diagonal
+before computing the centroid.  If the data are
 so noisy that the regularized determinant is still effectively zero,
 the covariance will be large but the centroid estimates remain finite.
 
@@ -187,9 +201,8 @@ function _centroid_poly3(image::AbstractMatrix, inv_var::AbstractMatrix)
 
     # Morphological diagnostics — roundness1_core (SROUND, bilateral vs.
     # fourfold symmetry) and roundness2_core (GROUND, marginal height ratio).
-    # Both operate on the 8 neighbor pixels.  SROUND uses the
-    # inverse-variance-weighted pixel values (wz) for consistency with the
-    # polynomial fit and with _moments2.
+    # SROUND uses the inverse-variance-weighted pixel values (wz) for
+    # consistency with the polynomial fit and with _moments2.
     # DAOPHOT convention: 0 = symmetric/circular, nonzero = asymmetric/elongated.
 
     # SROUND on the 3×3 patch (DAOPHOT / photutils roundness1).
@@ -211,10 +224,8 @@ function _centroid_poly3(image::AbstractMatrix, inv_var::AbstractMatrix)
     # GROUND from the quadratic fit curvatures (DAOPHOT / photutils roundness2).
     # For a Gaussian, the marginal-fit height HX ∝ 1/σ_x ∝ √|d|, so
     # 2·(HX-HY)/(HX+HY) = 2·(√|d|-√|f|)/(√|d|+√|f|).
-    dreg = two_d / 2
-    freg = two_f / 2
-    sqrt_ad = sqrt(abs(dreg))
-    sqrt_af = sqrt(abs(freg))
+    sqrt_ad = sqrt(abs(d))
+    sqrt_af = sqrt(abs(f))
     denom = sqrt_ad + sqrt_af
     roundness2_core = if denom > eps(FT)
         2 * (sqrt_ad - sqrt_af) / denom
@@ -222,12 +233,100 @@ function _centroid_poly3(image::AbstractMatrix, inv_var::AbstractMatrix)
         zero(FT)
     end
 
+    # # GROUND on the 3×3 core (DAOPHOT / photutils roundness2).
+    # #
+    # # DAOFIND forms weighted x/y marginal profiles using triangular
+    # # weights [1, 2, 1], then fits the amplitude of a fixed-width
+    # # Gaussian (plus a constant background) to each marginal.
+    # #
+    # # For a 3-point marginal and a circular Gaussian kernel, the
+    # # Gaussian-width-dependent normalization is identical in x and y,
+    # # so it cancels exactly in
+    # #
+    # #     GROUND = 2 * (Hx - Hy) / (Hx + Hy).
+    # #
+    # # Thus we only need quantities proportional to Hx and Hy.
+
+    # # Docstring: 
+    # - `roundness2_core`: 3×3 DAOPHOT GROUND / photutils `roundness2` statistic,
+    # ``2(H_x-H_y)/(H_x+H_y)``, where ``H_x`` and ``H_y`` are the fitted
+    # Gaussian heights of the x and y marginal profiles.
+    # 0 = circular core, negative = extended in x (columns),
+    # positive = extended in y (rows).  Returns `NaN` when either marginal
+    # Gaussian fit has non-positive amplitude.
+
+    # # x marginal: collapse rows with triangular weights [1, 2, 1].
+    # mx_left = z11 + 2*z21 + z31
+    # mx_center = z12 + 2*z22 + z32
+    # mx_right = z13 + 2*z23 + z33
+
+    # # y marginal: collapse columns with triangular weights [1, 2, 1].
+    # my_top = z11 + 2*z12 + z13
+    # my_center = z21 + 2*z22 + z23
+    # my_bottom = z31 + 2*z32 + z33
+
+    # # These are proportional to the fitted Gaussian heights Hx and Hy.
+    # # The omitted proportionality constant is positive and identical
+    # # for the two axes, so it cancels from GROUND.
+    # hx = mx_center - (mx_left + mx_right) / 2
+    # hy = my_center - (my_top + my_bottom) / 2
+
+    # # DAOFIND regards a non-positive fitted Gaussian height as an
+    # # invalid marginal fit rather than as a circular source.
+    # roundness2_core = if hx > zero(FT) && hy > zero(FT)
+    #     2 * (hx - hy) / (hx + hy)
+    # else
+    #     FT(NaN)
+    # end
+
+
+    # Principal-curvature ellipticity of the quadratic core.
+    #
+    # The quadratic fit has Hessian matrix
+    # H = [2d  e
+    #      e  2f]
+    # at the patch center, but at the fitted peak
+    # H is negative definite (as long as the peak is a local maximum).
+    # We therefore work with the positive
+    # definite matrix -H, whose eigenvalues are proportional to the
+    # inverse squared widths of the profile along the principal axes.
+    #
+    # Let the eigenvalues of -H be λ_max ≥ λ_min > 0.  For a circular
+    # Gaussian, λ_max = λ_min, while an elongated profile has λ_min < λ_max.
+    # We define a rotationally invariant ellipticity statistic as
+    #     ellipticity_core = 1 - sqrt(λ_min / λ_max),
+    # which equals 0 for a circular core and approaches 1 for infinitely
+    # elongated cores.
+    #
+    # The eigenvalues are computed from the trace and determinant of -H:
+    #     mean_curvature = trace(-H)/2 = -(d + f)
+    #     anisotropy = sqrt( ((2d - 2f)/2)^2 + e^2 ) = hypot(d - f, e)
+    # so that λ_max = mean_curvature + anisotropy,
+    #         λ_min = mean_curvature - anisotropy.
+    # If `mean_curvature ≤ 0` or `anisotropy ≥ mean_curvature`, the fitted
+    # core is not a valid local maximum (or is too noisy) and we return NaN.
+
+    mean_curvature = -(d + f)
+    anisotropy = hypot(d - f, e)
+
+    # curvature_roundness_core
+    ellipticity_core =
+        if mean_curvature > zero(FT) && anisotropy < mean_curvature
+            λ_max = mean_curvature + anisotropy
+            λ_min = mean_curvature - anisotropy
+            1 - sqrt(λ_min / λ_max)
+        else
+            FT(NaN)
+        end
+
     # Jacobian of (yc, xc, peak) w.r.t. (a, b, c, d, e, f).
     # At the stationary point ∂P/∂x = ∂P/∂y = 0, so d(peak)/dθ simplifies
-    # to the basis vector evaluated at the centroid.
+    # to the basis vector evaluated at the centroid. Note that the third row
+    # is exact only if ε = 0 in the Tikhonov regularization above, but
+    # the approximation is very good for small ε. 
     J = @SMatrix [
-        zero(FT)   e * invΔ         -two_d * invΔ   -(2 * c + 4 * freg * yc) * invΔ   (b + 2 * e * yc) * invΔ   -4 * dreg * yc * invΔ
-        zero(FT)  -two_f * invΔ     e * invΔ        -4 * freg * xc * invΔ             (c + 2 * e * xc) * invΔ   -(2 * b + 4 * dreg * xc) * invΔ
+        zero(FT)   e * invΔ         -two_d * invΔ   -(2 * c + 2 * two_f * yc) * invΔ   (b + 2 * e * yc) * invΔ   -2 * two_d * yc * invΔ
+        zero(FT)  -two_f * invΔ     e * invΔ        -2 * two_f * xc * invΔ             (c + 2 * e * xc) * invΔ   -(2 * b + 2 * two_d * xc) * invΔ
         one(FT)    xc               yc              xc2                               xcyc                      yc2
     ]
 
@@ -252,12 +351,18 @@ function _centroid_poly3(image::AbstractMatrix, inv_var::AbstractMatrix)
     com_y_err = sqrt(max(zero(FT), var_com_y))
     com_x_err = sqrt(max(zero(FT), var_com_x))
 
+    # inverse of the total second central moment of the pixel flux distribution
+    var_x = (R20 - 2 * com_x * R10 + com_x^2 * R00) / R00
+    var_y = (R02 - 2 * com_y * R01 + com_y^2 * R00) / R00
+    var_sum = var_x + var_y
+    compactness_core = var_sum > 0 ? 1 / var_sum : FT(NaN)
+
     return (; poly = (; y = yc, x = xc, peak,
                       y_err, x_err, peak_err, cov),
              com = (; y = com_y, x = com_x,
                      cov = com_cov,
                      y_err = com_y_err, x_err = com_x_err),
-             normalized_curvature, roundness1_core, roundness2_core)
+             normalized_curvature, compactness_core, roundness1_core, roundness2_core, ellipticity_core)
 end
 
 """
@@ -281,8 +386,8 @@ pixel coordinates.
   mask bad or saturated pixels.
 
 # Returns
-A `NamedTuple` with keys `(; poly, com, normalized_curvature, roundness1_core,
-roundness2_core)` where
+A `NamedTuple` with keys `(; poly, com, normalized_curvature, compactness_core, roundness1_core,
+roundness2_core, ellipticity_core)` where
 
 - `poly` — `NamedTuple` `(; y, x, peak, y_err, x_err, peak_err, cov)`
   with the polynomial centroid in global pixel coordinates (row, column),
@@ -296,6 +401,13 @@ roundness2_core)` where
   value; ``\\approx 16\\log(2)/\\mathrm{FWHM}^2`` for a circular Gaussian.
   This flux-independent statistic is useful for distinguishing stars from
   cosmic rays and hot pixels.
+- `compactness_core` — inverse of the total second central moment,
+  defined as `1 / (σ_x² + σ_y²)`, where `σ_x²` and `σ_y²` are
+  the inverse‑variance‑weighted second central moments of the pixel flux
+  distribution.  This is a phase‑independent measure of core width:
+  larger values indicate more compact (sharper) profiles.  Returns `NaN`
+  if the estimated variance sum is non‑positive, which occurs for
+  spurious noise peaks, hot pixels, or severely saturated detections.
 - `roundness1_core` — DAOPHOT SROUND / photutils `roundness1`:
   ``2\\cdot\\Sigma_2/\\Sigma_4`` from the 8 neighbor pixels.
   0 = symmetric, nonzero = asymmetric.
@@ -313,7 +425,8 @@ neighborhood), every field is `NaN`:
             cov = @SMatrix [NaN NaN NaN; NaN NaN NaN; NaN NaN NaN]),
    com = (; y = NaN, x = NaN, y_err = NaN, x_err = NaN,
           cov = @SMatrix [NaN NaN; NaN NaN]),
-   normalized_curvature = NaN, roundness1_core = NaN, roundness2_core = NaN)
+   normalized_curvature = NaN, compactness_core = NaN, 
+   roundness1_core = NaN, roundness2_core = NaN, ellipticity_core = NaN)
 ```
 
 # Examples
@@ -370,7 +483,7 @@ function centroid_poly(
                           y_err = nan, x_err = nan, peak_err = nan,
                           cov = nan3),
                  com = nancom,
-                 normalized_curvature = nan, roundness1_core = nan, roundness2_core = nan)
+                 normalized_curvature = nan, compactness_core = nan, roundness1_core = nan, roundness2_core = nan, ellipticity_core = nan)
     end
 
     # extract 3×3 views
@@ -395,8 +508,10 @@ function centroid_poly(
                      x_err = local_result.com.x_err,
                      cov = local_result.com.cov),
              normalized_curvature = local_result.normalized_curvature,
+             compactness_core = local_result.compactness_core,
              roundness1_core = local_result.roundness1_core,
-             roundness2_core = local_result.roundness2_core)
+             roundness2_core = local_result.roundness2_core,
+             ellipticity_core = local_result.ellipticity_core)
 end
 
 """

@@ -40,6 +40,8 @@ cost (see [Morphological Measurements](#Morphological-Measurements) below):
 - `normalized_curvature` -- negated Laplacian divided by the fitted peak
   value; ``\approx 16\log(2)/\mathrm{FWHM}^2`` for a circular Gaussian,
   flux-independent.
+- `compactness_core` -- inverse of the total second central moment of the light
+  distribution; larger for more compact light distributions.
 - `roundness1_core` -- DAOPHOT SROUND / photutils `roundness1` on the 3×3
   patch; 0 = symmetric.
 - `roundness2_core` -- DAOPHOT GROUND / photutils `roundness2` from the
@@ -103,17 +105,29 @@ is the negated Laplacian of the quadratic fit divided by
 the fitted peak value ``-(2d+2f) / I_0``.  For a Gaussian this approximates
 ``16\log(2)/\mathrm{FWHM}^2`` and is independent of flux, making it a fast
 discriminator: cosmic rays (single bright pixels) produce larger values
-than stellar PSFs of the expected width.
+than stellar PSFs of the expected width. Saturated stars produce lower values
+because their cores are flat.
+
+### Core Compactness
+
+The `compactness_core` field is the inverse of the total weighted second central moment of the 3×3 core, defined as  
+
+```math
+\text{compactness} = \frac{1}{\sigma_x^2 + \sigma_y^2},
+```
+
+where ``\sigma_x^2`` and ``\sigma_y^2`` are the inverse‑variance‑weighted second central moments of the pixel flux distribution, centered on the center‑of‑mass position. For a Gaussian profile, this quantity is proportional to the inverse of the FWHM squared, serving as a direct measure of the intrinsic core width. Because it is computed from moments centered on the estimated centroid, it is more robust to sub-pixel phase than curvature‑based statistics (e.g., Laplacians).
+
+Cosmic rays and hot pixels, which have negligible spatial extent, produce extremely large values, while spurious noise detections that lack a coherent spatial profile yield non‑positive variance estimates and are returned as `NaN`, allowing them to be rejected by a simple `isfinite` check. This makes it a robust, zero‑cost proxy for identifying point‑like sources at the centroiding stage.
+
+### On sharpness
 
 DAOPHOT and photutils define sharpness as
 ``(D_\mathrm{center} - \bar{D}_\mathrm{surrounding}) / H``, where
 ``D`` is the raw image and ``H`` is the convolved brightness
 enhancement.  That definition requires both the raw and convolved
 images, so it belongs in the candidate-selection layer rather than in
-[`centroid_poly`](@ref).  The curvature-based `normalized_curvature` is
-a zero-cost proxy available at centroiding time. **TODO: Determine if
-normalized curvature is a sufficient statistic to remove sharp contaminants
-like cosmic rays.**
+[`centroid_poly`](@ref). The `compactness_core` and `normalized_curvature` fields are complementary: they are available immediately during centroid refinement, require no convolution, and provide measures of compactness/sharpness to identify spurious and non‑stellar detections before fitting is performed.
 
 ### Core vs. Aperture Measurements
 
