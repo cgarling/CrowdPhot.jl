@@ -500,8 +500,10 @@ function measure_star_shapes(
                 cov = core_local.com.cov,
             ),
             normalized_curvature = core_local.normalized_curvature,
+            compactness_core = core_local.compactness_core,
             roundness1_core = core_local.roundness1_core,
             roundness2_core = core_local.roundness2_core,
+            ellipticity_core = core_local.ellipticity_core,
         )
 
         # 2. Choose best centroid.

@@ -217,6 +217,7 @@ good = findall(eachindex(results)) do i
     r = results[i]
     r.morphology.fwhm.y > 0 &&
     r.morphology.fwhm.x > 0 &&
+    isfinite(r.core.compactness_core) &&
     isfinite(r.core.normalized_curvature) &&
     r.morphology.moment_norm > 0 &&
     isfinite(inst_mag[i]) &&
@@ -271,11 +272,12 @@ round1 = [results[i].morphology.roundness1_aperture for i in good]
 round2 = [results[i].morphology.roundness2_aperture for i in good]
 round1_core = [results[i].core.roundness1_core for i in good]
 round2_core = [results[i].core.roundness2_core for i in good]
-sharp  = [results[i].core.normalized_curvature for i in good]
+compactness = [results[i].core.compactness_core for i in good]
+normalized_curvature = [results[i].core.normalized_curvature for i in good]
 sig    = [results[i].significance for i in good]
 mf_flux = [results[i].matched_filter_flux for i in good]
 
-fig = Figure(size = (900, 1000))
+fig = Figure(size = (900, 1250))
 
 # Panel 1: FWHM y vs magnitude
 ax1 = Axis(fig[1, 1]; xlabel = "Small-aperture ST magnitude",
@@ -305,27 +307,17 @@ Colorbar(fig[2, 4], h4; label = "Counts")
 ax5 = Axis(fig[3, 1]; xlabel = "Small-aperture ST magnitude",
            ylabel = "normalized curvature", title = "Normalized Core Curvature (2/FWHM²) / I_0")
 ylims!(ax5, -1, 3)
-idxs = findall(x -> -10 < x < 10, sharp)
-h5 = hexbin!(ax5, mags[idxs], sharp[idxs]; bins = 80, colorscale=log10)
+idxs = findall(x -> -10 < x < 10, normalized_curvature)
+h5 = hexbin!(ax5, mags[idxs], normalized_curvature[idxs]; bins = 80, colorscale=log10)
 Colorbar(fig[3, 2], h5; label = "Counts")
 
-# Panel 6: median FWHM per magnitude bin
-mag_bins = range(minimum(mags), maximum(mags); length = 30)
-med_fwhm_y = Float64[]
-med_fwhm_x = Float64[]
-mag_centers = Float64[]
-for (lo, hi) in zip(mag_bins[1:end-1], mag_bins[2:end])
-    bin_idx = findall(m -> lo <= m < hi, mags)
-    isempty(bin_idx) && continue
-    push!(mag_centers, (lo + hi) / 2)
-    push!(med_fwhm_y, median(fwhm_y[bin_idx]))
-    push!(med_fwhm_x, median(fwhm_x[bin_idx]))
-end
+# Panel 6: compactness vs magnitude
 ax6 = Axis(fig[3, 3]; xlabel = "Small-aperture ST magnitude",
-           ylabel = "Median FWHM (pix)", title = "Median FWHM by magnitude")
-scatterlines!(ax6, mag_centers, med_fwhm_y; label = "y", color = :blue)
-scatterlines!(ax6, mag_centers, med_fwhm_x; label = "x", color = :red)
-axislegend(ax6; position = :rt)
+           ylabel = "compactness", title = "Compactness 1 / (σ_x² + σ_y²)")
+ylims!(ax6, 0, 10)
+idxs = findall(x -> 0 < x < 10, compactness)
+h6 = hexbin!(ax5, mags[idxs], compactness[idxs]; bins = 80, colorscale=log10)
+Colorbar(fig[3, 4], h6; label = "Counts")
 
 # Panel 7: Core SROUND vs Aperture SROUND
 ax7 = Axis(fig[4, 1]; xlabel = "roundness1 aperture",
@@ -341,6 +333,24 @@ ax8 = Axis(fig[4, 3]; xlabel = "roundness2 aperture",
 h8 = hexbin!(ax8, round2, round2_core; bins = 80, colorscale=log10)
 Colorbar(fig[4, 4], h8; label = "Counts")
 
+# Panel 9: median FWHM per magnitude bin
+mag_bins = range(minimum(mags), maximum(mags); length = 30)
+med_fwhm_y = Float64[]
+med_fwhm_x = Float64[]
+mag_centers = Float64[]
+for (lo, hi) in zip(mag_bins[1:end-1], mag_bins[2:end])
+    bin_idx = findall(m -> lo <= m < hi, mags)
+    isempty(bin_idx) && continue
+    push!(mag_centers, (lo + hi) / 2)
+    push!(med_fwhm_y, median(fwhm_y[bin_idx]))
+    push!(med_fwhm_x, median(fwhm_x[bin_idx]))
+end
+ax9 = Axis(fig[5, 1]; xlabel = "Small-aperture ST magnitude",
+           ylabel = "Median FWHM (pix)", title = "Median FWHM by magnitude")
+scatterlines!(ax9, mag_centers, med_fwhm_y; label = "y", color = :blue)
+scatterlines!(ax9, mag_centers, med_fwhm_x; label = "x", color = :red)
+axislegend(ax9; position = :rt)
+
 
 fig
 ```
@@ -353,7 +363,7 @@ the instrumental-magnitude distribution to exclude very bright (potentially
 saturated) and very faint stars, applies a hard constraint on normalized
 core curvature, and then sigma-clips morphological parameters
 (`fwhm.y`, `fwhm.x`, `roundness1_aperture`, `roundness2_aperture`,
-`normalized_curvature`) within five instrumental-magnitude bins.
+`normalized_curvature`, `compactness_core`) within five instrumental-magnitude bins.
 
 ```@example hst-drc
 # Select the brightest 50 stars suitable for PSF fitting

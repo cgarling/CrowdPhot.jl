@@ -25,10 +25,15 @@ The selection proceeds in three stages:
    peak -- it is independent of flux for an unsaturated PSF and depends only
    on the PSF shape.
 
-3. **Sigma clipping by magnitude bin.** Stars are partitioned into `nbins`
+3. **Core compactness constraint.** Stars with `core.compactness`
+   outside `[compactness_min, compactness_max]` are rejected.  The compactness
+   is the inverse of the total weighted second central moment and is proportional
+   to the inverse of the FWHM squared for a Gaussian profile.
+
+4. **Sigma clipping by magnitude bin.** Stars are partitioned into `nbins`
    instrumental-magnitude bins, and within each bin sequential sigma-clipping
    is applied to `fwhm.y`, `fwhm.x`, `roundness1_aperture`,
-   `roundness2_aperture`, and `normalized_curvature`.  Only stars within
+   `roundness2_aperture`, `normalized_curvature`, and `compactness_core`.  Only stars within
    `σ_low`--`σ_high` standard deviations of the clipped median for each
    parameter are retained.
 
