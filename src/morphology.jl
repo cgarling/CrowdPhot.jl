@@ -149,6 +149,8 @@ cutout using inverse-variance-weighted second central moments.
 - `inv_var::AbstractMatrix`: per-pixel inverse variance, same size as
   `image`.  Defaults to `Fill(one(float(eltype(image))), size(image))`
   (uniform weighting).  Set entries to zero to mask bad pixels.
+  Note that the morphological statistics are typically most informative when
+  `inv_var` includes source variance (Poisson noise) in addition to background variance.
 - `background::Real`: scalar background level subtracted before computing
   moments.  Defaults to `0`.  Pixels with ``\mathtt{image} - \mathtt{background} \le 0``
   are excluded from the moment sum.
@@ -400,6 +402,18 @@ pixel coordinates of the original image.
 # Arguments
 
 - `result::MatchedFilterResult`: result from [`matched_filter`](@ref).
+
+# Keyword Arguments
+
+- `inv_var::Union{Nothing, AbstractMatrix{<:Real}}`:
+  inverse-variance map corresponding to `result.image`. Defaults to `result.inv_var`,
+  the same inverse variance map used for the `matched_filter` call.
+  Note that the morphological statistics are typically most informative when
+  `inv_var` includes source variance (Poisson noise)
+  in addition to background variance.  However, it is recommended that source variance *not* be
+  included in the `inv_var` passed to `matched_filter`, so we provide the option here to
+  pass in a separate, more complete `inv_var` for the morphology measurements.
+  If `nothing`, the morphology measurements will be computed with uniform weighting.
 - `half_width::Int`: half-width of the square cutout extracted around
   each peak.  The cutout size is ``(2 \\times \\mathtt{half\\_width} + 1)
   \\times (2 \\times \\mathtt{half\\_width} + 1)`` pixels.  Defaults to the
@@ -465,12 +479,18 @@ See [Vakili2016](@citet) for the polynomial centroid method.
 """
 function measure_star_shapes(
         result::MatchedFilterResult{T};
+        inv_var::Union{Nothing, AbstractMatrix{<:Real}} = result.inv_var,
         half_width::Int = _default_half_width(result),
         background::Real = zero(T),
         fwhm_factor::Real = 2.3548200450309493,
         peaks::Union{AbstractVector{Int}, Nothing} = nothing,
         min_significance::Union{Real, Nothing} = nothing,
     ) where {T}
+
+    if !isnothing(inv_var)
+        @assert axes(result.image) == axes(inv_var) "image and inv_var must have the same `axes`"
+    end
+
     # Determine which peaks to measure.
     all_peak_idx = if peaks !== nothing
         collect(Int, peaks)
@@ -498,8 +518,8 @@ function measure_star_shapes(
 
         cutout = @view result.image[y_start:y_end, x_start:x_end]
 
-        ivar_cutout = if result.inv_var !== nothing
-            @view result.inv_var[y_start:y_end, x_start:x_end]
+        ivar_cutout = if !isnothing(inv_var)
+            @view inv_var[y_start:y_end, x_start:x_end]
         else
             Fill(one(T), size(cutout))
         end
